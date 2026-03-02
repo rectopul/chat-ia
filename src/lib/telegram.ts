@@ -3,10 +3,14 @@ import { prisma } from "./prisma";
 import { MediaType, MessageDirection } from "@prisma/client";
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const TELEGRAM_API_URL = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
 
 export class TelegramService {
+  private static getApiUrl(token?: string) {
+    return `https://api.telegram.org/bot${token || TELEGRAM_BOT_TOKEN}`;
+  }
+
   private static async logMessage(params: {
+    botId?: string;
     telegramUserId: string;
     direction: MessageDirection;
     type: MediaType;
@@ -15,23 +19,33 @@ export class TelegramService {
     providerMessageId?: string;
   }) {
     try {
+        if (!params.botId) return; // Cannot log without botId in new schema
       await prisma.messageLog.create({
-        data: params,
+        data: {
+            botId: params.botId,
+            telegramUserId: params.telegramUserId,
+            direction: params.direction,
+            type: params.type,
+            text: params.text,
+            mediaUrl: params.mediaUrl,
+            providerMessageId: params.providerMessageId
+        },
       });
     } catch (error) {
       console.error("Error logging message:", error);
     }
   }
 
-  static async sendText(chatId: string, text: string, telegramUserId: string) {
+  static async sendText(chatId: string, text: string, telegramUserId: string, botId?: string, token?: string) {
     try {
-      const response = await axios.post(`${TELEGRAM_API_URL}/sendMessage`, {
+      const response = await axios.post(`${this.getApiUrl(token)}/sendMessage`, {
         chat_id: chatId,
         text,
         parse_mode: "HTML",
       });
 
       await this.logMessage({
+        botId,
         telegramUserId,
         direction: MessageDirection.OUT,
         type: MediaType.TEXT,
@@ -50,10 +64,12 @@ export class TelegramService {
     chatId: string,
     photoUrl: string,
     telegramUserId: string,
-    caption?: string
+    caption?: string,
+    botId?: string,
+    token?: string
   ) {
     try {
-      const response = await axios.post(`${TELEGRAM_API_URL}/sendPhoto`, {
+      const response = await axios.post(`${this.getApiUrl(token)}/sendPhoto`, {
         chat_id: chatId,
         photo: photoUrl,
         caption,
@@ -61,6 +77,7 @@ export class TelegramService {
       });
 
       await this.logMessage({
+        botId,
         telegramUserId,
         direction: MessageDirection.OUT,
         type: MediaType.IMAGE,
@@ -80,10 +97,12 @@ export class TelegramService {
     chatId: string,
     videoUrl: string,
     telegramUserId: string,
-    caption?: string
+    caption?: string,
+    botId?: string,
+    token?: string
   ) {
     try {
-      const response = await axios.post(`${TELEGRAM_API_URL}/sendVideo`, {
+      const response = await axios.post(`${this.getApiUrl(token)}/sendVideo`, {
         chat_id: chatId,
         video: videoUrl,
         caption,
@@ -91,6 +110,7 @@ export class TelegramService {
       });
 
       await this.logMessage({
+        botId,
         telegramUserId,
         direction: MessageDirection.OUT,
         type: MediaType.VIDEO,
@@ -109,20 +129,22 @@ export class TelegramService {
   static async sendMessageTemplate(
     chatId: string,
     telegramUserId: string,
-    template: any // Using any to support enriched includes
+    template: any,
+    botId?: string,
+    token?: string
   ) {
     if (template.type === MediaType.COMBO && template.mediaItems) {
       if (template.text) {
-        await this.sendText(chatId, template.text, telegramUserId);
+        await this.sendText(chatId, template.text, telegramUserId, botId, token);
       }
 
       const sortedMedia = [...template.mediaItems].sort((a, b) => a.order - b.order);
 
       for (const item of sortedMedia) {
         if (item.type === MediaType.IMAGE) {
-          await this.sendPhoto(chatId, item.url, telegramUserId);
+          await this.sendPhoto(chatId, item.url, telegramUserId, undefined, botId, token);
         } else if (item.type === MediaType.VIDEO) {
-          await this.sendVideo(chatId, item.url, telegramUserId);
+          await this.sendVideo(chatId, item.url, telegramUserId, undefined, botId, token);
         }
         // Basic delay to respect rate limits and order
         await new Promise(resolve => setTimeout(resolve, 500));
@@ -132,20 +154,24 @@ export class TelegramService {
 
     switch (template.type) {
       case MediaType.TEXT:
-        return this.sendText(chatId, template.text || "", telegramUserId);
+        return this.sendText(chatId, template.text || "", telegramUserId, botId, token);
       case MediaType.IMAGE:
         return this.sendPhoto(
           chatId,
           template.mediaUrl || "",
           telegramUserId,
-          template.text || undefined
+          template.text || undefined,
+          botId,
+          token
         );
       case MediaType.VIDEO:
         return this.sendVideo(
           chatId,
           template.mediaUrl || "",
           telegramUserId,
-          template.text || undefined
+          template.text || undefined,
+          botId,
+          token
         );
       default:
         throw new Error(`Unsupported media type: ${template.type}`);

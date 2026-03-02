@@ -16,9 +16,26 @@ model User {
   updatedAt     DateTime  @updatedAt
 }
 
+model BotAccount {
+  id            String    @id @default(cuid())
+  name          String
+  token         String    @unique
+  webhookSecret String
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  users         TelegramUser[]
+  sales         Sale[]
+  messageLogs   MessageLog[]
+  scheduledJobs ScheduledMessageJob[]
+  rules         TimedMessageRule[]
+}
+
 model TelegramUser {
   id             String    @id @default(cuid())
-  telegramUserId String    @unique
+  botId          String
+  telegramUserId String
   chatId         String    @unique
   username       String?
   firstName      String?
@@ -29,10 +46,12 @@ model TelegramUser {
   isSubscriber   Boolean   @default(false)
   subscriberUntil DateTime?
 
+  bot            BotAccount @relation(fields: [botId], references: [id])
   sales          Sale[]
   messageLogs    MessageLog[]
   scheduledJobs  ScheduledMessageJob[]
 
+  @@unique([telegramUserId, botId])
   @@index([lastSeenAt])
 }
 
@@ -85,12 +104,15 @@ enum UserSegment {
 
 model TimedMessageRule {
   id           String      @id @default(cuid())
+  botId        String
   name         String
   isActive     Boolean     @default(true)
   delaySeconds Int
+  repeatIntervalSeconds Int? // For recurring messages
   segment      UserSegment
   templateId   String
   template     MessageTemplate @relation(fields: [templateId], references: [id])
+  bot          BotAccount      @relation(fields: [botId], references: [id])
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
 }
@@ -104,6 +126,7 @@ enum JobStatus {
 
 model ScheduledMessageJob {
   id             String          @id @default(cuid())
+  botId          String
   telegramUserId String
   chatId         String
   templateId     String
@@ -114,7 +137,8 @@ model ScheduledMessageJob {
   sentAt         DateTime?
   createdAt      DateTime        @default(now())
 
-  user           TelegramUser    @relation(fields: [telegramUserId], references: [telegramUserId])
+  bot            BotAccount      @relation(fields: [botId], references: [id])
+  user           TelegramUser    @relation(fields: [telegramUserId, botId], references: [telegramUserId, botId])
   template       MessageTemplate @relation(fields: [templateId], references: [id])
 
   @@index([status, runAt])
@@ -149,6 +173,7 @@ enum SaleStatus {
 
 model Sale {
   id             String       @id @default(cuid())
+  botId          String
   telegramUserId String
   productId      String
   status         SaleStatus   @default(PENDING)
@@ -161,7 +186,8 @@ model Sale {
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
 
-  user    TelegramUser @relation(fields: [telegramUserId], references: [telegramUserId])
+  bot     BotAccount   @relation(fields: [botId], references: [id])
+  user    TelegramUser @relation(fields: [telegramUserId, botId], references: [telegramUserId, botId])
   product Product      @relation(fields: [productId], references: [id])
 
   @@index([telegramUserId, paidAt])
@@ -184,6 +210,7 @@ enum MessageDirection {
 
 model MessageLog {
   id                String           @id @default(cuid())
+  botId             String
   telegramUserId    String
   direction         MessageDirection
   type              MediaType
@@ -192,5 +219,6 @@ model MessageLog {
   providerMessageId String?
   createdAt         DateTime         @default(now())
 
-  user TelegramUser @relation(fields: [telegramUserId], references: [telegramUserId])
+  bot  BotAccount   @relation(fields: [botId], references: [id])
+  user TelegramUser @relation(fields: [telegramUserId, botId], references: [telegramUserId, botId])
 }

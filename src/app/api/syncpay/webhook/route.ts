@@ -50,7 +50,7 @@ export async function POST(req: NextRequest) {
       // Simpler approach if we store the 'identifier' from cash-in as referenceId
       const targetSale = await prisma.sale.findFirst({
           where: { referenceId: data.id },
-          include: { user: true, product: true }
+          include: { user: true, product: true, bot: true }
       });
 
       if (targetSale && targetSale.status !== SaleStatus.PAID) {
@@ -73,7 +73,7 @@ export async function POST(req: NextRequest) {
         }
 
         await prisma.telegramUser.update({
-          where: { telegramUserId: targetSale.telegramUserId },
+          where: { telegramUserId_botId: { telegramUserId: targetSale.telegramUserId, botId: targetSale.botId } },
           data: {
             isSubscriber: true,
             subscriberUntil: newUntil,
@@ -84,7 +84,9 @@ export async function POST(req: NextRequest) {
         await TelegramService.sendText(
           targetSale.user.chatId,
           `✅ <b>Pagamento Confirmado!</b>\n\nSua compra de <b>${targetSale.product.title}</b> foi processada com sucesso. Você já tem acesso ao conteúdo!`,
-          targetSale.telegramUserId
+          targetSale.telegramUserId,
+          targetSale.botId,
+          targetSale.bot.token
         );
       }
     }

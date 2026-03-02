@@ -38,6 +38,12 @@ export default async function AdminMessagesPage() {
     revalidatePath("/admin/messages");
   }
 
+  async function deleteTemplate(templateId: string) {
+    "use server";
+    await prisma.messageTemplate.delete({ where: { id: templateId } });
+    revalidatePath("/admin/messages");
+  }
+
   return (
     <div className="space-y-8">
       <div className="bg-white p-6 rounded shadow-sm">
@@ -82,6 +88,11 @@ export default async function AdminMessagesPage() {
                 <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">{t.type}</td>
                 <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">
                     {t.isActive ? "Ativo" : "Inativo"}
+                </td>
+                <td className="whitespace-nowrap px-3 py-4 text-sm space-x-2">
+                    <form action={deleteTemplate.bind(null, t.id)} className="inline">
+                        <button type="submit" className="text-red-600 hover:underline">Excluir</button>
+                    </form>
                 </td>
               </tr>
             ))}
