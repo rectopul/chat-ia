@@ -4,16 +4,15 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
 }
 
 model User {
-  id            String    @id @default(cuid())
-  name          String?
-  email         String?   @unique
-  password      String?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  id        String   @id @default(cuid())
+  name      String?
+  email     String?  @unique
+  password  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model BotAccount {
@@ -33,6 +32,7 @@ model BotAccount {
 }
 
 model TelegramUser {
+<<<<<<< HEAD
   id             String    @id @default(cuid())
   botId          String
   telegramUserId String
@@ -50,6 +50,23 @@ model TelegramUser {
   sales          Sale[]
   messageLogs    MessageLog[]
   scheduledJobs  ScheduledMessageJob[]
+=======
+  id              String    @id @default(cuid())
+  telegramUserId  String    @unique
+  chatId          String    @unique
+  username        String?
+  firstName       String?
+  lastName        String?
+  firstSeenAt     DateTime  @default(now())
+  lastSeenAt      DateTime  @default(now())
+  isBlocked       Boolean   @default(false)
+  isSubscriber    Boolean   @default(false)
+  subscriberUntil DateTime?
+
+  sales         Sale[]
+  messageLogs   MessageLog[]
+  scheduledJobs ScheduledMessageJob[]
+>>>>>>> f0a2b04 (ajustes)
 
   @@unique([telegramUserId, botId])
   @@index([lastSeenAt])
@@ -73,26 +90,26 @@ model MessageTemplate {
   id        String             @id @default(cuid())
   key       MessageTemplateKey
   title     String
-  type      MediaType          // Default type if single, or COMBO
+  type      MediaType // Default type if single, or COMBO
   text      String?            @db.Text
-  mediaUrl  String?            // Legacy for single media
+  mediaUrl  String? // Legacy for single media
   isActive  Boolean            @default(true)
   createdAt DateTime           @default(now())
   updatedAt DateTime           @updatedAt
 
-  mediaItems     MessageTemplateMedia[]
-  rules          TimedMessageRule[]
-  scheduledJobs  ScheduledMessageJob[]
+  mediaItems    MessageTemplateMedia[]
+  rules         TimedMessageRule[]
+  scheduledJobs ScheduledMessageJob[]
 }
 
 model MessageTemplateMedia {
-  id         String          @id @default(cuid())
+  id         String    @id @default(cuid())
   templateId String
   type       MediaType
   url        String
-  order      Int             @default(0)
+  order      Int       @default(0)
 
-  template   MessageTemplate @relation(fields: [templateId], references: [id])
+  template MessageTemplate @relation(fields: [templateId], references: [id])
 }
 
 enum UserSegment {
@@ -103,18 +120,29 @@ enum UserSegment {
 }
 
 model TimedMessageRule {
+<<<<<<< HEAD
   id           String      @id @default(cuid())
   botId        String
+=======
+  id           String                @id @default(cuid())
+>>>>>>> f0a2b04 (ajustes)
   name         String
-  isActive     Boolean     @default(true)
+  isActive     Boolean               @default(true)
   delaySeconds Int
   repeatIntervalSeconds Int? // For recurring messages
   segment      UserSegment
   templateId   String
+<<<<<<< HEAD
   template     MessageTemplate @relation(fields: [templateId], references: [id])
   bot          BotAccount      @relation(fields: [botId], references: [id])
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
+=======
+  template     MessageTemplate       @relation(fields: [templateId], references: [id])
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+  jobs         ScheduledMessageJob[]
+>>>>>>> f0a2b04 (ajustes)
 }
 
 enum JobStatus {
@@ -125,21 +153,34 @@ enum JobStatus {
 }
 
 model ScheduledMessageJob {
+<<<<<<< HEAD
   id             String          @id @default(cuid())
   botId          String
+=======
+  id             String @id @default(cuid())
+>>>>>>> f0a2b04 (ajustes)
   telegramUserId String
   chatId         String
   templateId     String
-  runAt          DateTime
-  status         JobStatus       @default(PENDING)
-  attempts       Int             @default(0)
-  lastError      String?
-  sentAt         DateTime?
-  createdAt      DateTime        @default(now())
 
+<<<<<<< HEAD
   bot            BotAccount      @relation(fields: [botId], references: [id])
   user           TelegramUser    @relation(fields: [telegramUserId, botId], references: [telegramUserId, botId])
   template       MessageTemplate @relation(fields: [templateId], references: [id])
+=======
+  ruleId String
+  rule   TimedMessageRule @relation(fields: [ruleId], references: [id])
+
+  runAt     DateTime
+  status    JobStatus @default(PENDING)
+  attempts  Int       @default(0)
+  lastError String?
+  sentAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user     TelegramUser    @relation(fields: [telegramUserId], references: [telegramUserId])
+  template MessageTemplate @relation(fields: [templateId], references: [id])
+>>>>>>> f0a2b04 (ajustes)
 
   @@index([status, runAt])
 }
@@ -172,19 +213,23 @@ enum SaleStatus {
 }
 
 model Sale {
+<<<<<<< HEAD
   id             String       @id @default(cuid())
   botId          String
+=======
+  id             String     @id @default(cuid())
+>>>>>>> f0a2b04 (ajustes)
   telegramUserId String
   productId      String
-  status         SaleStatus   @default(PENDING)
-  referenceId    String       @unique
-  provider       String       @default("SYNCPAY")
+  status         SaleStatus @default(PENDING)
+  referenceId    String     @unique
+  provider       String     @default("SYNCPAY")
   amountCents    Int
-  currency       String       @default("BRL")
+  currency       String     @default("BRL")
   rawPayload     Json?
   paidAt         DateTime?
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
 
   bot     BotAccount   @relation(fields: [botId], references: [id])
   user    TelegramUser @relation(fields: [telegramUserId, botId], references: [telegramUserId, botId])
