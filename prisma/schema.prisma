@@ -1,0 +1,196 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String?   @unique
+  password      String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+model TelegramUser {
+  id             String    @id @default(cuid())
+  telegramUserId String    @unique
+  chatId         String    @unique
+  username       String?
+  firstName      String?
+  lastName       String?
+  firstSeenAt    DateTime  @default(now())
+  lastSeenAt     DateTime  @default(now())
+  isBlocked      Boolean   @default(false)
+  isSubscriber   Boolean   @default(false)
+  subscriberUntil DateTime?
+
+  sales          Sale[]
+  messageLogs    MessageLog[]
+  scheduledJobs  ScheduledMessageJob[]
+
+  @@index([lastSeenAt])
+}
+
+enum MessageTemplateKey {
+  WELCOME
+  DONT_SELL
+  SUBSCRIBER_CONTENT
+  TIMED
+}
+
+enum MediaType {
+  TEXT
+  IMAGE
+  VIDEO
+  COMBO
+}
+
+model MessageTemplate {
+  id        String             @id @default(cuid())
+  key       MessageTemplateKey
+  title     String
+  type      MediaType          // Default type if single, or COMBO
+  text      String?            @db.Text
+  mediaUrl  String?            // Legacy for single media
+  isActive  Boolean            @default(true)
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+
+  mediaItems     MessageTemplateMedia[]
+  rules          TimedMessageRule[]
+  scheduledJobs  ScheduledMessageJob[]
+}
+
+model MessageTemplateMedia {
+  id         String          @id @default(cuid())
+  templateId String
+  type       MediaType
+  url        String
+  order      Int             @default(0)
+
+  template   MessageTemplate @relation(fields: [templateId], references: [id])
+}
+
+enum UserSegment {
+  NEW_USERS
+  ALL
+  BUYERS
+  NON_BUYERS
+}
+
+model TimedMessageRule {
+  id           String      @id @default(cuid())
+  name         String
+  isActive     Boolean     @default(true)
+  delaySeconds Int
+  segment      UserSegment
+  templateId   String
+  template     MessageTemplate @relation(fields: [templateId], references: [id])
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+}
+
+enum JobStatus {
+  PENDING
+  SENT
+  FAILED
+  CANCELED
+}
+
+model ScheduledMessageJob {
+  id             String          @id @default(cuid())
+  telegramUserId String
+  chatId         String
+  templateId     String
+  runAt          DateTime
+  status         JobStatus       @default(PENDING)
+  attempts       Int             @default(0)
+  lastError      String?
+  sentAt         DateTime?
+  createdAt      DateTime        @default(now())
+
+  user           TelegramUser    @relation(fields: [telegramUserId], references: [telegramUserId])
+  template       MessageTemplate @relation(fields: [templateId], references: [id])
+
+  @@index([status, runAt])
+}
+
+enum ProductType {
+  ONE_TIME
+  SUBSCRIPTION
+}
+
+model Product {
+  id             String      @id @default(cuid())
+  title          String
+  description    String?
+  priceCents     Int
+  currency       String      @default("BRL")
+  isActive       Boolean     @default(true)
+  productType    ProductType @default(ONE_TIME)
+  subscriberDays Int?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  sales Sale[]
+}
+
+enum SaleStatus {
+  PENDING
+  PAID
+  CANCELED
+  REFUNDED
+}
+
+model Sale {
+  id             String       @id @default(cuid())
+  telegramUserId String
+  productId      String
+  status         SaleStatus   @default(PENDING)
+  referenceId    String       @unique
+  provider       String       @default("SYNCPAY")
+  amountCents    Int
+  currency       String       @default("BRL")
+  rawPayload     Json?
+  paidAt         DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  user    TelegramUser @relation(fields: [telegramUserId], references: [telegramUserId])
+  product Product      @relation(fields: [productId], references: [id])
+
+  @@index([telegramUserId, paidAt])
+  @@index([status])
+}
+
+model WebhookEvent {
+  id          String   @id @default(cuid())
+  provider    String
+  eventType   String
+  referenceId String?
+  rawPayload  Json
+  receivedAt  DateTime @default(now())
+}
+
+enum MessageDirection {
+  IN
+  OUT
+}
+
+model MessageLog {
+  id                String           @id @default(cuid())
+  telegramUserId    String
+  direction         MessageDirection
+  type              MediaType
+  text              String?          @db.Text
+  mediaUrl          String?
+  providerMessageId String?
+  createdAt         DateTime         @default(now())
+
+  user TelegramUser @relation(fields: [telegramUserId], references: [telegramUserId])
+}
