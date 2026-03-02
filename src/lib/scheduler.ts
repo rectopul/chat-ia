@@ -3,12 +3,14 @@ import { MessageTemplateKey, UserSegment, JobStatus } from "@prisma/client";
 import { TelegramService } from "./telegram";
 
 export async function scheduleCampaignsForUser(
+  botId: string,
   telegramUserId: string,
   chatId: string,
   segment: UserSegment
 ) {
   const rules = await prisma.timedMessageRule.findMany({
     where: {
+      botId,
       segment,
       isActive: true,
     },
@@ -20,6 +22,7 @@ export async function scheduleCampaignsForUser(
   const now = new Date();
 
   const jobs = rules.map((rule) => ({
+    botId,
     telegramUserId,
     chatId,
     templateId: rule.templateId,
@@ -43,6 +46,7 @@ export async function processScheduledJobs() {
       },
     },
     include: {
+      bot: true,
       template: {
         include: {
             mediaItems: true
@@ -64,7 +68,9 @@ export async function processScheduledJobs() {
       await TelegramService.sendMessageTemplate(
         job.chatId,
         job.telegramUserId,
-        job.template
+        job.template,
+        job.botId,
+        job.bot.token
       );
 
       await prisma.scheduledMessageJob.update({
@@ -74,6 +80,30 @@ export async function processScheduledJobs() {
           sentAt: new Date(),
         },
       });
+
+      // Handle recurring messages
+      const rule = await prisma.timedMessageRule.findFirst({
+          where: {
+              botId: job.botId,
+              templateId: job.templateId,
+              isActive: true,
+              repeatIntervalSeconds: { not: null }
+          }
+      });
+
+      if (rule && rule.repeatIntervalSeconds) {
+          await prisma.scheduledMessageJob.create({
+              data: {
+                  botId: job.botId,
+                  telegramUserId: job.telegramUserId,
+                  chatId: job.chatId,
+                  templateId: job.templateId,
+                  runAt: new Date(Date.now() + rule.repeatIntervalSeconds * 1000),
+                  status: JobStatus.PENDING
+              }
+          });
+      }
+
     } catch (error: any) {
       console.error(`Error processing job ${job.id}:`, error);
 

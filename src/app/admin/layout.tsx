@@ -21,6 +21,9 @@ export default async function AdminLayout({
           <Link href="/admin" className="p-2 hover:bg-indigo-800 rounded">
             Dashboard
           </Link>
+          <Link href="/admin/bots" className="p-2 hover:bg-indigo-800 rounded">
+            Bots (Contas)
+          </Link>
           <Link href="/admin/users" className="p-2 hover:bg-indigo-800 rounded">
             Usuários
           </Link>
