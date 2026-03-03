@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { processScheduledJobs } from "@/lib/scheduler";
+import { processRecurringSchedules } from "@/lib/telegram-service/worker";
 
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -14,6 +15,7 @@ export async function GET(req: NextRequest) {
 
   try {
     const processedCount = await processScheduledJobs();
+    await processRecurringSchedules();
     return NextResponse.json({ ok: true, processed: processedCount });
   } catch (error) {
     console.error("Error in cron job:", error);

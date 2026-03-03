@@ -70,7 +70,7 @@ export async function processScheduledJobs() {
         job.telegramUserId,
         job.template,
         job.botId,
-        job.bot.token
+        job.bot.token || undefined
       );
 
       await prisma.scheduledMessageJob.update({

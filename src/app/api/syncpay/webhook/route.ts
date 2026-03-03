@@ -86,7 +86,7 @@ export async function POST(req: NextRequest) {
           `✅ <b>Pagamento Confirmado!</b>\n\nSua compra de <b>${targetSale.product.title}</b> foi processada com sucesso. Você já tem acesso ao conteúdo!`,
           targetSale.telegramUserId,
           targetSale.botId,
-          targetSale.bot.token
+          targetSale.bot.token || undefined
         );
       }
     }

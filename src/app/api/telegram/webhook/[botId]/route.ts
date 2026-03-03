@@ -89,7 +89,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ bot
     const payload = await req.json();
 
     if (payload.callback_query) {
-      return handleCallbackQuery(payload.callback_query, botId, bot.token);
+      return handleCallbackQuery(payload.callback_query, botId, bot.token || "");
     }
 
     if (!payload.message) {
@@ -152,7 +152,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ bot
         ],
       };
 
-      await axios.post(`https://api.telegram.org/bot${bot.token}/sendMessage`, {
+      await axios.post(`https://api.telegram.org/bot${bot.token || ""}/sendMessage`, {
           chat_id: chatId,
           text: welcomeTemplate?.text || "Olá! Bem-vindo ao nosso bot. Escolha uma opção abaixo:",
           reply_markup: menuMarkup,
