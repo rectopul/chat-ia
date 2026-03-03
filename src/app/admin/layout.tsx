@@ -1,17 +1,18 @@
+export const runtime = "nodejs";
 import { auth } from "@/auth";
 import { redirect } from "next/navigation";
 import Link from "next/link";
 
 export default async function AdminLayout({
-  children,
+    children,
 }: {
-  children: React.ReactNode;
+    children: React.ReactNode;
 }) {
-  const session = await auth();
+    const session = await auth();
 
-  if (!session) {
-    redirect("/login");
-  }
+    if (!session) {
+        redirect("/login");
+    }
 
   return (
     <div className="flex min-h-screen bg-gray-100">

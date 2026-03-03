@@ -1,49 +1,123 @@
+export const runtime = "nodejs";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { TelegramService } from "@/lib/telegram";
 import { scheduleCampaignsForUser } from "@/lib/scheduler";
 import { SyncPayService } from "@/lib/syncpay";
-import { MessageTemplateKey, MediaType, MessageDirection, UserSegment, SaleStatus } from "@prisma/client";
+import {
+    MessageTemplateKey,
+    MediaType,
+    MessageDirection,
+    UserSegment,
+    SaleStatus,
+} from "@prisma/client";
 import axios from "axios";
 
-async function handleCallbackQuery(callbackQuery: any, botId: string, botToken: string) {
+async function handleCallbackQuery(
+    callbackQuery: any,
+    botId: string,
+    botToken: string,
+) {
     const chatId = callbackQuery.message.chat.id.toString();
     const telegramUserId = callbackQuery.from.id.toString();
     const data = callbackQuery.data;
 
     if (data === "list_products") {
-        const products = await prisma.product.findMany({ where: { isActive: true } });
+        const products = await prisma.product.findMany({
+            where: { isActive: true },
+        });
         if (products.length === 0) {
-            await TelegramService.sendText(chatId, "No momento não temos produtos disponíveis.", telegramUserId, botId, botToken);
+            await TelegramService.sendText(
+                chatId,
+                "No momento não temos produtos disponíveis.",
+                telegramUserId,
+                botId,
+                botToken,
+            );
         } else {
             for (const product of products) {
                 const text = `<b>${product.title}</b>\n${product.description || ""}\n\nPreço: R$ ${product.priceCents / 100}`;
-                await axios.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-                    chat_id: chatId,
-                    text,
-                    parse_mode: "HTML",
-                    reply_markup: {
-                        inline_keyboard: [[{ text: "🛒 Comprar", callback_data: `buy_${product.id}` }]]
-                    }
-                });
+                await axios.post(
+                    `https://api.telegram.org/bot${botToken}/sendMessage`,
+                    {
+                        chat_id: chatId,
+                        text,
+                        parse_mode: "HTML",
+                        reply_markup: {
+                            inline_keyboard: [
+                                [
+                                    {
+                                        text: "🛒 Comprar",
+                                        callback_data: `buy_${product.id}`,
+                                    },
+                                ],
+                            ],
+                        },
+                    },
+                );
             }
         }
     } else if (data === "subscriber_content") {
-        const user = await prisma.telegramUser.findFirst({ where: { telegramUserId, botId } });
+        const user = await prisma.telegramUser.findFirst({
+            where: { telegramUserId, botId },
+        });
         if (user?.isSubscriber) {
-            const template = await prisma.messageTemplate.findFirst({ where: { key: MessageTemplateKey.SUBSCRIBER_CONTENT, isActive: true } });
-            if (template) await TelegramService.sendMessageTemplate(chatId, telegramUserId, template, botId, botToken);
-            else await TelegramService.sendText(chatId, "Aqui está seu conteúdo exclusivo!", telegramUserId, botId, botToken);
+            const template = await prisma.messageTemplate.findFirst({
+                where: {
+                    key: MessageTemplateKey.SUBSCRIBER_CONTENT,
+                    isActive: true,
+                },
+            });
+            if (template)
+                await TelegramService.sendMessageTemplate(
+                    chatId,
+                    telegramUserId,
+                    template,
+                    botId,
+                    botToken,
+                );
+            else
+                await TelegramService.sendText(
+                    chatId,
+                    "Aqui está seu conteúdo exclusivo!",
+                    telegramUserId,
+                    botId,
+                    botToken,
+                );
         } else {
-            const template = await prisma.messageTemplate.findFirst({ where: { key: MessageTemplateKey.DONT_SELL, isActive: true } });
-            if (template) await TelegramService.sendMessageTemplate(chatId, telegramUserId, template, botId, botToken);
-            else await TelegramService.sendText(chatId, "Você ainda não é um assinante.", telegramUserId, botId, botToken);
+            const template = await prisma.messageTemplate.findFirst({
+                where: { key: MessageTemplateKey.DONT_SELL, isActive: true },
+            });
+            if (template)
+                await TelegramService.sendMessageTemplate(
+                    chatId,
+                    telegramUserId,
+                    template,
+                    botId,
+                    botToken,
+                );
+            else
+                await TelegramService.sendText(
+                    chatId,
+                    "Você ainda não é um assinante.",
+                    telegramUserId,
+                    botId,
+                    botToken,
+                );
         }
     } else if (data === "support") {
-        await TelegramService.sendText(chatId, "Para suporte, entre em contato com @admin_username", telegramUserId, botId, botToken);
+        await TelegramService.sendText(
+            chatId,
+            "Para suporte, entre em contato com @admin_username",
+            telegramUserId,
+            botId,
+            botToken,
+        );
     } else if (data.startsWith("buy_")) {
         const productId = data.split("_")[1];
-        const product = await prisma.product.findUnique({ where: { id: productId } });
+        const product = await prisma.product.findUnique({
+            where: { id: productId },
+        });
         if (product) {
             const referenceId = `sale_${Date.now()}_${telegramUserId}`;
             await prisma.sale.create({
@@ -54,7 +128,7 @@ async function handleCallbackQuery(callbackQuery: any, botId: string, botToken: 
                     amountCents: product.priceCents,
                     referenceId,
                     status: SaleStatus.PENDING,
-                }
+                },
             });
 
             const charge = await SyncPayService.createCharge({
@@ -63,38 +137,59 @@ async function handleCallbackQuery(callbackQuery: any, botId: string, botToken: 
                 productTitle: product.title,
             });
 
-            await TelegramService.sendText(chatId, `Para concluir sua compra de <b>${product.title}</b>, utilize o Pix Copia e Cola abaixo:`, telegramUserId, botId, botToken);
-            await TelegramService.sendText(chatId, `<code>${charge.pix_code}</code>`, telegramUserId, botId, botToken);
-            await TelegramService.sendText(chatId, `Após o pagamento, seu acesso será liberado automaticamente.`, telegramUserId, botId, botToken);
+            await TelegramService.sendText(
+                chatId,
+                `Para concluir sua compra de <b>${product.title}</b>, utilize o Pix Copia e Cola abaixo:`,
+                telegramUserId,
+                botId,
+                botToken,
+            );
+            await TelegramService.sendText(
+                chatId,
+                `<code>${charge.pix_code}</code>`,
+                telegramUserId,
+                botId,
+                botToken,
+            );
+            await TelegramService.sendText(
+                chatId,
+                `Após o pagamento, seu acesso será liberado automaticamente.`,
+                telegramUserId,
+                botId,
+                botToken,
+            );
         }
     }
 
     return NextResponse.json({ ok: true });
 }
 
-export async function POST(req: NextRequest, { params }: { params: Promise<{ botId: string }> }) {
-  const botId = (await params).botId;
-  const bot = await prisma.botAccount.findUnique({ where: { id: botId } });
+export async function POST(
+    req: NextRequest,
+    { params }: { params: Promise<{ botId: string }> },
+) {
+    const botId = (await params).botId;
+    const bot = await prisma.botAccount.findUnique({ where: { id: botId } });
 
-  if (!bot) {
-    return NextResponse.json({ error: "Bot not found" }, { status: 404 });
-  }
+    if (!bot) {
+        return NextResponse.json({ error: "Bot not found" }, { status: 404 });
+    }
 
-  const secret = req.nextUrl.searchParams.get("secret");
-  if (secret !== bot.webhookSecret) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+    const secret = req.headers.get("x-telegram-bot-api-secret-token");
+    if (secret !== bot.webhookSecret) {
+        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
 
-  try {
-    const payload = await req.json();
+    try {
+        const payload = await req.json();
 
     if (payload.callback_query) {
       return handleCallbackQuery(payload.callback_query, botId, bot.token || "");
     }
 
-    if (!payload.message) {
-      return NextResponse.json({ ok: true });
-    }
+        if (!payload.message) {
+            return NextResponse.json({ ok: true });
+        }
 
     const { message } = payload;
     const chatId = message.chat.id.toString();
@@ -166,14 +261,5 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ bot
           chatId,
           UserSegment.NEW_USERS
         );
-      }
-    } else if (text.toLowerCase().includes("conteudo") || text.toLowerCase().includes("assinante")) {
-        // ... (similar logic as callback query)
     }
-
-    return NextResponse.json({ ok: true });
-  } catch (error) {
-    console.error("Error processing Telegram webhook:", error);
-    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
-  }
 }

@@ -31,31 +31,49 @@ export default async function AdminBotsPage() {
     revalidatePath("/admin/bots");
   }
 
-  async function setWebhook(botId: string) {
-    "use server";
-    const bot = await prisma.botAccount.findUnique({ where: { id: botId } });
-    if (!bot) return;
+    async function createBot(formData: FormData) {
+        "use server";
+        const name = formData.get("name") as string;
+        const token = formData.get("token") as string;
+        const webhookSecret = formData.get("webhookSecret") as string;
 
-    const webhookUrl = `${process.env.APP_BASE_URL}/api/telegram/webhook/${bot.id}?secret=${bot.webhookSecret}`;
-
-    try {
-        await axios.post(`https://api.telegram.org/bot${bot.token}/setWebhook`, {
-            url: webhookUrl
+        await prisma.botAccount.create({
+            data: { name, token, webhookSecret },
         });
-        console.log(`Webhook set for bot ${bot.name}`);
-    } catch (error) {
-        console.error(`Error setting webhook for bot ${bot.name}:`, error);
+        revalidatePath("/admin/bots");
     }
-  }
 
-  async function toggleBot(botId: string, current: boolean) {
-    "use server";
-    await prisma.botAccount.update({
-        where: { id: botId },
-        data: { isActive: !current }
-    });
-    revalidatePath("/admin/bots");
-  }
+    async function setWebhook(botId: string) {
+        "use server";
+        const bot = await prisma.botAccount.findUnique({
+            where: { id: botId },
+        });
+        if (!bot) return;
+
+        const webhookUrl = `${process.env.APP_BASE_URL}/api/telegram/webhook/${bot.id}`;
+
+        try {
+            await axios.post(
+                `https://api.telegram.org/bot${bot.token}/setWebhook`,
+                {
+                    url: webhookUrl,
+                    secret_token: bot.webhookSecret,
+                },
+            );
+            console.log(`Webhook set for bot ${bot.name}`);
+        } catch (error) {
+            console.error(`Error setting webhook for bot ${bot.name}:`, error);
+        }
+    }
+
+    async function toggleBot(botId: string, current: boolean) {
+        "use server";
+        await prisma.botAccount.update({
+            where: { id: botId },
+            data: { isActive: !current },
+        });
+        revalidatePath("/admin/bots");
+    }
 
   return (
     <div className="space-y-8">
