@@ -57,14 +57,13 @@ export async function processScheduledJobs() {
         take: 50,
     });
 
-    for (const job of jobs) {
-        try {
-            await prisma.scheduledMessageJob.update({
-                where: { id: job.id },
-                data: {
-                    attempts: { increment: 1 },
-                },
-            });
+      await TelegramService.sendMessageTemplate(
+        job.chatId,
+        job.telegramUserId,
+        job.template,
+        job.botId,
+        job.bot.token || undefined
+      );
 
             await TelegramService.sendMessageTemplate(
                 job.chatId,

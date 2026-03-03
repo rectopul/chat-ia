@@ -18,17 +18,36 @@ model User {
 model BotAccount {
   id            String   @id @default(cuid())
   name          String
-  token         String   @unique
-  webhookSecret String
-  isActive      Boolean  @default(true)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  token         String?   @unique // Optional if using UserAccount
+  webhookSecret String?
+  apiId         Int?
+  apiHash       String?
+  phoneNumber   String?   @unique
+  session       String?   @db.Text
+  isUserAccount Boolean   @default(false)
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
   users         TelegramUser[]
   sales         Sale[]
   messageLogs   MessageLog[]
   scheduledJobs ScheduledMessageJob[]
   rules         TimedMessageRule[]
+  recurring     RecurringSchedule[]
+}
+
+model RecurringSchedule {
+  id         String     @id @default(cuid())
+  botId      String
+  templateId String
+  hour       Int
+  minute     Int
+  weekDays   Int[]      // [0,1,2,3,4,5,6]
+  isActive   Boolean    @default(true)
+
+  bot        BotAccount @relation(fields: [botId], references: [id])
+  template   MessageTemplate @relation(fields: [templateId], references: [id])
 }
 
 model TelegramUser {
@@ -66,6 +85,7 @@ enum MediaType {
   TEXT
   IMAGE
   VIDEO
+  AUDIO
   COMBO
 }
 
@@ -80,9 +100,10 @@ model MessageTemplate {
   createdAt DateTime           @default(now())
   updatedAt DateTime           @updatedAt
 
-  mediaItems    MessageTemplateMedia[]
-  rules         TimedMessageRule[]
-  scheduledJobs ScheduledMessageJob[]
+  mediaItems     MessageTemplateMedia[]
+  rules          TimedMessageRule[]
+  scheduledJobs  ScheduledMessageJob[]
+  recurring      RecurringSchedule[]
 }
 
 model MessageTemplateMedia {

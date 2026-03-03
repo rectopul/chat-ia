@@ -1,6 +1,7 @@
 export const runtime = "nodejs";
 import { NextRequest, NextResponse } from "next/server";
 import { processScheduledJobs } from "@/lib/scheduler";
+import { processRecurringSchedules } from "@/lib/telegram-service/worker";
 
 export async function GET(req: NextRequest) {
     const authHeader = req.headers.get("authorization");
@@ -13,14 +14,12 @@ export async function GET(req: NextRequest) {
     //   return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     // }
 
-    try {
-        const processedCount = await processScheduledJobs();
-        return NextResponse.json({ ok: true, processed: processedCount });
-    } catch (error) {
-        console.error("Error in cron job:", error);
-        return NextResponse.json(
-            { error: "Internal Server Error" },
-            { status: 500 },
-        );
-    }
+  try {
+    const processedCount = await processScheduledJobs();
+    await processRecurringSchedules();
+    return NextResponse.json({ ok: true, processed: processedCount });
+  } catch (error) {
+    console.error("Error in cron job:", error);
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+  }
 }
