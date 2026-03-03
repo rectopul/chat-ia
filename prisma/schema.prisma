@@ -16,13 +16,13 @@ model User {
 }
 
 model BotAccount {
-  id            String    @id @default(cuid())
+  id            String   @id @default(cuid())
   name          String
-  token         String    @unique
+  token         String   @unique
   webhookSecret String
-  isActive      Boolean   @default(true)
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   users         TelegramUser[]
   sales         Sale[]
@@ -32,27 +32,8 @@ model BotAccount {
 }
 
 model TelegramUser {
-<<<<<<< HEAD
-  id             String    @id @default(cuid())
-  botId          String
-  telegramUserId String
-  chatId         String    @unique
-  username       String?
-  firstName      String?
-  lastName       String?
-  firstSeenAt    DateTime  @default(now())
-  lastSeenAt     DateTime  @default(now())
-  isBlocked      Boolean   @default(false)
-  isSubscriber   Boolean   @default(false)
-  subscriberUntil DateTime?
-
-  bot            BotAccount @relation(fields: [botId], references: [id])
-  sales          Sale[]
-  messageLogs    MessageLog[]
-  scheduledJobs  ScheduledMessageJob[]
-=======
   id              String    @id @default(cuid())
-  telegramUserId  String    @unique
+  botId           String
   chatId          String    @unique
   username        String?
   firstName       String?
@@ -63,10 +44,12 @@ model TelegramUser {
   isSubscriber    Boolean   @default(false)
   subscriberUntil DateTime?
 
+  bot            BotAccount @relation(fields: [botId], references: [id])
+  telegramUserId String     @unique
+
   sales         Sale[]
   messageLogs   MessageLog[]
   scheduledJobs ScheduledMessageJob[]
->>>>>>> f0a2b04 (ajustes)
 
   @@unique([telegramUserId, botId])
   @@index([lastSeenAt])
@@ -109,7 +92,7 @@ model MessageTemplateMedia {
   url        String
   order      Int       @default(0)
 
-  template MessageTemplate @relation(fields: [templateId], references: [id])
+  template MessageTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
 }
 
 enum UserSegment {
@@ -120,29 +103,19 @@ enum UserSegment {
 }
 
 model TimedMessageRule {
-<<<<<<< HEAD
-  id           String      @id @default(cuid())
-  botId        String
-=======
-  id           String                @id @default(cuid())
->>>>>>> f0a2b04 (ajustes)
-  name         String
-  isActive     Boolean               @default(true)
-  delaySeconds Int
+  id                    String                @id @default(cuid())
+  botId                 String
+  name                  String
+  isActive              Boolean               @default(true)
+  delaySeconds          Int
   repeatIntervalSeconds Int? // For recurring messages
-  segment      UserSegment
-  templateId   String
-<<<<<<< HEAD
-  template     MessageTemplate @relation(fields: [templateId], references: [id])
-  bot          BotAccount      @relation(fields: [botId], references: [id])
-  createdAt    DateTime    @default(now())
-  updatedAt    DateTime    @updatedAt
-=======
-  template     MessageTemplate       @relation(fields: [templateId], references: [id])
-  createdAt    DateTime              @default(now())
-  updatedAt    DateTime              @updatedAt
-  jobs         ScheduledMessageJob[]
->>>>>>> f0a2b04 (ajustes)
+  segment               UserSegment
+  templateId            String
+  template              MessageTemplate       @relation(fields: [templateId], references: [id])
+  bot                   BotAccount            @relation(fields: [botId], references: [id])
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+  jobs                  ScheduledMessageJob[]
 }
 
 enum JobStatus {
@@ -153,23 +126,17 @@ enum JobStatus {
 }
 
 model ScheduledMessageJob {
-<<<<<<< HEAD
-  id             String          @id @default(cuid())
-  botId          String
-=======
   id             String @id @default(cuid())
->>>>>>> f0a2b04 (ajustes)
+  botId          String
   telegramUserId String
   chatId         String
   templateId     String
 
-<<<<<<< HEAD
-  bot            BotAccount      @relation(fields: [botId], references: [id])
-  user           TelegramUser    @relation(fields: [telegramUserId, botId], references: [telegramUserId, botId])
-  template       MessageTemplate @relation(fields: [templateId], references: [id])
-=======
-  ruleId String
-  rule   TimedMessageRule @relation(fields: [ruleId], references: [id])
+  bot      BotAccount       @relation(fields: [botId], references: [id])
+  user     TelegramUser     @relation(fields: [telegramUserId, botId], references: [telegramUserId, botId])
+  template MessageTemplate  @relation(fields: [templateId], references: [id])
+  ruleId   String
+  rule     TimedMessageRule @relation(fields: [ruleId], references: [id])
 
   runAt     DateTime
   status    JobStatus @default(PENDING)
@@ -177,10 +144,6 @@ model ScheduledMessageJob {
   lastError String?
   sentAt    DateTime?
   createdAt DateTime  @default(now())
-
-  user     TelegramUser    @relation(fields: [telegramUserId], references: [telegramUserId])
-  template MessageTemplate @relation(fields: [templateId], references: [id])
->>>>>>> f0a2b04 (ajustes)
 
   @@index([status, runAt])
 }
@@ -213,12 +176,8 @@ enum SaleStatus {
 }
 
 model Sale {
-<<<<<<< HEAD
-  id             String       @id @default(cuid())
-  botId          String
-=======
   id             String     @id @default(cuid())
->>>>>>> f0a2b04 (ajustes)
+  botId          String
   telegramUserId String
   productId      String
   status         SaleStatus @default(PENDING)
