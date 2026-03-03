@@ -88,6 +88,15 @@ export async function POST(req: NextRequest) {
           targetSale.botId,
           targetSale.bot.token || undefined
         );
+
+        // Trigger BUYERS drip campaign
+        const { scheduleCampaignsForUser } = await import("@/lib/scheduler");
+        await scheduleCampaignsForUser(
+          targetSale.botId,
+          targetSale.telegramUserId,
+          targetSale.user.chatId,
+          "BUYERS"
+        );
       }
     }
 
