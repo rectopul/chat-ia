@@ -1,47 +1,46 @@
+// app/admin/messages/page.tsx
 import { prisma } from "@/lib/prisma";
 import { MessageTemplateKey, MediaType } from "@prisma/client";
 import { revalidatePath } from "next/cache";
-import { MultiMediaUploader } from "@/components/MultiMediaUploader"; // ajuste o caminho
+import { TemplateForm } from "@/components/TemplateForm";
 
 export default async function AdminMessagesPage() {
     const templates = await prisma.messageTemplate.findMany({
         orderBy: { createdAt: "desc" },
-        include: { media: { orderBy: { order: "asc" } } },
+        include: { mediaItems: true },
     });
 
-    async function createTemplate(formData: FormData) {
+    async function createTemplate(data: {
+        key: string;
+        title: string;
+        type: string;
+        text?: string;
+        mediaUrl?: string;
+        comboItems?: { type: string; url: string }[];
+    }) {
         "use server";
 
-        const key = formData.get("key") as MessageTemplateKey;
-        const title = formData.get("title") as string;
-        const type = formData.get("type") as MediaType;
-        const text = formData.get("text") as string;
-
-        // Coleta os itens de mídia enviados pelos inputs hidden do MultiMediaUploader
-        // Formato: media[0][url], media[0][type], media[0][order], media[1][url], ...
-        const mediaItems: { url: string; type: MediaType; order: number }[] =
-            [];
-        let i = 0;
-        while (formData.has(`media[${i}][url]`)) {
-            const url = formData.get(`media[${i}][url]`) as string;
-            const mediaType = formData.get(`media[${i}][type]`) as MediaType;
-            const order = Number(formData.get(`media[${i}][order]`) ?? i);
-            if (url) mediaItems.push({ url, type: mediaType, order });
-            i++;
-        }
-
-        // A primeira mídia da lista é usada também como mediaUrl principal do template
-        const firstMediaUrl = mediaItems[0]?.url ?? "";
-
         const template = await prisma.messageTemplate.create({
-            data: { key, title, type, text, mediaUrl: firstMediaUrl },
+            data: {
+                key: data.key as MessageTemplateKey,
+                title: data.title,
+                type: data.type as MediaType,
+                text: data.text || null,
+                mediaUrl: data.mediaUrl || null,
+            },
         });
 
-        if (mediaItems.length > 0) {
+        if (
+            data.type === "COMBO" &&
+            data.comboItems &&
+            data.comboItems.length > 0
+        ) {
             await prisma.messageTemplateMedia.createMany({
-                data: mediaItems.map((m) => ({
-                    ...m,
+                data: data.comboItems.map((item, index) => ({
                     templateId: template.id,
+                    type: item.type as MediaType,
+                    url: item.url,
+                    order: index,
                 })),
             });
         }
@@ -51,161 +50,123 @@ export default async function AdminMessagesPage() {
 
     async function deleteTemplate(templateId: string) {
         "use server";
-        // Cascade deleta as mídias filhas (depende do onDelete da relation no schema)
         await prisma.messageTemplate.delete({ where: { id: templateId } });
         revalidatePath("/admin/messages");
     }
 
+    async function toggleTemplate(templateId: string, current: boolean) {
+        "use server";
+        await prisma.messageTemplate.update({
+            where: { id: templateId },
+            data: { isActive: !current },
+        });
+        revalidatePath("/admin/messages");
+    }
+
     return (
-        <div className="space-y-8">
-            {/* ── Formulário de criação ── */}
-            <div className="bg-white p-6 rounded shadow-sm">
-                <h3 className="text-lg font-semibold mb-4">Novo Template</h3>
-                <form
-                    action={createTemplate}
-                    className="grid grid-cols-1 md:grid-cols-2 gap-4"
-                >
-                    {/* Key */}
-                    <select name="key" className="p-2 border rounded">
-                        {Object.values(MessageTemplateKey).map((k) => (
-                            <option key={k} value={k}>
-                                {k}
-                            </option>
-                        ))}
-                    </select>
-
-                    {/* Título */}
-                    <input
-                        name="title"
-                        placeholder="Título (identificação)"
-                        className="p-2 border rounded"
-                        required
-                    />
-
-                    {/* Tipo */}
-                    <select
-                        name="type"
-                        className="p-2 border rounded md:col-span-2"
-                    >
-                        {Object.values(MediaType).map((t) => (
-                            <option key={t} value={t}>
-                                {t}
-                            </option>
-                        ))}
-                    </select>
-
-                    {/* Texto */}
-                    <textarea
-                        name="text"
-                        placeholder="Texto da mensagem"
-                        className="p-2 border rounded md:col-span-2"
-                        rows={3}
-                    />
-
-                    {/* ── Upload múltiplo com drag & drop ── */}
-                    <div className="md:col-span-2">
-                        <p className="text-sm font-medium text-gray-700 mb-2">
-                            Mídias{" "}
-                            <span className="text-gray-400 font-normal">
-                                (imagens, vídeos, áudios — arraste para
-                                reordenar)
-                            </span>
-                        </p>
-                        {/*
-              MultiMediaUploader faz upload de cada arquivo para o Vercel Blob via Server Action,
-              e injeta <input type="hidden"> no formulário com os campos:
-                media[0][url], media[0][type], media[0][order]
-                media[1][url], media[1][type], media[1][order]  ... etc.
-              O createTemplate acima lê esses campos e salva em MessageTemplateMedia.
-            */}
-                        <MultiMediaUploader />
-                    </div>
-
-                    <button
-                        type="submit"
-                        className="md:col-span-2 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700"
-                    >
-                        Salvar Template
-                    </button>
-                </form>
+        <div className="p-8 max-w-5xl mx-auto space-y-8">
+            <div>
+                <h2 className="text-2xl font-bold text-gray-900">
+                    Templates de Mensagem
+                </h2>
+                <p className="text-sm text-gray-500 mt-1">
+                    Crie templates com texto, imagem, vídeo, áudio ou
+                    combinações. Os arquivos são enviados automaticamente para o
+                    Vercel Blob.
+                </p>
             </div>
 
-            {/* ── Tabela de templates ── */}
-            <div className="bg-white overflow-hidden shadow ring-1 ring-black ring-opacity-5 rounded-lg">
-                <table className="min-w-full divide-y divide-gray-300">
+            {/* Formulário de criação */}
+            <TemplateForm onSubmit={createTemplate} />
+
+            {/* Tabela de templates */}
+            <div className="bg-white rounded-xl shadow-md border border-gray-100 overflow-hidden">
+                <table className="min-w-full divide-y divide-gray-200">
                     <thead className="bg-gray-50">
                         <tr>
-                            <th className="py-3.5 pl-4 pr-3 text-left text-sm font-semibold text-gray-900">
+                            <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase">
                                 Key / Título
                             </th>
-                            <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">
+                            <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase">
                                 Tipo
                             </th>
-                            <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">
+                            <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase">
                                 Mídias
                             </th>
-                            <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">
+                            <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase">
                                 Status
                             </th>
-                            <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">
+                            <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase">
                                 Ações
                             </th>
                         </tr>
                     </thead>
-                    <tbody className="divide-y divide-gray-200 bg-white">
+                    <tbody className="divide-y divide-gray-200">
                         {templates.map((t) => (
-                            <tr key={t.id}>
-                                <td className="whitespace-nowrap py-4 pl-4 pr-3 text-sm font-medium text-gray-900">
-                                    <span className="text-xs font-mono bg-gray-100 px-1 rounded">
+                            <tr key={t.id} className="hover:bg-gray-50">
+                                <td className="px-6 py-4">
+                                    <span className="text-xs font-mono bg-gray-100 px-1.5 py-0.5 rounded text-gray-600">
                                         {t.key}
                                     </span>
-                                    <br />
-                                    {t.title}
-                                </td>
-                                <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">
-                                    {t.type}
-                                </td>
-                                <td className="px-3 py-4 text-sm text-gray-500">
-                                    {t.media.length === 0 ? (
-                                        <span className="text-gray-300">—</span>
-                                    ) : (
-                                        <div className="flex gap-1 flex-wrap">
-                                            {t.media.map((m) => (
-                                                <span
-                                                    key={m.id}
-                                                    className="inline-flex items-center gap-1 text-xs bg-gray-100 rounded px-1.5 py-0.5"
-                                                    title={m.url}
-                                                >
-                                                    {m.type === "IMAGE" && "🖼️"}
-                                                    {m.type === "VIDEO" && "🎬"}
-                                                    {m.type === "AUDIO" && "🎵"}
-                                                    {m.type === "DOCUMENT" &&
-                                                        "📄"}
-                                                    {m.type}
-                                                </span>
-                                            ))}
+                                    <div className="text-sm font-medium text-gray-900 mt-1">
+                                        {t.title}
+                                    </div>
+                                    {t.text && (
+                                        <div className="text-xs text-gray-400 truncate max-w-xs mt-0.5">
+                                            {t.text}
                                         </div>
                                     )}
                                 </td>
-                                <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">
-                                    {t.isActive ? (
-                                        <span className="text-green-600 font-medium">
-                                            Ativo
+                                <td className="px-6 py-4">
+                                    <span className="text-xs font-medium px-2 py-1 rounded-full bg-indigo-50 text-indigo-700">
+                                        {t.type}
+                                    </span>
+                                </td>
+                                <td className="px-6 py-4 text-sm text-gray-500">
+                                    {t.type === "COMBO" ? (
+                                        <span>
+                                            {t.mediaItems.length} arquivo(s)
                                         </span>
+                                    ) : t.mediaUrl ? (
+                                        <a
+                                            href={t.mediaUrl}
+                                            target="_blank"
+                                            className="text-indigo-500 hover:underline text-xs"
+                                        >
+                                            Ver mídia
+                                        </a>
                                     ) : (
-                                        <span className="text-gray-400">
-                                            Inativo
-                                        </span>
+                                        <span className="text-gray-300">—</span>
                                     )}
                                 </td>
-                                <td className="whitespace-nowrap px-3 py-4 text-sm">
+                                <td className="px-6 py-4">
+                                    <form
+                                        action={toggleTemplate.bind(
+                                            null,
+                                            t.id,
+                                            t.isActive,
+                                        )}
+                                    >
+                                        <button
+                                            type="submit"
+                                            className={`text-xs font-medium px-2 py-1 rounded-full ${
+                                                t.isActive
+                                                    ? "bg-green-50 text-green-700 hover:bg-green-100"
+                                                    : "bg-gray-100 text-gray-500 hover:bg-gray-200"
+                                            }`}
+                                        >
+                                            {t.isActive ? "Ativo" : "Inativo"}
+                                        </button>
+                                    </form>
+                                </td>
+                                <td className="px-6 py-4">
                                     <form
                                         action={deleteTemplate.bind(null, t.id)}
                                         className="inline"
                                     >
                                         <button
                                             type="submit"
-                                            className="text-red-600 hover:underline text-sm"
+                                            className="text-red-500 hover:underline text-sm font-medium"
                                         >
                                             Excluir
                                         </button>
@@ -213,6 +174,16 @@ export default async function AdminMessagesPage() {
                                 </td>
                             </tr>
                         ))}
+                        {templates.length === 0 && (
+                            <tr>
+                                <td
+                                    colSpan={5}
+                                    className="px-6 py-12 text-center text-sm text-gray-400"
+                                >
+                                    Nenhum template criado ainda.
+                                </td>
+                            </tr>
+                        )}
                     </tbody>
                 </table>
             </div>

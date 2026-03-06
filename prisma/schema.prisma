@@ -16,18 +16,19 @@ model User {
 }
 
 model BotAccount {
-  id            String   @id @default(cuid())
-  name          String
-  token         String?   @unique // Optional if using UserAccount
-  webhookSecret String?
-  apiId         Int?
-  apiHash       String?
-  phoneNumber   String?   @unique
-  session       String?   @db.Text
-  isUserAccount Boolean   @default(false)
-  isActive      Boolean   @default(true)
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  id               String   @id @default(cuid())
+  name             String
+  token            String?  @unique // Optional if using UserAccount
+  webhookSecret    String?
+  apiId            Int?
+  apiHash          String?
+  businessBotToken String? // token do bot auxiliar Business
+  phoneNumber      String?  @unique
+  session          String?  @db.Text
+  isUserAccount    Boolean  @default(false)
+  isActive         Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
   users         TelegramUser[]
   sales         Sale[]
@@ -38,16 +39,16 @@ model BotAccount {
 }
 
 model RecurringSchedule {
-  id         String     @id @default(cuid())
+  id         String  @id @default(cuid())
   botId      String
   templateId String
   hour       Int
   minute     Int
-  weekDays   Int[]      // [0,1,2,3,4,5,6]
-  isActive   Boolean    @default(true)
+  weekDays   Int[] // [0,1,2,3,4,5,6]
+  isActive   Boolean @default(true)
 
-  bot        BotAccount @relation(fields: [botId], references: [id])
-  template   MessageTemplate @relation(fields: [templateId], references: [id])
+  bot      BotAccount      @relation(fields: [botId], references: [id], onDelete: Cascade)
+  template MessageTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
 }
 
 model TelegramUser {
@@ -63,7 +64,7 @@ model TelegramUser {
   isSubscriber    Boolean   @default(false)
   subscriberUntil DateTime?
 
-  bot            BotAccount @relation(fields: [botId], references: [id])
+  bot            BotAccount @relation(fields: [botId], references: [id], onDelete: Cascade)
   telegramUserId String     @unique
 
   sales         Sale[]
@@ -100,10 +101,10 @@ model MessageTemplate {
   createdAt DateTime           @default(now())
   updatedAt DateTime           @updatedAt
 
-  mediaItems     MessageTemplateMedia[]
-  rules          TimedMessageRule[]
-  scheduledJobs  ScheduledMessageJob[]
-  recurring      RecurringSchedule[]
+  mediaItems    MessageTemplateMedia[]
+  rules         TimedMessageRule[]
+  scheduledJobs ScheduledMessageJob[]
+  recurring     RecurringSchedule[]
 }
 
 model MessageTemplateMedia {
@@ -153,11 +154,11 @@ model ScheduledMessageJob {
   chatId         String
   templateId     String
 
-  bot      BotAccount       @relation(fields: [botId], references: [id])
+  bot      BotAccount       @relation(fields: [botId], references: [id], onDelete: Cascade)
   user     TelegramUser     @relation(fields: [telegramUserId, botId], references: [telegramUserId, botId])
-  template MessageTemplate  @relation(fields: [templateId], references: [id])
+  template MessageTemplate  @relation(fields: [templateId], references: [id], onDelete: Cascade)
   ruleId   String
-  rule     TimedMessageRule @relation(fields: [ruleId], references: [id])
+  rule     TimedMessageRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
 
   runAt     DateTime
   status    JobStatus @default(PENDING)
@@ -167,6 +168,15 @@ model ScheduledMessageJob {
   createdAt DateTime  @default(now())
 
   @@index([status, runAt])
+}
+
+model BusinessConnection {
+  id             String   @id @default(cuid())
+  connectionId   String   @unique
+  botId          String
+  userTelegramId String
+  isEnabled      Boolean  @default(true)
+  createdAt      DateTime @default(now())
 }
 
 enum ProductType {
@@ -211,9 +221,9 @@ model Sale {
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
 
-  bot     BotAccount   @relation(fields: [botId], references: [id])
-  user    TelegramUser @relation(fields: [telegramUserId, botId], references: [telegramUserId, botId])
-  product Product      @relation(fields: [productId], references: [id])
+  bot     BotAccount   @relation(fields: [botId], references: [id], onDelete: Cascade)
+  user    TelegramUser @relation(fields: [telegramUserId, botId], references: [telegramUserId, botId], onDelete: Cascade)
+  product Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
 
   @@index([telegramUserId, paidAt])
   @@index([status])
@@ -244,6 +254,6 @@ model MessageLog {
   providerMessageId String?
   createdAt         DateTime         @default(now())
 
-  bot  BotAccount   @relation(fields: [botId], references: [id])
-  user TelegramUser @relation(fields: [telegramUserId, botId], references: [telegramUserId, botId])
+  bot  BotAccount   @relation(fields: [botId], references: [id], onDelete: Cascade)
+  user TelegramUser @relation(fields: [telegramUserId, botId], references: [telegramUserId, botId], onDelete: Cascade)
 }

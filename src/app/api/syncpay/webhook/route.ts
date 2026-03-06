@@ -1,4 +1,3 @@
-export const runtime = "nodejs";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { SyncPayService } from "@/lib/syncpay";
@@ -113,27 +112,27 @@ export async function POST(req: NextRequest) {
                     `✅ <b>Pagamento Confirmado!</b>\n\nSua compra de <b>${targetSale.product.title}</b> foi processada com sucesso. Você já tem acesso ao conteúdo!`,
                     targetSale.telegramUserId,
                     targetSale.botId,
-                    targetSale.bot.token,
+                    targetSale.bot.token || undefined,
+                );
+
+                // Trigger BUYERS drip campaign
+                const { scheduleCampaignsForUser } =
+                    await import("@/lib/scheduler");
+                await scheduleCampaignsForUser(
+                    targetSale.botId,
+                    targetSale.telegramUserId,
+                    targetSale.user.chatId,
+                    "BUYERS",
                 );
             }
         }
 
-        // Notify User
-        await TelegramService.sendText(
-          targetSale.user.chatId,
-          `✅ <b>Pagamento Confirmado!</b>\n\nSua compra de <b>${targetSale.product.title}</b> foi processada com sucesso. Você já tem acesso ao conteúdo!`,
-          targetSale.telegramUserId,
-          targetSale.botId,
-          targetSale.bot.token || undefined
-        );
-
-        // Trigger BUYERS drip campaign
-        const { scheduleCampaignsForUser } = await import("@/lib/scheduler");
-        await scheduleCampaignsForUser(
-          targetSale.botId,
-          targetSale.telegramUserId,
-          targetSale.user.chatId,
-          "BUYERS"
+        return NextResponse.json({ ok: true });
+    } catch (error) {
+        console.error("Error in SyncPay webhook:", error);
+        return NextResponse.json(
+            { error: "Internal Server Error" },
+            { status: 500 },
         );
     }
 }

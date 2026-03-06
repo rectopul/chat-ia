@@ -1,25 +1,37 @@
-export const runtime = "nodejs";
-import { NextRequest, NextResponse } from "next/server";
-import { processScheduledJobs } from "@/lib/scheduler";
-import { processRecurringSchedules } from "@/lib/telegram-service/worker";
+import { NextResponse } from "next/server";
 
-export async function GET(req: NextRequest) {
-    const authHeader = req.headers.get("authorization");
-    const secret = req.nextUrl.searchParams.get("secret");
+export const runtime = "edge";
 
-    // if (
-    //   authHeader !== `Bearer ${process.env.CRON_SECRET}` &&
-    //   secret !== process.env.CRON_SECRET
-    // ) {
-    //   return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    // }
+export async function GET() {
+    try {
+        const nestUrl = process.env.NEST_API_URL;
+        const secret = process.env.CRON_SECRET;
 
-  try {
-    const processedCount = await processScheduledJobs();
-    await processRecurringSchedules();
-    return NextResponse.json({ ok: true, processed: processedCount });
-  } catch (error) {
-    console.error("Error in cron job:", error);
-    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
-  }
+        if (!nestUrl) {
+            return NextResponse.json(
+                { error: "NEST_API_URL não configurado." },
+                { status: 500 },
+            );
+        }
+
+        const res = await fetch(`${nestUrl}/templates/process-jobs`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                ...(secret ? { "x-cron-secret": secret } : {}),
+            },
+        });
+
+        const data = await res.json();
+        return NextResponse.json(data, { status: res.status });
+    } catch (error: any) {
+        console.log("Erro na cron", error.message);
+        return NextResponse.json(
+            {
+                message: "erro aop processar cron jobs",
+                details: error.message,
+            },
+            { status: 500 },
+        );
+    }
 }

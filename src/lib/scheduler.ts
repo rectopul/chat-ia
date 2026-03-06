@@ -57,20 +57,24 @@ export async function processScheduledJobs() {
         take: 50,
     });
 
-      await TelegramService.sendMessageTemplate(
-        job.chatId,
-        job.telegramUserId,
-        job.template,
-        job.botId,
-        job.bot.token || undefined
-      );
+    for (let index = 0; index < jobs.length; index++) {
+        const job = jobs[index];
+
+        try {
+            await TelegramService.sendMessageTemplate(
+                job.chatId,
+                job.telegramUserId,
+                job.template,
+                job.botId,
+                job.bot.token || undefined,
+            );
 
             await TelegramService.sendMessageTemplate(
                 job.chatId,
                 job.telegramUserId,
                 job.template,
                 job.botId,
-                job.bot.token,
+                job.bot.token ?? " ",
             );
 
             await prisma.scheduledMessageJob.update({
@@ -80,7 +84,6 @@ export async function processScheduledJobs() {
                     sentAt: new Date(),
                 },
             });
-
             // Handle recurring messages
             const rule = await prisma.timedMessageRule.findFirst({
                 where: {

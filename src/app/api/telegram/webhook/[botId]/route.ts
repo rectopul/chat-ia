@@ -1,4 +1,3 @@
-export const runtime = "nodejs";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { TelegramService } from "@/lib/telegram";
@@ -175,7 +174,7 @@ export async function POST(
         return NextResponse.json({ error: "Bot not found" }, { status: 404 });
     }
 
-    const secret = req.headers.get("x-telegram-bot-api-secret-token");
+    const secret = req.nextUrl.searchParams.get("secret");
     if (secret !== bot.webhookSecret) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
@@ -183,83 +182,117 @@ export async function POST(
     try {
         const payload = await req.json();
 
-    if (payload.callback_query) {
-      return handleCallbackQuery(payload.callback_query, botId, bot.token || "");
-    }
+        if (payload.callback_query) {
+            return handleCallbackQuery(
+                payload.callback_query,
+                botId,
+                bot.token || "",
+            );
+        }
 
         if (!payload.message) {
             return NextResponse.json({ ok: true });
         }
 
-    const { message } = payload;
-    const chatId = message.chat.id.toString();
-    const telegramUserId = message.from.id.toString();
-    const username = message.from.username;
-    const firstName = message.from.first_name;
-    const lastName = message.from.last_name;
-    const text = message.text || "";
+        const { message } = payload;
+        const chatId = message.chat.id.toString();
+        const telegramUserId = message.from.id.toString();
+        const username = message.from.username;
+        const firstName = message.from.first_name;
+        const lastName = message.from.last_name;
+        const text = message.text || "";
 
-    // Upsert User
-    const user = await prisma.telegramUser.upsert({
-      where: { telegramUserId_botId: { telegramUserId, botId } }, // Needs unique constraint update
-      update: {
-        lastSeenAt: new Date(),
-        username,
-        firstName,
-        lastName,
-        chatId,
-      },
-      create: {
-        botId,
-        telegramUserId,
-        chatId,
-        username,
-        firstName,
-        lastName,
-      },
-    });
+        // Upsert User
+        const user = await prisma.telegramUser.upsert({
+            where: { telegramUserId_botId: { telegramUserId, botId } }, // Needs unique constraint update
+            update: {
+                lastSeenAt: new Date(),
+                username,
+                firstName,
+                lastName,
+                chatId,
+            },
+            create: {
+                botId,
+                telegramUserId,
+                chatId,
+                username,
+                firstName,
+                lastName,
+            },
+        });
 
-    // Log IN message
-    await prisma.messageLog.create({
-      data: {
-        botId,
-        telegramUserId,
-        direction: MessageDirection.IN,
-        type: MediaType.TEXT,
-        text,
-      },
-    });
+        // Log IN message
+        await prisma.messageLog.create({
+            data: {
+                botId,
+                telegramUserId,
+                direction: MessageDirection.IN,
+                type: MediaType.TEXT,
+                text,
+            },
+        });
 
-    const isFirstContact =
-      new Date().getTime() - user.firstSeenAt.getTime() < 5000;
+        const isFirstContact =
+            new Date().getTime() - user.firstSeenAt.getTime() < 5000;
 
-    if (text === "/start" || isFirstContact) {
-      // Send Welcome Message
-      const welcomeTemplate = await prisma.messageTemplate.findFirst({
-        where: { key: MessageTemplateKey.WELCOME, isActive: true },
-      });
+        if (text === "/start" || isFirstContact) {
+            // Send Welcome Message
+            const welcomeTemplate = await prisma.messageTemplate.findFirst({
+                where: { key: MessageTemplateKey.WELCOME, isActive: true },
+            });
 
-      const menuMarkup = {
-        inline_keyboard: [
-          [{ text: "🛍️ Ver Produtos", callback_data: "list_products" }],
-          [{ text: "💎 Conteúdo Assinante", callback_data: "subscriber_content" }],
-          [{ text: "💬 Suporte", callback_data: "support" }],
-        ],
-      };
+            const menuMarkup = {
+                inline_keyboard: [
+                    [
+                        {
+                            text: "🛍️ Ver Produtos",
+                            callback_data: "list_products",
+                        },
+                    ],
+                    [
+                        {
+                            text: "💎 Conteúdo Assinante",
+                            callback_data: "subscriber_content",
+                        },
+                    ],
+                    [{ text: "💬 Suporte", callback_data: "support" }],
+                ],
+            };
 
-      await axios.post(`https://api.telegram.org/bot${bot.token || ""}/sendMessage`, {
-          chat_id: chatId,
-          text: welcomeTemplate?.text || "Olá! Bem-vindo ao nosso bot. Escolha uma opção abaixo:",
-          reply_markup: menuMarkup,
-          parse_mode: "HTML"
-      });
+            await axios.post(
+                `https://api.telegram.org/bot${bot.token || ""}/sendMessage`,
+                {
+                    chat_id: chatId,
+                    text:
+                        welcomeTemplate?.text ||
+                        "Olá! Bem-vindo ao nosso bot. Escolha uma opção abaixo:",
+                    reply_markup: menuMarkup,
+                    parse_mode: "HTML",
+                },
+            );
 
-      if (isFirstContact) {
-        await scheduleCampaignsForUser(
-          botId,
-          telegramUserId,
-          chatId,
-          UserSegment.NEW_USERS
+            if (isFirstContact) {
+                await scheduleCampaignsForUser(
+                    botId,
+                    telegramUserId,
+                    chatId,
+                    UserSegment.NEW_USERS,
+                );
+            }
+        } else if (
+            text.toLowerCase().includes("conteudo") ||
+            text.toLowerCase().includes("assinante")
+        ) {
+            // ... (similar logic as callback query)
+        }
+
+        return NextResponse.json({ ok: true });
+    } catch (error) {
+        console.error("Error processing Telegram webhook:", error);
+        return NextResponse.json(
+            { error: "Internal Server Error" },
+            { status: 500 },
         );
     }
 }
