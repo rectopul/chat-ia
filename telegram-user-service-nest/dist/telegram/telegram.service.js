@@ -547,7 +547,6 @@ let TelegramService = TelegramService_1 = class TelegramService {
         client.addEventHandler(async (event) => {
             try {
                 const className = event?.className || event?.constructor?.name;
-                this.logger.log("[EVENTO DETECTADO]: " + className);
                 const data = event.data?.toString("utf8") ?? "";
                 const chatId = event.query?.peer
                     ? (await client.getEntity(event.query.peer))?.id?.toString()

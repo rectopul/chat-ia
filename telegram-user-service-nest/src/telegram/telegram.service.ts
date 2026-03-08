@@ -767,7 +767,6 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         client.addEventHandler(async (event: any) => {
             try {
                 const className = event?.className || event?.constructor?.name;
-                this.logger.log("[EVENTO DETECTADO]: " + className);
                 const data: string = event.data?.toString("utf8") ?? "";
                 const chatId: string = event.query?.peer
                     ? (
