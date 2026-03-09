@@ -443,33 +443,26 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                     // timed templates
                     const timedTemplates =
                         await this.prisma.timedMessageRule.findMany({
-                            where: {
-                                botId,
-                            },
+                            where: { botId },
                             include: {
-                                template: true,
+                                template: {
+                                    include: { mediaItems: true }, // ✅ inclui mediaItems do template
+                                },
                             },
+                            orderBy: { delaySeconds: "asc" }, // ✅ garante ordem crescente de delay
                         });
 
                     const delay = (ms: number) =>
                         new Promise((resolve) => setTimeout(resolve, ms));
 
-                    if (timedTemplates) {
-                        for (
-                            let index = 0;
-                            index < timedTemplates.length;
-                            index++
-                        ) {
-                            const timedTemplate = timedTemplates[index];
+                    for (const timedTemplate of timedTemplates) {
+                        await delay(timedTemplate.delaySeconds * 1000);
 
-                            await delay(timedTemplate.delaySeconds * 1000);
-
-                            await this.sendTemplate(
-                                botId,
-                                chatId.toString(),
-                                timedTemplate,
-                            );
-                        }
+                        await this.sendTemplate(
+                            botId,
+                            chatId.toString(),
+                            timedTemplate.template, // ✅ passa o template, não a regra
+                        );
                     }
 
                     await sendMenu(
