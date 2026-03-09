@@ -400,6 +400,13 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                 text === "oi" ||
                 text === "olá" ||
                 text === "ola" ||
+                text === "bom dia" ||
+                text === "boa noite" ||
+                text === "boa tarde" ||
+                text.includes("ae") ||
+                text.includes("bom") ||
+                text.includes("boa") ||
+                text.includes("oi") ||
                 text === "menu"
             ) {
                 try {
@@ -413,9 +420,6 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                             include: { mediaItems: true },
                         });
 
-                    const delay = (ms: number) =>
-                        new Promise((resolve) => setTimeout(resolve, ms));
-
                     if (weallcomeTemplate) {
                         await this.sendTemplate(
                             botId,
@@ -424,7 +428,37 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                         );
                     }
 
-                    await delay(5000);
+                    // timed templates
+                    const timedTemplates =
+                        await this.prisma.timedMessageRule.findMany({
+                            where: {
+                                botId,
+                            },
+                            include: {
+                                template: true,
+                            },
+                        });
+
+                    const delay = (ms: number) =>
+                        new Promise((resolve) => setTimeout(resolve, ms));
+
+                    if (timedTemplates) {
+                        for (
+                            let index = 0;
+                            index < timedTemplates.length;
+                            index++
+                        ) {
+                            const timedTemplate = timedTemplates[index];
+
+                            await delay(timedTemplate.delaySeconds * 1000);
+
+                            await this.sendTemplate(
+                                botId,
+                                chatId.toString(),
+                                timedTemplate,
+                            );
+                        }
+                    }
 
                     await sendMenu(
                         "👋 Olá! Gostou das prévias, que tal adquirir um dos nossos planos e receber mais conteúdos exclusivos?",
