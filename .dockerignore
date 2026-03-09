@@ -1,0 +1,13 @@
+node_modules
+.next
+.git
+*.log
+.env
+.env.*
+!.env.example
+
+# NestJS
+telegram-user-service-nest/node_modules
+telegram-user-service-nest/dist
+telegram-user-service-nest/.env
+telegram-user-service-nest/.env.*

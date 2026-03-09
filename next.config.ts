@@ -7,6 +7,7 @@ const nextConfig: NextConfig = {
         "*.local-origin.dev",
         "migration-springer-klein-perl.trycloudflare.com",
     ],
+    output: "standalone",
 };
 
 export default nextConfig;

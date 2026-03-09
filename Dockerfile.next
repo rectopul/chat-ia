@@ -1,0 +1,61 @@
+# ── Dependencies stage ────────────────────────────────────────────────────────
+FROM node:20.19.0-alpine AS deps
+
+# Instala ferramentas necessárias para compilar módulos nativos (node-gyp)
+RUN apk add --no-cache openssl python3 make g++
+
+WORKDIR /app
+
+COPY package*.json ./
+
+RUN npm ci --include=dev
+
+# ── Build stage ───────────────────────────────────────────────────────────────
+FROM node:20.19.0-alpine AS builder
+
+RUN apk add --no-cache openssl
+
+WORKDIR /app
+
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+
+# Gera o Prisma Client
+RUN ./node_modules/.bin/prisma generate --schema=./prisma/schema.prisma
+
+# Build do Next.js
+ENV NEXT_PUBLIC_NEST_API_URL=http://localhost:3001
+
+RUN npm run build
+
+# ── Production stage ──────────────────────────────────────────────────────────
+FROM node:20.19.0-alpine AS runner
+
+RUN apk add --no-cache openssl
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+
+RUN addgroup --system --gid 1001 nodejs && \
+    adduser --system --uid 1001 nextjs
+
+# AJUSTE AQUI: Use --chown=nextjs:nodejs em todas as cópias
+COPY --from=builder --chown=nextjs:nodejs /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/.prisma ./node_modules/.prisma
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/@prisma ./node_modules/@prisma
+
+COPY --chown=nextjs:nodejs entrypoint.next.sh ./entrypoint.sh
+RUN sed -i 's/\r//' ./entrypoint.sh && chmod +x ./entrypoint.sh
+
+USER nextjs
+
+EXPOSE 3000
+
+ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
+
+ENTRYPOINT ["./entrypoint.sh"]
