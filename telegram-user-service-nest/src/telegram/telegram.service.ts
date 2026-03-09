@@ -109,6 +109,16 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
 
     private async fetchFileBuffer(url: string): Promise<Buffer> {
         const response = await axios.get(url, { responseType: "arraybuffer" });
+        let buffer = Buffer.from(response.data);
+
+        // ✅ Converte WebP para JPEG antes de enviar ao Telegram
+        const rawExt = (
+            url.split(".").pop()?.split(/[#?]/)[0] ?? ""
+        ).toLowerCase();
+        if (rawExt === "webp") {
+            const sharp = require("sharp");
+            buffer = await sharp(buffer).jpeg({ quality: 90 }).toBuffer();
+        }
         return Buffer.from(response.data);
     }
 
@@ -119,9 +129,12 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         isAudio: boolean;
         isImage: boolean;
     } {
-        const ext = (
+        const rawExt = (
             url.split(".").pop()?.split(/[#?]/)[0] ?? "jpg"
         ).toLowerCase();
+
+        // ✅ Telegram não suporta WebP — converte para jpg
+        const ext = rawExt === "webp" ? "jpg" : rawExt;
         const isVideo = ["mp4", "mov", "avi", "mkv", "webm"].includes(ext);
         const isAudio = ["mp3", "ogg", "wav", "m4a", "aac", "flac"].includes(
             ext,
@@ -131,7 +144,6 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         let mimeType = "image/jpeg";
         if (ext === "png") mimeType = "image/png";
         if (ext === "gif") mimeType = "image/gif";
-        if (ext === "webp") mimeType = "image/webp";
         if (isVideo) mimeType = ext === "mov" ? "video/quicktime" : "video/mp4";
         if (isAudio) mimeType = ext === "mp3" ? "audio/mpeg" : `audio/${ext}`;
 
@@ -1089,7 +1101,6 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         this.logger.debug(
             `[sendTemplate] templateId=${template.id} type=${template.type}`,
         );
-        this.logger.debug(`[sendTemplate] mediaUrl=${template.mediaUrl}`);
         this.logger.debug(
             `[sendTemplate] mediaItems=${JSON.stringify(template.mediaItems)}`,
         );
