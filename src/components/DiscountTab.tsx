@@ -2,12 +2,19 @@ import {
     DiscountConfig,
     SerializeProduct,
 } from "@/app/admin/configuracoes/page";
+import { BotAccount } from "@prisma/client";
 import { useEffect, useState } from "react";
 
 // ─── Mock botId (troque pelo seu contexto real, ex: useParams ou prop) ────────
 const BOT_ID = "bot_default";
 
-export function DiscountTab({ products }: { products: SerializeProduct[] }) {
+export function DiscountTab({
+    products,
+    botsAccounts,
+}: {
+    products: SerializeProduct[];
+    botsAccounts: BotAccount[];
+}) {
     const [config, setConfig] = useState<DiscountConfig | null>(null);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
@@ -169,6 +176,30 @@ export function DiscountTab({ products }: { products: SerializeProduct[] }) {
                         ? "Atualizar configuração"
                         : "Configurar desconto automático"}
                 </h2>
+
+                <Field
+                    label="Conta Telegram"
+                    hint="Selecione a conta do telegram a ser usada"
+                >
+                    <select
+                        value={productId}
+                        onChange={(e) => setProductId(e.target.value)}
+                        className="w-full bg-white/4 border border-white/10 rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:border-amber-500/60 transition"
+                    >
+                        <option value="" className="bg-[#1a1a24]">
+                            Selecione uma conta...
+                        </option>
+                        {botsAccounts.map((b) => (
+                            <option
+                                key={b.id}
+                                value={b.id}
+                                className="bg-[#1a1a24]"
+                            >
+                                {b.name}
+                            </option>
+                        ))}
+                    </select>
+                </Field>
 
                 <Field
                     label="Produto *"

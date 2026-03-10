@@ -43,6 +43,7 @@ export type SerializeProduct = {
 // ─────────────────────────────────────────────────────────────────────────────
 export default async function Page() {
     const products = await prisma.product.findMany();
+    const botsAccounts = await prisma.botAccount.findMany();
 
     const serializeProduct = products.map((p) => {
         return {
@@ -51,5 +52,7 @@ export default async function Page() {
         };
     });
 
-    return <ConfigPage products={serializeProduct} />;
+    return (
+        <ConfigPage products={serializeProduct} botsAccounts={botsAccounts} />
+    );
 }

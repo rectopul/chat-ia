@@ -1,7 +1,7 @@
 "use client";
 import { DiscountTab } from "@/components/DiscountTab";
 import { PixAudioTab } from "@/components/PixAudioTab";
-import { ProductType } from "@prisma/client";
+import { BotAccount, ProductType } from "@prisma/client";
 import { useState } from "react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -45,7 +45,13 @@ export type SerializeProduct = {
 const BOT_ID = "bot_default";
 
 // ─────────────────────────────────────────────────────────────────────────────
-export function ConfigPage({ products }: { products: SerializeProduct[] }) {
+export function ConfigPage({
+    products,
+    botsAccounts,
+}: {
+    products: SerializeProduct[];
+    botsAccounts: BotAccount[];
+}) {
     const [tab, setTab] = useState<"audio" | "discount">("audio");
 
     return (
@@ -90,7 +96,10 @@ export function ConfigPage({ products }: { products: SerializeProduct[] }) {
                 {tab === "audio" ? (
                     <PixAudioTab />
                 ) : (
-                    <DiscountTab products={products} />
+                    <DiscountTab
+                        products={products}
+                        botsAccounts={botsAccounts}
+                    />
                 )}
             </div>
         </div>

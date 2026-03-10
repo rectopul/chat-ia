@@ -58,6 +58,7 @@ export async function POST(req: NextRequest) {
     const blob = await put(`pix-audio/${botId}/${safeName}`, file, {
         access: "public",
         contentType: file.type,
+        allowOverwrite: true,
     });
 
     const config = await prisma.pixAudioConfig.upsert({
