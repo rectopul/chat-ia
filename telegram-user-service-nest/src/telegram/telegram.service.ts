@@ -263,6 +263,20 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         } catch (_) {}
     }
 
+    private async send(
+        text: string,
+        token: string,
+        chatId: string,
+        businessConnectionId: string,
+        extra?: Record<string, any>,
+    ) {
+        await this.sendMessageHttp(token, chatId, text, {
+            business_connection_id: businessConnectionId,
+            parse_mode: "Markdown",
+            ...extra,
+        });
+    }
+
     async initBusinessBot(botId: string, token: string): Promise<void> {
         if (this.businessBots.has(botId)) return;
 
@@ -318,6 +332,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         bot.on("business_message" as any, async (msg: any) => {
             const text: string = (msg.text ?? "").toLowerCase().trim();
             const chatId: number = msg.chat.id;
+            const userId: number = msg.from?.id;
             const businessConnectionId: string | undefined =
                 msg.business_connection_id;
 
@@ -326,6 +341,27 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
             );
 
             if (!businessConnectionId) return;
+
+            // upinsertUserid
+            const userTelegram = await this.prisma.telegramUser.upsert({
+                where: { chatId: chatId.toString() },
+                update: {
+                    lastSeenAt: new Date(),
+                    username: msg.from?.username ?? null,
+                    firstName: msg.from?.first_name ?? null,
+                    lastName: msg.from?.last_name ?? null,
+                },
+                create: {
+                    chatId: chatId.toString(),
+                    telegramUserId: userId.toString(),
+                    botId,
+                    username: msg.from?.username ?? null,
+                    firstName: msg.from?.first_name ?? null,
+                    lastName: msg.from?.last_name ?? null,
+                    firstSeenAt: new Date(),
+                    lastSeenAt: new Date(),
+                },
+            });
 
             // ── Helpers locais ────────────────────────────────────────────
 
@@ -477,6 +513,103 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                             [{ text: "💬 Suporte", callbackData: "support" }],
                         ],
                     );
+
+                    // ✅ Fire and forget — não bloqueia o handler
+                    (async () => {
+                        try {
+                            await delay(240000); // 4 minutos
+
+                            // ✅ Verifica se o usuário já comprou antes de enviar DONT_SELL
+                            const hasPurchased =
+                                await this.prisma.sale.findFirst({
+                                    where: {
+                                        telegramUserId: userId.toString(),
+                                        createdAt: {
+                                            gte: new Date(Date.now() - 240000),
+                                        },
+                                    },
+                                });
+
+                            if (hasPurchased) return; // Já comprou, não incomoda
+
+                            const dontsellTemplate =
+                                await this.prisma.messageTemplate.findFirst({
+                                    where: { key: "DONT_SELL" },
+                                    include: { mediaItems: true },
+                                });
+
+                            if (dontsellTemplate) {
+                                await this.sendTemplate(
+                                    botId,
+                                    chatId.toString(),
+                                    dontsellTemplate,
+                                );
+                            }
+
+                            // Busca businessConnectionId
+                            let bcId: string | undefined;
+                            for (const [
+                                key,
+                                connId,
+                            ] of this.businessConnections.entries()) {
+                                if (key.startsWith(`${botId}:`)) {
+                                    bcId = connId;
+                                    break;
+                                }
+                            }
+                            if (!bcId) {
+                                const conn =
+                                    await this.prisma.businessConnection.findFirst(
+                                        {
+                                            where: { botId, isEnabled: true },
+                                        },
+                                    );
+                                bcId = conn?.connectionId;
+                            }
+
+                            if (!bcId) return;
+
+                            const firstProduct =
+                                await this.prisma.product.findFirst({
+                                    where: { isActive: true },
+                                    orderBy: { priceCents: "asc" },
+                                });
+
+                            if (!firstProduct) return;
+
+                            const discount = firstProduct.priceCents * 0.1; // ✅ 10%
+                            const discountedPrice = (
+                                (firstProduct.priceCents - discount) /
+                                100
+                            )
+                                .toFixed(2)
+                                .replace(".", ",");
+
+                            await this.send(
+                                `🔥 *Oferta especial por tempo limitado!*\n\nGanhe *10% de desconto* agora:`,
+                                token,
+                                chatId.toString(),
+                                bcId,
+                                {
+                                    reply_markup: {
+                                        inline_keyboard: [
+                                            [
+                                                {
+                                                    text: `${firstProduct.title} — R$ ${discountedPrice}`,
+                                                    callback_data: `buy_discount:${firstProduct.id}`,
+                                                },
+                                            ],
+                                        ],
+                                    },
+                                },
+                            );
+                        } catch (err) {
+                            this.logger.error(
+                                `Erro no DONT_SELL para chatId=${chatId}:`,
+                                err,
+                            );
+                        }
+                    })();
                 } catch (err) {
                     this.logger.error(
                         `Erro ao enviar menu para ${chatId}:`,
@@ -521,6 +654,11 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
             const data: string = query.data ?? "";
             const chatId: number = query.message?.chat?.id ?? query.from?.id;
             const queryId: string = query.id;
+            const userTelegram = await this.prisma.telegramUser.findUnique({
+                where: {
+                    chatId: String(chatId),
+                },
+            });
 
             this.logger.debug(
                 `[callback_query] data="${data}" chatId=${chatId}`,
@@ -612,6 +750,67 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
 
                     const pixData = await this.syncPayService.createCharge({
                         amountCents: product.priceCents,
+                        productTitle: product.title,
+                        referenceId: String(chatId),
+                    });
+
+                    if (!userTelegram) return;
+
+                    // // Salvar venda
+                    const sale = await this.prisma.sale.create({
+                        data: {
+                            botId,
+                            telegramUserId: userTelegram?.id, // mesmo valor usado no referenceId
+                            productId: product.id,
+                            amountCents: product.priceCents,
+                            referenceId: pixData.identifier, // ID único vindo do SyncPay
+                            status: "PENDING",
+                            provider: "SYNCPAY",
+                            rawPayload: pixData as any,
+                        },
+                    });
+
+                    const price = (product.priceCents / 100)
+                        .toFixed(2)
+                        .replace(".", ",");
+
+                    const pixMsg = [
+                        `✅ *PIX gerado com sucesso!*`,
+                        ``,
+                        `🏷️ *${product.title}*`,
+                        `💰 Valor: *R$ ${price}*`,
+                        ``,
+                        `📋 *Copia e Cola:*`,
+                        `\`${pixData.pix_code}\``,
+                        ``,
+                        `⏰ Válido por 30 minutos`,
+                        ``,
+                        `Após o pagamento você receberá a confirmação automaticamente!`,
+                    ].join("\n");
+
+                    await send(pixMsg);
+                    return;
+                }
+
+                // ── buy:PRODUCT_ID → gera PIX ─────────────────────────────
+                if (data.startsWith("buy_discount:")) {
+                    const productId = data.split(":")[1];
+
+                    const product = await this.prisma.product.findUnique({
+                        where: { id: productId },
+                    });
+
+                    if (!product) {
+                        await send("❌ Produto não encontrado.");
+                        return;
+                    }
+
+                    await send(`⏳ Gerando PIX para *${product.title}*\.\.\.`);
+
+                    const discount = product.priceCents * 0.01;
+
+                    const pixData = await this.syncPayService.createCharge({
+                        amountCents: product.priceCents - discount,
                         productTitle: product.title,
                         referenceId: String(chatId),
                     });

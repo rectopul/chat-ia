@@ -20,6 +20,7 @@ export declare class TelegramService implements OnModuleInit, OnModuleDestroy {
     private buildInputMedia;
     private sendMessageHttp;
     private answerCallbackQuery;
+    private send;
     initBusinessBot(botId: string, token: string): Promise<void>;
     getBusinessConnectionId(botId: string, userTelegramId: string): string | undefined;
     sendBusinessMessageWithKeyboard(botId: string, businessConnectionId: string, recipientChatId: string | number, text: string, keyboard: string[][]): Promise<void>;

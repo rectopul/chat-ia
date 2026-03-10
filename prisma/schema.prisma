@@ -30,12 +30,14 @@ model BotAccount {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  users         TelegramUser[]
-  sales         Sale[]
-  messageLogs   MessageLog[]
-  scheduledJobs ScheduledMessageJob[]
-  rules         TimedMessageRule[]
-  recurring     RecurringSchedule[]
+  users          TelegramUser[]
+  sales          Sale[]
+  messageLogs    MessageLog[]
+  scheduledJobs  ScheduledMessageJob[]
+  rules          TimedMessageRule[]
+  recurring      RecurringSchedule[]
+  pixAudioConfig PixAudioConfig?
+  discountConfig DiscountConfig?
 }
 
 model RecurringSchedule {
@@ -196,7 +198,8 @@ model Product {
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
 
-  sales Sale[]
+  sales           Sale[]
+  discountConfigs DiscountConfig[]
 }
 
 enum SaleStatus {
@@ -256,4 +259,35 @@ model MessageLog {
 
   bot  BotAccount   @relation(fields: [botId], references: [id], onDelete: Cascade)
   user TelegramUser @relation(fields: [telegramUserId, botId], references: [telegramUserId, botId], onDelete: Cascade)
+}
+
+// ─────────────────────────────────────────────────────────────
+// Adicione estes models ao seu schema.prisma existente
+// Depois rode: npx prisma migrate dev --name add_pix_audio_and_discount
+// ─────────────────────────────────────────────────────────────
+
+model PixAudioConfig {
+  id          String   @id @default(cuid())
+  botId       String   @unique
+  audioUrl    String // URL do arquivo de áudio (storage externo)
+  fileName    String
+  durationSec Int?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  bot BotAccount @relation(fields: [botId], references: [id], onDelete: Cascade)
+}
+
+model DiscountConfig {
+  id              String   @id @default(cuid())
+  botId           String   @unique
+  productId       String
+  discountPercent Int // ex: 10 = 10%
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  bot     BotAccount @relation(fields: [botId], references: [id], onDelete: Cascade)
+  product Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
 }

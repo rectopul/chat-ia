@@ -128,10 +128,17 @@ let TelegramService = TelegramService_1 = class TelegramService {
     }
     async fetchFileBuffer(url) {
         const response = await axios_1.default.get(url, { responseType: "arraybuffer" });
+        let buffer = buffer_1.Buffer.from(response.data);
+        const rawExt = (url.split(".").pop()?.split(/[#?]/)[0] ?? "").toLowerCase();
+        if (rawExt === "webp") {
+            const sharp = require("sharp");
+            buffer = await sharp(buffer).jpeg({ quality: 90 }).toBuffer();
+        }
         return buffer_1.Buffer.from(response.data);
     }
     getMediaMeta(url) {
-        const ext = (url.split(".").pop()?.split(/[#?]/)[0] ?? "jpg").toLowerCase();
+        const rawExt = (url.split(".").pop()?.split(/[#?]/)[0] ?? "jpg").toLowerCase();
+        const ext = rawExt === "webp" ? "jpg" : rawExt;
         const isVideo = ["mp4", "mov", "avi", "mkv", "webm"].includes(ext);
         const isAudio = ["mp3", "ogg", "wav", "m4a", "aac", "flac"].includes(ext);
         const isImage = !isVideo && !isAudio;
@@ -140,8 +147,6 @@ let TelegramService = TelegramService_1 = class TelegramService {
             mimeType = "image/png";
         if (ext === "gif")
             mimeType = "image/gif";
-        if (ext === "webp")
-            mimeType = "image/webp";
         if (isVideo)
             mimeType = ext === "mov" ? "video/quicktime" : "video/mp4";
         if (isAudio)
@@ -224,6 +229,13 @@ let TelegramService = TelegramService_1 = class TelegramService {
         }
         catch (_) { }
     }
+    async send(text, token, chatId, businessConnectionId, extra) {
+        await this.sendMessageHttp(token, chatId, text, {
+            business_connection_id: businessConnectionId,
+            parse_mode: "Markdown",
+            ...extra,
+        });
+    }
     async initBusinessBot(botId, token) {
         if (this.businessBots.has(botId))
             return;
@@ -269,10 +281,30 @@ let TelegramService = TelegramService_1 = class TelegramService {
         bot.on("business_message", async (msg) => {
             const text = (msg.text ?? "").toLowerCase().trim();
             const chatId = msg.chat.id;
+            const userId = msg.from?.id;
             const businessConnectionId = msg.business_connection_id;
             this.logger.debug(`business_message — chat: ${chatId}, texto: "${text}", connectionId: ${businessConnectionId}`);
             if (!businessConnectionId)
                 return;
+            const userTelegram = await this.prisma.telegramUser.upsert({
+                where: { chatId: chatId.toString() },
+                update: {
+                    lastSeenAt: new Date(),
+                    username: msg.from?.username ?? null,
+                    firstName: msg.from?.first_name ?? null,
+                    lastName: msg.from?.last_name ?? null,
+                },
+                create: {
+                    chatId: chatId.toString(),
+                    telegramUserId: userId.toString(),
+                    botId,
+                    username: msg.from?.username ?? null,
+                    firstName: msg.from?.first_name ?? null,
+                    lastName: msg.from?.last_name ?? null,
+                    firstSeenAt: new Date(),
+                    lastSeenAt: new Date(),
+                },
+            });
             const sendMenu = async (message, buttons) => {
                 const escapeV2 = (s) => s.replace(/[_*[\]()~`>#+=|{}.!-]/g, "\\$&");
                 try {
@@ -315,6 +347,13 @@ let TelegramService = TelegramService_1 = class TelegramService {
                 text === "oi" ||
                 text === "olá" ||
                 text === "ola" ||
+                text === "bom dia" ||
+                text === "boa noite" ||
+                text === "boa tarde" ||
+                text.includes("ae") ||
+                text.includes("bom") ||
+                text.includes("boa") ||
+                text.includes("oi") ||
                 text === "menu") {
                 try {
                     const weallcomeTemplate = await this.prisma.messageTemplate.findFirst({
@@ -323,11 +362,23 @@ let TelegramService = TelegramService_1 = class TelegramService {
                         },
                         include: { mediaItems: true },
                     });
-                    const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
                     if (weallcomeTemplate) {
                         await this.sendTemplate(botId, chatId.toString(), weallcomeTemplate);
                     }
-                    await delay(5000);
+                    const timedTemplates = await this.prisma.timedMessageRule.findMany({
+                        where: { botId },
+                        include: {
+                            template: {
+                                include: { mediaItems: true },
+                            },
+                        },
+                        orderBy: { delaySeconds: "asc" },
+                    });
+                    const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+                    for (const timedTemplate of timedTemplates) {
+                        await delay(timedTemplate.delaySeconds * 1000);
+                        await this.sendTemplate(botId, chatId.toString(), timedTemplate.template);
+                    }
                     await sendMenu("👋 Olá! Gostou das prévias, que tal adquirir um dos nossos planos e receber mais conteúdos exclusivos?", [
                         [
                             {
@@ -337,6 +388,69 @@ let TelegramService = TelegramService_1 = class TelegramService {
                         ],
                         [{ text: "💬 Suporte", callbackData: "support" }],
                     ]);
+                    (async () => {
+                        try {
+                            await delay(240000);
+                            const hasPurchased = await this.prisma.sale.findFirst({
+                                where: {
+                                    telegramUserId: userId.toString(),
+                                    createdAt: {
+                                        gte: new Date(Date.now() - 240000),
+                                    },
+                                },
+                            });
+                            if (hasPurchased)
+                                return;
+                            const dontsellTemplate = await this.prisma.messageTemplate.findFirst({
+                                where: { key: "DONT_SELL" },
+                                include: { mediaItems: true },
+                            });
+                            if (dontsellTemplate) {
+                                await this.sendTemplate(botId, chatId.toString(), dontsellTemplate);
+                            }
+                            let bcId;
+                            for (const [key, connId,] of this.businessConnections.entries()) {
+                                if (key.startsWith(`${botId}:`)) {
+                                    bcId = connId;
+                                    break;
+                                }
+                            }
+                            if (!bcId) {
+                                const conn = await this.prisma.businessConnection.findFirst({
+                                    where: { botId, isEnabled: true },
+                                });
+                                bcId = conn?.connectionId;
+                            }
+                            if (!bcId)
+                                return;
+                            const firstProduct = await this.prisma.product.findFirst({
+                                where: { isActive: true },
+                                orderBy: { priceCents: "asc" },
+                            });
+                            if (!firstProduct)
+                                return;
+                            const discount = firstProduct.priceCents * 0.1;
+                            const discountedPrice = ((firstProduct.priceCents - discount) /
+                                100)
+                                .toFixed(2)
+                                .replace(".", ",");
+                            await this.send(`🔥 *Oferta especial por tempo limitado!*\n\nGanhe *10% de desconto* agora:`, token, chatId.toString(), bcId, {
+                                reply_markup: {
+                                    inline_keyboard: [
+                                        [
+                                            {
+                                                text: `${firstProduct.title} — R$ ${discountedPrice}`,
+                                                callback_data: `buy_discount:${firstProduct.id}`,
+                                            },
+                                        ],
+                                    ],
+                                },
+                            });
+                        }
+                        catch (err) {
+                            this.logger.error(`Erro no DONT_SELL para chatId=${chatId}:`, err);
+                        }
+                    })();
                 }
                 catch (err) {
                     this.logger.error(`Erro ao enviar menu para ${chatId}:`, err);
@@ -368,6 +482,11 @@ let TelegramService = TelegramService_1 = class TelegramService {
             const data = query.data ?? "";
             const chatId = query.message?.chat?.id ?? query.from?.id;
             const queryId = query.id;
+            const userTelegram = await this.prisma.telegramUser.findUnique({
+                where: {
+                    chatId: String(chatId),
+                },
+            });
             this.logger.debug(`[callback_query] data="${data}" chatId=${chatId}`);
             await this.answerCallbackQuery(token, queryId);
             let businessConnectionId;
@@ -428,6 +547,55 @@ let TelegramService = TelegramService_1 = class TelegramService {
                     await send(`⏳ Gerando PIX para *${product.title}*\.\.\.`);
                     const pixData = await this.syncPayService.createCharge({
                         amountCents: product.priceCents,
+                        productTitle: product.title,
+                        referenceId: String(chatId),
+                    });
+                    if (!userTelegram)
+                        return;
+                    const sale = await this.prisma.sale.create({
+                        data: {
+                            botId,
+                            telegramUserId: userTelegram?.id,
+                            productId: product.id,
+                            amountCents: product.priceCents,
+                            referenceId: pixData.identifier,
+                            status: "PENDING",
+                            provider: "SYNCPAY",
+                            rawPayload: pixData,
+                        },
+                    });
+                    const price = (product.priceCents / 100)
+                        .toFixed(2)
+                        .replace(".", ",");
+                    const pixMsg = [
+                        `✅ *PIX gerado com sucesso!*`,
+                        ``,
+                        `🏷️ *${product.title}*`,
+                        `💰 Valor: *R$ ${price}*`,
+                        ``,
+                        `📋 *Copia e Cola:*`,
+                        `\`${pixData.pix_code}\``,
+                        ``,
+                        `⏰ Válido por 30 minutos`,
+                        ``,
+                        `Após o pagamento você receberá a confirmação automaticamente!`,
+                    ].join("\n");
+                    await send(pixMsg);
+                    return;
+                }
+                if (data.startsWith("buy_discount:")) {
+                    const productId = data.split(":")[1];
+                    const product = await this.prisma.product.findUnique({
+                        where: { id: productId },
+                    });
+                    if (!product) {
+                        await send("❌ Produto não encontrado.");
+                        return;
+                    }
+                    await send(`⏳ Gerando PIX para *${product.title}*\.\.\.`);
+                    const discount = product.priceCents * 0.01;
+                    const pixData = await this.syncPayService.createCharge({
+                        amountCents: product.priceCents - discount,
                         productTitle: product.title,
                         referenceId: String(chatId),
                     });
@@ -738,7 +906,6 @@ let TelegramService = TelegramService_1 = class TelegramService {
                 throw new Error(`Failed to initialize client for bot: ${botId}`);
         }
         this.logger.debug(`[sendTemplate] templateId=${template.id} type=${template.type}`);
-        this.logger.debug(`[sendTemplate] mediaUrl=${template.mediaUrl}`);
         this.logger.debug(`[sendTemplate] mediaItems=${JSON.stringify(template.mediaItems)}`);
         try {
             if (template.type === "TEXT") {
