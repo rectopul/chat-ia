@@ -16,8 +16,14 @@ import TelegramBot, { KeyboardButton } from "node-telegram-bot-api";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { CallbackQuery } from "telegram/events/CallbackQuery";
 import { SyncPayService } from "../syncpay/syncpay.service";
+
+type ReadyItem = {
+    finalMedia: Api.TypeInputMedia;
+    isImage: boolean;
+    isVideo: boolean;
+    isAudio: boolean;
+};
 
 @Injectable()
 export class TelegramService implements OnModuleInit, OnModuleDestroy {
@@ -42,43 +48,28 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     // ─────────────────────────────────────────────────────────────────────
 
     async onModuleInit() {
-        const activeAccounts = await this.prisma.botAccount.findMany({
+        const accounts = await this.prisma.botAccount.findMany({
             where: {
                 isUserAccount: true,
                 session: { not: null },
                 isActive: true,
             },
         });
-        for (const account of activeAccounts) {
+
+        for (const account of accounts) {
             try {
                 await this.initClient(account);
-                this.logger.log(
-                    `Conta ${account.name} reconectada automaticamente.`,
-                );
-            } catch (err) {
-                this.logger.error(`Falha ao reconectar ${account.name}:`, err);
-            }
-        }
+                this.logger.log(`Client MTProto ${account.name} conectado.`);
 
-        const businessBotAccounts = await this.prisma.botAccount.findMany({
-            where: {
-                isUserAccount: false,
-                businessBotToken: { not: null },
-                isActive: true,
-            },
-        });
-        for (const account of businessBotAccounts) {
-            try {
-                await this.initBusinessBot(
-                    account.id,
-                    account.businessBotToken!,
-                );
-                this.logger.log(`Business bot ${account.name} conectado.`);
+                if (account.businessBotToken) {
+                    await this.initBusinessBot(
+                        account.id,
+                        account.businessBotToken,
+                    );
+                    this.logger.log(`Business bot ${account.name} conectado.`);
+                }
             } catch (err) {
-                this.logger.error(
-                    `Falha ao conectar business bot ${account.name}:`,
-                    err,
-                );
+                this.logger.error(`Falha ao iniciar ${account.name}:`, err);
             }
         }
     }
@@ -107,19 +98,70 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     // Helpers privados
     // ─────────────────────────────────────────────────────────────────────
 
-    private async fetchFileBuffer(url: string): Promise<Buffer> {
+    private async convertToOggOpus(
+        inputBuffer: Buffer,
+        inputExt: string,
+    ): Promise<Buffer> {
+        const ffmpeg = require("fluent-ffmpeg");
+        const tmpInput = path.join(
+            os.tmpdir(),
+            `tg_audio_in_${Date.now()}.${inputExt}`,
+        );
+        const tmpOutput = path.join(
+            os.tmpdir(),
+            `tg_audio_out_${Date.now()}.ogg`,
+        );
+
+        await fs.promises.writeFile(tmpInput, inputBuffer);
+
+        await new Promise<void>((resolve, reject) => {
+            ffmpeg(tmpInput)
+                .audioCodec("libopus")
+                .audioChannels(1)
+                .audioFrequency(48000)
+                .format("ogg")
+                .on("end", resolve)
+                .on("error", reject)
+                .save(tmpOutput);
+        });
+
+        const outputBuffer = await fs.promises.readFile(tmpOutput);
+
+        // Limpa arquivos temporários
+        await fs.promises.unlink(tmpInput).catch(() => {});
+        await fs.promises.unlink(tmpOutput).catch(() => {});
+
+        return outputBuffer;
+    }
+
+    private async fetchFileBuffer(
+        url: string,
+        forceOgg = false, // ✅ flag para conversão de voz
+    ): Promise<Buffer> {
         const response = await axios.get(url, { responseType: "arraybuffer" });
         let buffer = Buffer.from(response.data);
 
-        // ✅ Converte WebP para JPEG antes de enviar ao Telegram
         const rawExt = (
             url.split(".").pop()?.split(/[#?]/)[0] ?? ""
         ).toLowerCase();
+
+        // Converte WebP → JPEG
         if (rawExt === "webp") {
             const sharp = require("sharp");
             buffer = await sharp(buffer).jpeg({ quality: 90 }).toBuffer();
+            return buffer;
         }
-        return Buffer.from(response.data);
+
+        // ✅ Converte qualquer áudio → OGG Opus (para voz do Telegram)
+        const isAudio = ["mp3", "wav", "m4a", "aac", "flac", "ogg"].includes(
+            rawExt,
+        );
+        if (forceOgg && isAudio && rawExt !== "ogg") {
+            buffer = await this.convertToOggOpus(buffer, rawExt);
+            return buffer;
+        }
+
+        return buffer;
     }
 
     private getMediaMeta(url: string): {
@@ -201,7 +243,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                 attributes: [
                     new Api.DocumentAttributeAudio({
                         duration: 0,
-                        voice: false,
+                        voice: true,
                     }),
                     new Api.DocumentAttributeFilename({ fileName: filename }),
                 ],
@@ -215,6 +257,85 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         }
 
         return new Api.InputMediaUploadedPhoto({ file: uploadedFile });
+    }
+
+    private async prepareMedia(
+        item: any,
+        client: TelegramClient,
+        peer: Api.TypeInputPeer,
+    ) {
+        try {
+            const meta = this.getMediaMeta(item.url);
+            const filename = `file_${new Date().toISOString()}.${meta.ext}`;
+
+            this.logger.debug(
+                `[PREPARING item ${filename}] ext=${meta.ext} isVideo=${meta.isVideo} isImage=${meta.isImage}`,
+            );
+
+            const fileBuffer = await this.fetchFileBuffer(item.url);
+            const uploadedFile = await this.uploadFromBuffer(
+                client,
+                filename,
+                fileBuffer,
+            );
+            const uploadedMedia = this.buildInputMedia(
+                uploadedFile,
+                meta,
+                filename,
+                true,
+            );
+
+            // ✅ UploadMedia converte para InputMediaPhoto/Document processado pelo servidor
+            const serverMedia = await client.invoke(
+                new Api.messages.UploadMedia({
+                    peer,
+                    media: uploadedMedia,
+                }),
+            );
+
+            let finalMedia: Api.TypeInputMedia;
+            if (
+                serverMedia instanceof Api.MessageMediaPhoto &&
+                serverMedia.photo
+            ) {
+                const p = serverMedia.photo as Api.Photo;
+                finalMedia = new Api.InputMediaPhoto({
+                    id: new Api.InputPhoto({
+                        id: p.id,
+                        accessHash: p.accessHash,
+                        fileReference: p.fileReference,
+                    }),
+                });
+            } else if (
+                serverMedia instanceof Api.MessageMediaDocument &&
+                serverMedia.document
+            ) {
+                const d = serverMedia.document as Api.Document;
+                finalMedia = new Api.InputMediaDocument({
+                    id: new Api.InputDocument({
+                        id: d.id,
+                        accessHash: d.accessHash,
+                        fileReference: d.fileReference,
+                    }),
+                });
+            } else {
+                throw new Error(
+                    `UploadMedia retornou tipo inesperado: ${serverMedia.className}`,
+                );
+            }
+
+            this.logger.debug(
+                `[READY item ${filename}] UploadMedia OK -> ${finalMedia.className}`,
+            );
+            return {
+                finalMedia,
+                isImage: meta.isImage,
+                isVideo: meta.isVideo,
+                isAudio: meta.isAudio,
+            };
+        } catch (error) {
+            throw error;
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -278,13 +399,36 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     }
 
     async initBusinessBot(botId: string, token: string): Promise<void> {
-        if (this.businessBots.has(botId)) return;
+        if (this.businessBots.has(botId)) {
+            this.logger.warn(`Business bot ${botId} já ativo, reiniciando...`);
+            try {
+                await this.businessBots.get(botId)!.stopPolling();
+            } catch (_) {}
+            this.businessBots.delete(botId);
+        }
+
+        // ✅ Força o Telegram a encerrar qualquer getUpdates anterior
+        // Chamando getUpdates com timeout=0 e offset=-1 mata a sessão pendente
+        try {
+            const { data } = await axios.post(
+                `https://api.telegram.org/bot${token}/getUpdates`,
+                { timeout: 0, offset: -1 },
+            );
+
+            this.logger.log("[LIMPEZA DE SESSIOES]: ", data);
+        } catch (_) {}
+
+        // ✅ Aguarda o Telegram liberar (necessário após matar sessão anterior)
+        await new Promise((r) => setTimeout(r, 1000));
 
         this.businessBotTokens.set(botId, token);
 
         const bot = new TelegramBot(token, {
             polling: {
+                interval: 300,
+                autoStart: true,
                 params: {
+                    timeout: 10,
                     allowed_updates: [
                         "message",
                         "business_connection",
@@ -315,6 +459,10 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
             this.businessConnections.set(key, connectionId);
             this.logger.log(
                 `Business connection: user ${user.id} → ${connectionId}`,
+            );
+
+            this.logger.log(
+                `[SAVE BUSINESS CONNECTION]: user ${user.id} → ${connectionId}`,
             );
 
             await this.prisma.businessConnection.upsert({
@@ -525,7 +673,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                                     where: {
                                         telegramUserId: userId.toString(),
                                         createdAt: {
-                                            gte: new Date(Date.now() - 240000),
+                                            gte: new Date(Date.now() - 20000),
                                         },
                                     },
                                 });
@@ -557,6 +705,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                                     break;
                                 }
                             }
+
                             if (!bcId) {
                                 const conn =
                                     await this.prisma.businessConnection.findFirst(
@@ -569,37 +718,62 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
 
                             if (!bcId) return;
 
+                            // ✅ Busca configuração de desconto do bot
+                            const discountConfig =
+                                await this.prisma.discountConfig.findUnique({
+                                    where: { botId },
+                                    include: { product: true },
+                                });
+
+                            // ✅ Fallback: se não houver config, busca todos os produtos ativos
+                            const products = discountConfig?.isActive
+                                ? [discountConfig.product]
+                                : await this.prisma.product.findMany({
+                                      where: { isActive: true },
+                                      orderBy: { priceCents: "asc" },
+                                  });
+
+                            if (!products.length) return;
+
+                            const discountPercent = discountConfig?.isActive
+                                ? discountConfig.discountPercent
+                                : 10; // fallback 10%
+
                             const firstProduct =
                                 await this.prisma.product.findFirst({
                                     where: { isActive: true },
                                     orderBy: { priceCents: "asc" },
                                 });
 
-                            if (!firstProduct) return;
+                            const inlineKeyboard = products.map((p) => {
+                                const discountAmount = Math.round(
+                                    p.priceCents * (discountPercent / 100),
+                                );
+                                const discountedCents =
+                                    p.priceCents - discountAmount;
+                                const originalPrice = (p.priceCents / 100)
+                                    .toFixed(2)
+                                    .replace(".", ",");
+                                const discountedPrice = (discountedCents / 100)
+                                    .toFixed(2)
+                                    .replace(".", ",");
 
-                            const discount = firstProduct.priceCents * 0.1; // ✅ 10%
-                            const discountedPrice = (
-                                (firstProduct.priceCents - discount) /
-                                100
-                            )
-                                .toFixed(2)
-                                .replace(".", ",");
+                                return [
+                                    {
+                                        text: `${p.title} — ~~R$ ${originalPrice}~~ R$ ${discountedPrice} (-${discountPercent}%)`,
+                                        callback_data: `buy_discount:${p.id}:${discountPercent}`,
+                                    },
+                                ];
+                            });
 
                             await this.send(
-                                `🔥 *Oferta especial por tempo limitado!*\n\nGanhe *10% de desconto* agora:`,
+                                `🔥 *Oferta especial por tempo limitado!*\n\nGanhe *${discountPercent}% de desconto* agora:`,
                                 token,
                                 chatId.toString(),
                                 bcId,
                                 {
                                     reply_markup: {
-                                        inline_keyboard: [
-                                            [
-                                                {
-                                                    text: `${firstProduct.title} — R$ ${discountedPrice}`,
-                                                    callback_data: `buy_discount:${firstProduct.id}`,
-                                                },
-                                            ],
-                                        ],
+                                        inline_keyboard: inlineKeyboard,
                                     },
                                 },
                             );
@@ -760,7 +934,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                     const sale = await this.prisma.sale.create({
                         data: {
                             botId,
-                            telegramUserId: userTelegram?.id, // mesmo valor usado no referenceId
+                            telegramUserId: userTelegram?.telegramUserId, // mesmo valor usado no referenceId
                             productId: product.id,
                             amountCents: product.priceCents,
                             referenceId: pixData.identifier, // ID único vindo do SyncPay
@@ -787,6 +961,58 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                         ``,
                         `Após o pagamento você receberá a confirmação automaticamente!`,
                     ].join("\n");
+
+                    // Audio com instruçoes
+                    try {
+                        const instructionsAudio =
+                            await this.prisma.pixAudioConfig.findFirst();
+
+                        if (instructionsAudio) {
+                            const client = this.clients.get(botId);
+                            if (client) {
+                                const peer = await client.getInputEntity(
+                                    String(chatId),
+                                );
+
+                                // ✅ Busca buffer já convertido para ogg
+                                const audioBuffer = await this.fetchFileBuffer(
+                                    instructionsAudio.audioUrl,
+                                    true, // forceOgg
+                                );
+
+                                // ✅ Faz upload direto com mimeType de voz
+                                const uploadedFile =
+                                    await this.uploadFromBuffer(
+                                        client,
+                                        `voice_${Date.now()}.ogg`,
+                                        audioBuffer,
+                                    );
+
+                                const voiceMedia =
+                                    new Api.InputMediaUploadedDocument({
+                                        file: uploadedFile,
+                                        mimeType: "audio/ogg",
+                                        attributes: [
+                                            new Api.DocumentAttributeAudio({
+                                                duration: 0,
+                                                voice: true, // ✅ aparece como mensagem de voz
+                                            }),
+                                        ],
+                                    });
+
+                                await client.invoke(
+                                    new Api.messages.SendMedia({
+                                        peer,
+                                        media: voiceMedia,
+                                        message: "",
+                                        randomId: this.makeRandomId(),
+                                    }),
+                                );
+                            }
+                        }
+                    } catch (error) {
+                        throw new Error("[ERRO AO ENVIAR AUDIO COM INSTUÇOES]");
+                    }
 
                     await send(pixMsg);
                     return;
@@ -839,6 +1065,58 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                         ``,
                         `Após o pagamento você receberá a confirmação automaticamente!`,
                     ].join("\n");
+
+                    // Audio com instruçoes
+                    try {
+                        const instructionsAudio =
+                            await this.prisma.pixAudioConfig.findFirst();
+
+                        if (instructionsAudio) {
+                            const client = this.clients.get(botId);
+                            if (client) {
+                                const peer = await client.getInputEntity(
+                                    String(chatId),
+                                );
+
+                                // ✅ Busca buffer já convertido para ogg
+                                const audioBuffer = await this.fetchFileBuffer(
+                                    instructionsAudio.audioUrl,
+                                    true, // forceOgg
+                                );
+
+                                // ✅ Faz upload direto com mimeType de voz
+                                const uploadedFile =
+                                    await this.uploadFromBuffer(
+                                        client,
+                                        `voice_${Date.now()}.ogg`,
+                                        audioBuffer,
+                                    );
+
+                                const voiceMedia =
+                                    new Api.InputMediaUploadedDocument({
+                                        file: uploadedFile,
+                                        mimeType: "audio/ogg",
+                                        attributes: [
+                                            new Api.DocumentAttributeAudio({
+                                                duration: 0,
+                                                voice: true, // ✅ aparece como mensagem de voz
+                                            }),
+                                        ],
+                                    });
+
+                                await client.invoke(
+                                    new Api.messages.SendMedia({
+                                        peer,
+                                        media: voiceMedia,
+                                        message: "",
+                                        randomId: this.makeRandomId(),
+                                    }),
+                                );
+                            }
+                        }
+                    } catch (error) {
+                        throw new Error("[ERRO AO ENVIAR AUDIO COM INSTUÇOES]");
+                    }
 
                     await send(pixMsg);
                     return;
@@ -971,7 +1249,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
             if (telegramUserId) {
                 try {
                     await this.prisma.telegramUser.upsert({
-                        where: { chatId },
+                        where: { chatId, telegramUserId },
                         update: {
                             lastSeenAt: new Date(),
                             username: sender.username || null,
@@ -1063,96 +1341,6 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                         });
                     }
                 };
-
-                // ── list_products ─────────────────────────────────────────
-                if (data === "list_products") {
-                    const products = await this.prisma.product.findMany({
-                        where: { isActive: true },
-                        orderBy: { priceCents: "asc" },
-                    });
-
-                    if (products.length === 0) {
-                        await sendMarkdown(
-                            "😔 Nenhum produto disponível no momento.",
-                        );
-                        return;
-                    }
-
-                    // Cada produto vira um botão com callback_data = "buy:ID"
-                    const inlineKeyboard = products.map((p) => [
-                        {
-                            text: `${p.title} — R$ ${(p.priceCents / 100).toFixed(2).replace(".", ",")}`,
-                            callback_data: `buy:${p.id}`,
-                        },
-                    ]);
-
-                    await sendMarkdown("🛍️ *Escolha o produto:*", {
-                        reply_markup: { inline_keyboard: inlineKeyboard },
-                    });
-                    return;
-                }
-
-                // ── buy:PRODUCT_ID ────────────────────────────────────────
-                if (data.startsWith("buy:")) {
-                    const productId = data.split(":")[1];
-
-                    const product = await this.prisma.product.findUnique({
-                        where: { id: productId },
-                    });
-
-                    if (!product) {
-                        await sendMarkdown("❌ Produto não encontrado.");
-                        return;
-                    }
-
-                    await sendMarkdown(
-                        `⏳ Gerando PIX para *${product.title}*\.\.\.`,
-                    );
-
-                    // productId: product.id,
-                    //     amountCents: product.priceCents,
-                    //     description: product.title,
-                    //     customerChatId: chatId,
-
-                    const pixData = await this.syncPayService.createCharge({
-                        amountCents: product.priceCents,
-                        productTitle: product.title,
-                        referenceId: chatId,
-                    });
-
-                    const price = (product.priceCents / 100)
-                        .toFixed(2)
-                        .replace(".", ",");
-
-                    // MarkdownV2 exige escape de caracteres especiais
-                    const escape = (s: string) =>
-                        s.replace(/[_*[\]()~`>#+=|{}.!-]/g, "\$&");
-
-                    const pixMsg = [
-                        `✅ *PIX gerado com sucesso\!*`,
-                        ``,
-                        `🏷️ *${escape(product.title)}*`,
-                        `💰 Valor: *R\$ ${price.replace(".", "\.")}*`,
-                        ``,
-                        `📋 *Copia e Cola:*`,
-                        `\`${pixData.pix_code}\``,
-                        ``,
-                        `⏰ Válido por 30 minutos`,
-                        ``,
-                        `Após o pagamento você receberá a confirmação automaticamente\.`,
-                    ].join("\n");
-
-                    await sendPix(pixMsg);
-                    return;
-                }
-
-                // ── support ───────────────────────────────────────────────
-                if (data === "support") {
-                    await sendMarkdown(
-                        "🙋 Nossa equipe entrará em contato em breve\!",
-                    );
-                    return;
-                }
             } catch (err) {
                 this.logger.error(`Erro no callback handler:`, err);
             }
@@ -1331,13 +1519,6 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                  *
                  * Tipos mistos (foto + vídeo) também não são permitidos no mesmo album.
                  */
-
-                type ReadyItem = {
-                    finalMedia: Api.TypeInputMedia;
-                    isImage: boolean;
-                    isVideo: boolean;
-                    isAudio: boolean;
-                };
                 const readyItems: ReadyItem[] = [];
 
                 for (let i = 0; i < sortedMedia.length; i++) {

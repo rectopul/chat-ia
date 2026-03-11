@@ -8,15 +8,11 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.AppModule = void 0;
 const common_1 = require("@nestjs/common");
-const telegram_controller_1 = require("./telegram/telegram.controller");
-const telegram_service_1 = require("./telegram/telegram.service");
-const prisma_service_1 = require("./prisma/prisma.service");
 const config_1 = require("@nestjs/config");
-const template_controller_1 = require("./template/template.controller");
-const template_service_1 = require("./template/template.service");
 const schedule_module_1 = require("./schedule/schedule.module");
 const telegram_module_1 = require("./telegram/telegram.module");
 const syncpay_module_1 = require("./syncpay/syncpay.module");
+const template_module_1 = require("./template/template.module");
 let AppModule = class AppModule {
 };
 exports.AppModule = AppModule;
@@ -30,9 +26,10 @@ exports.AppModule = AppModule = __decorate([
             schedule_module_1.ScheduleModule,
             telegram_module_1.TelegramModule,
             syncpay_module_1.SyncPayModule,
+            template_module_1.TemplateModule,
         ],
-        controllers: [telegram_controller_1.TelegramController, template_controller_1.TemplateController],
-        providers: [telegram_service_1.TelegramService, prisma_service_1.PrismaService, template_service_1.TemplateService],
+        controllers: [],
+        providers: [],
     })
 ], AppModule);
 //# sourceMappingURL=app.module.js.map

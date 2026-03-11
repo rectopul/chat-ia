@@ -13,11 +13,13 @@ export declare class TelegramService implements OnModuleInit, OnModuleDestroy {
     constructor(prisma: PrismaService, syncPayService: SyncPayService);
     onModuleInit(): Promise<void>;
     onModuleDestroy(): Promise<void>;
+    private convertToOggOpus;
     private fetchFileBuffer;
     private getMediaMeta;
     private uploadFromBuffer;
     private makeRandomId;
     private buildInputMedia;
+    private prepareMedia;
     private sendMessageHttp;
     private answerCallbackQuery;
     private send;

@@ -8,6 +8,7 @@ import { TemplateService } from "./template/template.service";
 import { ScheduleModule } from "./schedule/schedule.module";
 import { TelegramModule } from "./telegram/telegram.module";
 import { SyncPayModule } from "./syncpay/syncpay.module";
+import { TemplateModule } from "./template/template.module";
 
 @Module({
     imports: [
@@ -19,8 +20,9 @@ import { SyncPayModule } from "./syncpay/syncpay.module";
         ScheduleModule,
         TelegramModule,
         SyncPayModule,
+        TemplateModule,
     ],
-    controllers: [TelegramController, TemplateController],
-    providers: [TelegramService, PrismaService, TemplateService],
+    controllers: [],
+    providers: [],
 })
 export class AppModule {}

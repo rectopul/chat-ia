@@ -33,15 +33,26 @@ export async function POST(req: NextRequest) {
         );
     }
 
+    const activeBotId = await prisma.botAccount.findFirst({
+        where: { isActive: true },
+    });
+
+    if (!activeBotId) {
+        return NextResponse.json(
+            { error: "Nenhuma conta de bot ativa no momento" },
+            { status: 400 },
+        );
+    }
+
     const config = await prisma.discountConfig.upsert({
-        where: { botId },
+        where: { botId: activeBotId.id },
         update: {
             productId,
             discountPercent,
             isActive: true,
             updatedAt: new Date(),
         },
-        create: { botId, productId, discountPercent },
+        create: { botId: activeBotId.id, productId, discountPercent },
         include: { product: true },
     });
 

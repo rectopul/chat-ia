@@ -68,6 +68,12 @@ export default async function AdminLayout({
                         Vendas
                     </Link>
                     <Link
+                        href="/admin/configuracoes"
+                        className="p-2 hover:bg-indigo-800 rounded"
+                    >
+                        Configuraçoes
+                    </Link>
+                    <Link
                         href="/admin/sales"
                         className="p-2 hover:bg-indigo-800 rounded"
                     >

@@ -28,7 +28,7 @@ export function BotTokenEditor({ botId, currentToken, onSave }: Props) {
             // 2. Inicializa o bot no NestJS em tempo real (sem restart)
             setStatus("registering");
             await axios.post(
-                "http://localhost:3001/telegram/register-business-bot",
+                `${process.env.NEXT_PUBLIC_NEST_API_URL}/telegram/register-business-bot`,
                 {
                     botId,
                     token,
