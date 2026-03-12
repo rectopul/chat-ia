@@ -1,9 +1,39 @@
 "use client";
-// components/TemplateForm.tsx
-// Formulário completo para criação de templates com upload via Vercel Blob.
-
 import { useState } from "react";
 import { MediaUploader } from "./MediaUploader";
+import {
+  Plus,
+  Trash2,
+  Check,
+  FileText,
+  Image as ImageIcon,
+  Video,
+  Mic,
+  Layers,
+  Info
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from "@/components/ui/select";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger
+} from "@/components/ui/tooltip";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle
+} from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 
 const TEMPLATE_KEYS = ["WELCOME", "DONT_SELL", "SUBSCRIBER_CONTENT", "TIMED"];
 const MEDIA_TYPES = ["TEXT", "IMAGE", "VIDEO", "AUDIO", "COMBO"];
@@ -84,198 +114,219 @@ export function TemplateForm({ onSubmit }: Props) {
         }
     };
 
+    const typeIcons: Record<string, any> = {
+        TEXT: FileText,
+        IMAGE: ImageIcon,
+        VIDEO: Video,
+        AUDIO: Mic,
+        COMBO: Layers
+    };
+
     return (
-        <div className="bg-white p-6 rounded-xl shadow-md border border-gray-100 space-y-5">
-            <h3 className="text-lg font-bold text-gray-800">Novo Template</h3>
-
-            {/* Linha 1: Key + Título */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-1">
-                    <label className="text-sm font-medium text-gray-700">
-                        Chave
-                    </label>
-                    <select
-                        value={key}
-                        onChange={(e) => setKey(e.target.value)}
-                        className="w-full p-2 border rounded-lg text-sm"
-                    >
-                        {TEMPLATE_KEYS.map((k) => (
-                            <option key={k} value={k}>
-                                {k}
-                            </option>
-                        ))}
-                    </select>
-                </div>
-                <div className="space-y-1">
-                    <label className="text-sm font-medium text-gray-700">
-                        Título
-                    </label>
-                    <input
-                        value={title}
-                        onChange={(e) => setTitle(e.target.value)}
-                        placeholder="Ex: Boas-vindas com imagem"
-                        className="w-full p-2 border rounded-lg text-sm"
-                    />
-                </div>
-            </div>
-
-            {/* Tipo */}
-            <div className="space-y-1">
-                <label className="text-sm font-medium text-gray-700">
-                    Tipo de Mídia
-                </label>
-                <div className="flex flex-wrap gap-2">
-                    {MEDIA_TYPES.map((t) => (
-                        <button
-                            key={t}
-                            type="button"
-                            onClick={() => {
-                                setType(t);
-                                setMediaUrl("");
-                                setComboItems([]);
-                            }}
-                            className={`px-3 py-1.5 rounded-full text-xs font-medium transition ${
-                                type === t
-                                    ? "bg-indigo-600 text-white"
-                                    : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-                            }`}
+        <Card className="border-none shadow-sm overflow-hidden">
+            <CardHeader className="bg-slate-50/50">
+                <CardTitle className="text-lg flex items-center gap-2">
+                    <Plus className="w-5 h-5 text-primary" />
+                    Novo Template
+                </CardTitle>
+            </CardHeader>
+            <CardContent className="p-6 space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="space-y-2">
+                        <Label className="font-semibold flex items-center gap-2">
+                            Finalidade (Key)
+                            <Tooltip>
+                                <TooltipTrigger asChild><Info className="w-3.5 h-3.5 text-slate-400" /></TooltipTrigger>
+                                <TooltipContent>Identificador para o sistema disparar no evento correto.</TooltipContent>
+                            </Tooltip>
+                        </Label>
+                        <select
+                            value={key}
+                            onChange={(e) => setKey(e.target.value)}
+                            className="w-full h-10 px-3 py-2 bg-slate-50/50 border border-slate-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
                         >
-                            {t}
-                        </button>
-                    ))}
-                </div>
-            </div>
-
-            {/* Texto */}
-            <div className="space-y-1">
-                <label className="text-sm font-medium text-gray-700">
-                    Texto{" "}
-                    <span className="text-gray-400 font-normal text-xs">
-                        {type === "TEXT"
-                            ? "(obrigatório)"
-                            : "(opcional — legenda)"}
-                    </span>
-                </label>
-                <textarea
-                    value={text}
-                    onChange={(e) => setText(e.target.value)}
-                    placeholder="Digite o texto ou legenda..."
-                    rows={3}
-                    className="w-full p-2 border rounded-lg text-sm resize-none"
-                />
-            </div>
-
-            {/* Upload de mídia única (IMAGE / VIDEO / AUDIO) */}
-            {(type === "IMAGE" || type === "VIDEO" || type === "AUDIO") && (
-                <div className="space-y-1">
-                    <label className="text-sm font-medium text-gray-700">
-                        Arquivo de Mídia
-                    </label>
-                    <MediaUploader
-                        accept={
-                            type === "IMAGE"
-                                ? "image/*"
-                                : type === "VIDEO"
-                                  ? "video/*"
-                                  : "audio/*"
-                        }
-                        currentUrl={mediaUrl}
-                        onUploaded={(url) => setMediaUrl(url)}
-                    />
-                </div>
-            )}
-
-            {/* COMBO: múltiplos arquivos */}
-            {type === "COMBO" && (
-                <div className="space-y-3">
-                    <div className="flex items-center justify-between">
-                        <label className="text-sm font-medium text-gray-700">
-                            Arquivos do Combo
-                        </label>
-                        <button
-                            type="button"
-                            onClick={addComboItem}
-                            className="text-xs text-indigo-600 hover:underline font-medium"
-                        >
-                            + Adicionar arquivo
-                        </button>
+                            {TEMPLATE_KEYS.map((k) => (
+                                <option key={k} value={k}>{k}</option>
+                            ))}
+                        </select>
                     </div>
-
-                    {comboItems.length === 0 && (
-                        <p className="text-xs text-gray-400 italic">
-                            Clique em "Adicionar arquivo" para montar o combo.
-                        </p>
-                    )}
-
-                    {comboItems.map((item, index) => (
-                        <div
-                            key={item.localId}
-                            className="flex gap-3 items-start p-3 border rounded-lg bg-gray-50"
-                        >
-                            <span className="text-xs font-mono text-gray-400 mt-2 w-4 shrink-0">
-                                {index + 1}
-                            </span>
-                            <div className="flex-1 space-y-2">
-                                <select
-                                    value={item.type}
-                                    onChange={(e) =>
-                                        updateComboItem(item.localId, {
-                                            type: e.target.value,
-                                            url: "",
-                                        })
-                                    }
-                                    className="w-full p-1.5 border rounded-md text-xs"
-                                >
-                                    {["IMAGE", "VIDEO", "AUDIO"].map((t) => (
-                                        <option key={t} value={t}>
-                                            {t}
-                                        </option>
-                                    ))}
-                                </select>
-                                <MediaUploader
-                                    accept={
-                                        item.type === "IMAGE"
-                                            ? "image/*"
-                                            : item.type === "VIDEO"
-                                              ? "video/*"
-                                              : "audio/*"
-                                    }
-                                    currentUrl={item.url}
-                                    onUploaded={(url) =>
-                                        updateComboItem(item.localId, { url })
-                                    }
-                                />
-                            </div>
-                            <button
-                                type="button"
-                                onClick={() => removeComboItem(item.localId)}
-                                className="text-red-400 hover:text-red-600 mt-1 text-lg leading-none"
-                            >
-                                ×
-                            </button>
-                        </div>
-                    ))}
+                    <div className="space-y-2">
+                        <Label className="font-semibold">Título do Template</Label>
+                        <Input
+                            value={title}
+                            onChange={(e) => setTitle(e.target.value)}
+                            placeholder="Ex: Boas-vindas Black Friday"
+                            className="bg-slate-50/50 border-slate-200"
+                        />
+                    </div>
                 </div>
-            )}
 
-            {/* Submit */}
-            <button
-                type="button"
-                onClick={handleSubmit}
-                disabled={
-                    saving ||
-                    !title ||
-                    (type !== "TEXT" && type !== "COMBO" && !mediaUrl) ||
-                    (type === "COMBO" && comboItems.some((i) => !i.url))
-                }
-                className="w-full py-3 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 disabled:opacity-40 transition text-sm"
-            >
-                {saving
-                    ? "Salvando..."
-                    : success
-                      ? "✓ Template salvo!"
-                      : "Salvar Template"}
-            </button>
-        </div>
+                <div className="space-y-3">
+                    <Label className="font-semibold">Tipo de Conteúdo</Label>
+                    <div className="flex flex-wrap gap-2 p-1.5 bg-slate-100/50 rounded-lg w-fit border border-slate-200">
+                        {MEDIA_TYPES.map((t) => {
+                            const Icon = typeIcons[t];
+                            return (
+                                <button
+                                    key={t}
+                                    type="button"
+                                    onClick={() => {
+                                        setType(t);
+                                        setMediaUrl("");
+                                        setComboItems([]);
+                                    }}
+                                    className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-2 ${
+                                        type === t
+                                            ? "bg-white text-primary shadow-sm"
+                                            : "text-slate-500 hover:text-slate-700"
+                                    }`}
+                                >
+                                    <Icon className="w-3.5 h-3.5" />
+                                    {t}
+                                </button>
+                            );
+                        })}
+                    </div>
+                </div>
+
+                <div className="space-y-2">
+                    <Label className="font-semibold flex items-center gap-2">
+                        Texto / Legenda
+                        <span className="font-normal text-[10px] text-slate-400 uppercase tracking-wider">
+                            {type === "TEXT" ? "(obrigatório)" : "(opcional)"}
+                        </span>
+                    </Label>
+                    <textarea
+                        value={text}
+                        onChange={(e) => setText(e.target.value)}
+                        placeholder="Digite sua mensagem aqui..."
+                        rows={4}
+                        className="w-full p-3 bg-slate-50/50 border border-slate-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 resize-none"
+                    />
+                </div>
+
+                {(type === "IMAGE" || type === "VIDEO" || type === "AUDIO") && (
+                    <div className="space-y-3 p-4 bg-slate-50 border border-slate-200 rounded-lg border-dashed">
+                        <Label className="font-semibold text-slate-700">Arquivo de Mídia</Label>
+                        <MediaUploader
+                            accept={
+                                type === "IMAGE"
+                                    ? "image/*"
+                                    : type === "VIDEO"
+                                      ? "video/*"
+                                      : "audio/*"
+                            }
+                            currentUrl={mediaUrl}
+                            onUploaded={(url) => setMediaUrl(url)}
+                        />
+                    </div>
+                )}
+
+                {type === "COMBO" && (
+                    <div className="space-y-4 border border-slate-200 rounded-lg p-5 bg-slate-50/30">
+                        <div className="flex items-center justify-between">
+                            <Label className="font-bold text-slate-800 flex items-center gap-2">
+                                <Layers className="w-4 h-4 text-primary" />
+                                Elementos do Combo
+                            </Label>
+                            <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={addComboItem}
+                                className="h-8 text-[10px] font-bold uppercase tracking-wider bg-white border-slate-200"
+                            >
+                                <Plus className="w-3 h-3 mr-1" />
+                                Novo Arquivo
+                            </Button>
+                        </div>
+
+                        {comboItems.length === 0 && (
+                            <div className="text-center py-8 border border-dashed border-slate-300 rounded-md bg-white">
+                                <p className="text-xs text-slate-400">Nenhum elemento adicionado ao combo.</p>
+                            </div>
+                        )}
+
+                        <div className="space-y-3">
+                            {comboItems.map((item, index) => (
+                                <div
+                                    key={item.localId}
+                                    className="flex gap-4 items-start p-4 border border-slate-200 rounded-xl bg-white shadow-sm transition-all"
+                                >
+                                    <Badge variant="secondary" className="bg-slate-100 text-slate-500 font-mono text-[10px] h-6 w-6 flex items-center justify-center rounded-full shrink-0">
+                                        {index + 1}
+                                    </Badge>
+                                    <div className="flex-1 space-y-3">
+                                        <select
+                                            value={item.type}
+                                            onChange={(e) =>
+                                                updateComboItem(item.localId, {
+                                                    type: e.target.value,
+                                                    url: "",
+                                                })
+                                            }
+                                            className="w-full h-8 px-2 bg-slate-50/50 border border-slate-200 rounded text-xs focus:outline-none"
+                                        >
+                                            {["IMAGE", "VIDEO", "AUDIO"].map((t) => (
+                                                <option key={t} value={t}>{t}</option>
+                                            ))}
+                                        </select>
+                                        <MediaUploader
+                                            accept={
+                                                item.type === "IMAGE"
+                                                    ? "image/*"
+                                                    : item.type === "VIDEO"
+                                                      ? "video/*"
+                                                      : "audio/*"
+                                            }
+                                            currentUrl={item.url}
+                                            onUploaded={(url) =>
+                                                updateComboItem(item.localId, { url })
+                                            }
+                                        />
+                                    </div>
+                                    <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="icon"
+                                        onClick={() => removeComboItem(item.localId)}
+                                        className="text-slate-300 hover:text-red-500"
+                                    >
+                                        <Trash2 className="w-4 h-4" />
+                                    </Button>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
+
+                <Button
+                    onClick={handleSubmit}
+                    disabled={
+                        saving ||
+                        !title ||
+                        (type !== "TEXT" && type !== "COMBO" && !mediaUrl) ||
+                        (type === "COMBO" && comboItems.some((i) => !i.url))
+                    }
+                    className={`w-full h-12 text-sm font-bold uppercase tracking-widest shadow-lg shadow-primary/20 transition-all ${
+                        success ? "bg-emerald-500 hover:bg-emerald-600" : "bg-primary hover:bg-primary/90"
+                    }`}
+                >
+                    {saving ? (
+                        <div className="flex items-center gap-2">
+                            <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                            Salvando...
+                        </div>
+                    ) : success ? (
+                        <div className="flex items-center gap-2">
+                            <Check className="w-4 h-4" />
+                            Sucesso!
+                        </div>
+                    ) : (
+                        "Salvar Template"
+                    )}
+                </Button>
+            </CardContent>
+        </Card>
     );
 }

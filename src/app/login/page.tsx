@@ -3,6 +3,11 @@ export const runtime = "nodejs";
 import { useState } from "react";
 import { signIn } from "next-auth/react";
 import { useRouter } from "next/navigation";
+import { Bot, Lock, Mail, Loader2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 
 export default function LoginPage() {
     const [email, setEmail] = useState("");
@@ -28,46 +33,80 @@ export default function LoginPage() {
     };
 
     return (
-        <div className="flex min-h-screen items-center justify-center bg-gray-100">
-            <div className="w-full max-w-md p-8 space-y-8 bg-white rounded shadow-md">
-                <h2 className="text-3xl font-bold text-center">Login Admin</h2>
-                {error && (
-                    <div className="p-3 text-sm text-red-500 bg-red-100 rounded">
-                        {error}
+        <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
+            <div className="w-full max-w-[400px] space-y-8">
+                <div className="flex flex-col items-center text-center space-y-2">
+                    <div className="w-12 h-12 bg-primary rounded-xl flex items-center justify-center shadow-lg shadow-primary/20">
+                        <Bot className="w-7 h-7 text-white" />
                     </div>
-                )}
-                <form className="space-y-6" onSubmit={handleSubmit}>
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700">
-                            Email
-                        </label>
-                        <input
-                            type="email"
-                            required
-                            className="w-full px-3 py-2 mt-1 border border-gray-300 rounded focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
-                            value={email}
-                            onChange={(e) => setEmail(e.target.value)}
-                        />
-                    </div>
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700">
-                            Senha
-                        </label>
-                        <input
-                            type="password"
-                            required
-                            className="w-full px-3 py-2 mt-1 border border-gray-300 rounded focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
-                            value={password}
-                            onChange={(e) => setPassword(e.target.value)}
-                        />
-                    </div>
-                    <button
-                        type="submit"
-                        className="w-full py-2 text-white bg-indigo-600 rounded hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
-                    >
-                        Entrar
-                    </button>
-                </form>
+                    <h1 className="text-2xl font-bold tracking-tight text-slate-900">Bot Admin Pro</h1>
+                    <p className="text-sm text-slate-500 text-balance">
+                        Entre com suas credenciais para gerenciar seus bots e campanhas.
+                    </p>
+                </div>
+
+                <Card className="border-none shadow-xl shadow-slate-200/50">
+                    <CardHeader className="space-y-1">
+                        <CardTitle className="text-xl">Login</CardTitle>
+                        <CardDescription>
+                            Acesse o painel administrativo
+                        </CardDescription>
+                    </CardHeader>
+                    <form onSubmit={handleSubmit}>
+                        <CardContent className="space-y-4">
+                            {error && (
+                                <div className="p-3 text-xs font-medium text-red-600 bg-red-50 border border-red-100 rounded-lg flex items-center gap-2 animate-in fade-in zoom-in duration-200">
+                                    <div className="w-1 h-1 bg-red-600 rounded-full" />
+                                    {error}
+                                </div>
+                            )}
+                            <div className="space-y-2">
+                                <Label htmlFor="email">E-mail</Label>
+                                <div className="relative">
+                                    <Mail className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
+                                    <Input
+                                        id="email"
+                                        type="email"
+                                        placeholder="admin@exemplo.com"
+                                        className="pl-10 bg-slate-50/50 border-slate-200 focus:bg-white transition-colors"
+                                        value={email}
+                                        onChange={(e) => setEmail(e.target.value)}
+                                        required
+                                    />
+                                </div>
+                            </div>
+                            <div className="space-y-2">
+                                <div className="flex items-center justify-between">
+                                    <Label htmlFor="password">Senha</Label>
+                                </div>
+                                <div className="relative">
+                                    <Lock className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
+                                    <Input
+                                        id="password"
+                                        type="password"
+                                        placeholder="••••••••"
+                                        className="pl-10 bg-slate-50/50 border-slate-200 focus:bg-white transition-colors"
+                                        value={password}
+                                        onChange={(e) => setPassword(e.target.value)}
+                                        required
+                                    />
+                                </div>
+                            </div>
+                        </CardContent>
+                        <CardFooter>
+                            <Button
+                                type="submit"
+                                className="w-full h-11 font-bold uppercase tracking-widest bg-primary hover:bg-primary/90 transition-all shadow-lg shadow-primary/20"
+                            >
+                                Entrar no Painel
+                            </Button>
+                        </CardFooter>
+                    </form>
+                </Card>
+
+                <p className="text-center text-xs text-slate-400">
+                    &copy; {new Date().getFullYear()} Bot Admin SaaS. Todos os direitos reservados.
+                </p>
             </div>
         </div>
     );
