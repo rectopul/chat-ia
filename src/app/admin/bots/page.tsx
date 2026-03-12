@@ -2,6 +2,39 @@ import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { BotConnectionManager } from "@/components/BotConnectionManager";
 import { BotTokenEditor } from "@/components/BotTokenEditor";
+import {
+  Bot,
+  Plus,
+  Info,
+  Phone,
+  Hash,
+  ShieldCheck,
+  Power,
+  PowerOff
+} from "lucide-react";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle
+} from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow
+} from "@/components/ui/table";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger
+} from "@/components/ui/tooltip";
+import { Badge } from "@/components/ui/badge";
 
 export default async function AdminBotsPage() {
     const bots = await prisma.botAccount.findMany({
@@ -48,154 +81,159 @@ export default async function AdminBotsPage() {
     }
 
     return (
-        <div className="p-8 max-w-6xl mx-auto space-y-8">
-            {/* ── Formulário de cadastro ── */}
-            <div className="bg-white p-6 rounded-xl shadow-md border border-gray-100">
-                <h3 className="text-xl font-bold mb-1 text-gray-800">
-                    Cadastrar Nova Conta
-                </h3>
-                <p className="text-sm text-gray-500 mb-6">
-                    Após salvar, você poderá adicionar o token do bot auxiliar
-                    diretamente na tabela.
-                </p>
-
-                <form
-                    action={createBot}
-                    className="grid grid-cols-1 md:grid-cols-2 gap-4"
-                >
-                    <div className="space-y-1">
-                        <label className="text-sm font-medium text-gray-700">
-                            Nome da Instância
-                        </label>
-                        <input
-                            name="name"
-                            placeholder="Ex: Minha Conta Pessoal"
-                            className="w-full p-2 border rounded-lg text-sm"
-                            required
-                        />
-                    </div>
-                    <div className="space-y-1">
-                        <label className="text-sm font-medium text-gray-700">
-                            Telefone
-                        </label>
-                        <input
-                            name="phoneNumber"
-                            placeholder="+5511999999999"
-                            className="w-full p-2 border rounded-lg text-sm"
-                            required
-                        />
-                    </div>
-                    <div className="space-y-1">
-                        <label className="text-sm font-medium text-gray-700">
-                            API ID
-                            <span className="ml-1 text-xs text-gray-400 font-normal">
-                                (my.telegram.org)
-                            </span>
-                        </label>
-                        <input
-                            name="apiId"
-                            type="number"
-                            placeholder="1234567"
-                            className="w-full p-2 border rounded-lg text-sm"
-                            required
-                        />
-                    </div>
-                    <div className="space-y-1">
-                        <label className="text-sm font-medium text-gray-700">
-                            API Hash
-                            <span className="ml-1 text-xs text-gray-400 font-normal">
-                                (my.telegram.org)
-                            </span>
-                        </label>
-                        <input
-                            name="apiHash"
-                            placeholder="abcdef123456..."
-                            className="w-full p-2 border rounded-lg text-sm"
-                            required
-                        />
-                    </div>
-                    <button
-                        type="submit"
-                        className="md:col-span-2 py-3 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 transition text-sm"
-                    >
-                        Salvar Conta
-                    </button>
-                </form>
+        <div className="max-w-7xl mx-auto space-y-8">
+            <div className="flex flex-col gap-2">
+                <h1 className="text-3xl font-bold tracking-tight text-slate-900">Contas e Bots</h1>
+                <p className="text-slate-500">Gerencie suas conexões MTProto e bots auxiliares de business.</p>
             </div>
 
-            {/* ── Tabela de contas ── */}
-            <div className="bg-white rounded-xl shadow-md border border-gray-100 overflow-hidden">
-                <table className="min-w-full divide-y divide-gray-200">
-                    <thead className="bg-gray-50">
-                        <tr>
-                            <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase">
-                                Usuário
-                            </th>
-                            <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase">
-                                Business Bot Token
-                            </th>
-                            <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase">
-                                Conexão MTProto
-                            </th>
-                            <th className="px-6 py-4 text-left text-xs font-bold text-gray-500 uppercase">
-                                Ações
-                            </th>
-                        </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-200">
-                        {bots.map((bot) => (
-                            <tr key={bot.id} className="hover:bg-gray-50">
-                                <td className="px-6 py-4">
-                                    <div className="text-sm font-bold text-gray-900">
-                                        {bot.name}
-                                    </div>
-                                    <div className="text-xs text-gray-500 font-mono">
-                                        {bot.phoneNumber}
-                                    </div>
-                                </td>
+            <Card className="border-none shadow-sm">
+                <CardHeader>
+                    <div className="flex items-center gap-2">
+                        <Plus className="w-5 h-5 text-primary" />
+                        <CardTitle>Nova Instância</CardTitle>
+                    </div>
+                    <CardDescription>
+                        Cadastre uma nova conta do Telegram para disparos em massa e automações.
+                    </CardDescription>
+                </CardHeader>
+                <CardContent>
+                    <form action={createBot} className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                        <div className="space-y-2">
+                            <label className="text-sm font-semibold flex items-center gap-2">
+                                Nome
+                                <Tooltip>
+                                    <TooltipTrigger asChild>
+                                        <Info className="w-3.5 h-3.5 text-slate-400" />
+                                    </TooltipTrigger>
+                                    <TooltipContent>Um nome interno para identificar esta conta.</TooltipContent>
+                                </Tooltip>
+                            </label>
+                            <Input name="name" placeholder="Ex: Principal" required className="bg-slate-50/50 border-slate-200" />
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-semibold flex items-center gap-2">
+                                Telefone
+                                <Tooltip>
+                                    <TooltipTrigger asChild>
+                                        <Info className="w-3.5 h-3.5 text-slate-400" />
+                                    </TooltipTrigger>
+                                    <TooltipContent>Número com código do país. Ex: +5511...</TooltipContent>
+                                </Tooltip>
+                            </label>
+                            <Input name="phoneNumber" placeholder="+55..." required className="bg-slate-50/50 border-slate-200" />
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-semibold flex items-center gap-2">
+                                API ID
+                                <Tooltip>
+                                    <TooltipTrigger asChild>
+                                        <Info className="w-3.5 h-3.5 text-slate-400" />
+                                    </TooltipTrigger>
+                                    <TooltipContent>Obtido em my.telegram.org</TooltipContent>
+                                </Tooltip>
+                            </label>
+                            <Input name="apiId" type="number" placeholder="123456" required className="bg-slate-50/50 border-slate-200" />
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-semibold flex items-center gap-2">
+                                API Hash
+                                <Tooltip>
+                                    <TooltipTrigger asChild>
+                                        <Info className="w-3.5 h-3.5 text-slate-400" />
+                                    </TooltipTrigger>
+                                    <TooltipContent>Obtido em my.telegram.org</TooltipContent>
+                                </Tooltip>
+                            </label>
+                            <Input name="apiHash" placeholder="abc123..." required className="bg-slate-50/50 border-slate-200" />
+                        </div>
+                        <Button type="submit" className="md:col-span-4 w-full bg-primary hover:bg-primary/90">
+                            Criar Conta
+                        </Button>
+                    </form>
+                </CardContent>
+            </Card>
 
-                                {/* Coluna editável inline */}
-                                <td className="px-6 py-4 w-80">
+            <Card className="border-none shadow-sm overflow-hidden">
+                <Table>
+                    <TableHeader className="bg-slate-50/50">
+                        <TableRow className="hover:bg-transparent border-slate-100">
+                            <TableHead className="w-[250px] font-bold text-slate-700">Identificação</TableHead>
+                            <TableHead className="font-bold text-slate-700">
+                                <div className="flex items-center gap-2">
+                                    Business Bot Token
+                                    <Tooltip>
+                                        <TooltipTrigger asChild>
+                                            <Info className="w-3.5 h-3.5 text-slate-400" />
+                                        </TooltipTrigger>
+                                        <TooltipContent>Token do BotFather para integração Business.</TooltipContent>
+                                    </Tooltip>
+                                </div>
+                            </TableHead>
+                            <TableHead className="font-bold text-slate-700">MTProto</TableHead>
+                            <TableHead className="text-right font-bold text-slate-700">Ações</TableHead>
+                        </tr>
+                    </TableHeader>
+                    <TableBody>
+                        {bots.map((bot) => (
+                            <TableRow key={bot.id} className="border-slate-50 hover:bg-slate-50/30 transition-colors">
+                                <TableCell>
+                                    <div className="flex items-center gap-3">
+                                        <div className={`p-2 rounded-full ${bot.isActive ? 'bg-blue-50 text-blue-600' : 'bg-slate-100 text-slate-400'}`}>
+                                            <Bot className="w-4 h-4" />
+                                        </div>
+                                        <div>
+                                            <div className="font-bold text-slate-900">{bot.name}</div>
+                                            <div className="text-xs text-slate-500 font-mono flex items-center gap-1">
+                                                <Phone className="w-3 h-3" />
+                                                {bot.phoneNumber}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </TableCell>
+                                <TableCell>
                                     <BotTokenEditor
                                         botId={bot.id}
-                                        currentToken={
-                                            bot.businessBotToken ?? ""
-                                        }
+                                        currentToken={bot.businessBotToken ?? ""}
                                         onSave={saveToken}
                                     />
-                                </td>
-
-                                <td className="px-6 py-4">
+                                </TableCell>
+                                <TableCell>
                                     <BotConnectionManager bot={bot} />
-                                </td>
-
-                                <td className="px-6 py-4 text-sm">
-                                    <form
-                                        action={toggleBot.bind(
-                                            null,
-                                            bot.id,
-                                            bot.isActive,
-                                        )}
-                                    >
-                                        <button
-                                            type="submit"
-                                            className={`font-medium hover:underline ${
-                                                bot.isActive
-                                                    ? "text-red-600"
-                                                    : "text-green-600"
-                                            }`}
+                                </TableCell>
+                                <TableCell className="text-right">
+                                    <form action={toggleBot.bind(null, bot.id, bot.isActive)}>
+                                        <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            className={bot.isActive ? "text-red-500 hover:text-red-600 hover:bg-red-50" : "text-emerald-500 hover:text-emerald-600 hover:bg-emerald-50"}
                                         >
-                                            {bot.isActive
-                                                ? "Desconectar"
-                                                : "Conectar"}
-                                        </button>
+                                            {bot.isActive ? (
+                                                <>
+                                                    <PowerOff className="w-4 h-4 mr-2" />
+                                                    Desativar
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <Power className="w-4 h-4 mr-2" />
+                                                    Ativar
+                                                </>
+                                            )}
+                                        </Button>
                                     </form>
-                                </td>
-                            </tr>
+                                </TableCell>
+                            </TableRow>
                         ))}
-                    </tbody>
-                </table>
-            </div>
+                        {bots.length === 0 && (
+                            <TableRow>
+                                <TableCell colSpan={4} className="h-24 text-center text-slate-400 italic">
+                                    Nenhuma conta cadastrada.
+                                </TableCell>
+                            </TableRow>
+                        )}
+                    </TableBody>
+                </Table>
+            </Card>
         </div>
     );
 }
