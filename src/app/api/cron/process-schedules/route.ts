@@ -13,7 +13,7 @@ import { NextResponse } from "next/server";
 export const runtime = "edge";
 
 export async function GET() {
-    const nestUrl = process.env.NEST_API_URL;
+    const nestUrl = process.env.NEXT_PUBLIC_NEST_API_URL;
     const secret = process.env.CRON_SECRET;
 
     if (!nestUrl) {

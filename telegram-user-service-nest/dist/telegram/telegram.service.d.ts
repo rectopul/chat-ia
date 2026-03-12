@@ -13,21 +13,32 @@ export declare class TelegramService implements OnModuleInit, OnModuleDestroy {
     constructor(prisma: PrismaService, syncPayService: SyncPayService);
     onModuleInit(): Promise<void>;
     onModuleDestroy(): Promise<void>;
+    private getMediaMeta;
     private convertToOggOpus;
     private fetchFileBuffer;
-    private getMediaMeta;
     private uploadFromBuffer;
     private makeRandomId;
     private buildInputMedia;
     private prepareMedia;
+    private sendPixAudio;
+    private buildPixMessage;
     private sendMessageHttp;
     private answerCallbackQuery;
     private send;
-    initBusinessBot(botId: string, token: string): Promise<void>;
+    private resolveBusinessConnectionId;
     getBusinessConnectionId(botId: string, userTelegramId: string): string | undefined;
+    initBusinessBot(botId: string, token: string): Promise<void>;
+    private registerBusinessConnectionHandler;
+    private registerBusinessMessageHandler;
+    private handleGreeting;
+    private scheduleDontSell;
+    private registerCallbackQueryHandler;
+    private handleListProducts;
+    private handleBuy;
+    private handleBuyDiscount;
+    private initClient;
     sendBusinessMessageWithKeyboard(botId: string, businessConnectionId: string, recipientChatId: string | number, text: string, keyboard: string[][]): Promise<void>;
     sendKeyboardAsBusinessUser(botId: string, ownerTelegramId: string, recipientChatId: string | number, text: string, keyboard: string[][]): Promise<void>;
-    private initClient;
     sendCode(botId: string, phoneNumber: string): Promise<{
         message: string;
     }>;
@@ -42,4 +53,6 @@ export declare class TelegramService implements OnModuleInit, OnModuleDestroy {
     }>;
     private _finalizeLogin;
     sendTemplate(botId: string, chatId: string, template: any): Promise<void>;
+    private sendCombo;
+    private sendSingleMedia;
 }
