@@ -3,10 +3,12 @@ import { Module } from "@nestjs/common";
 import { TelegramService } from "./telegram.service";
 import { PrismaModule } from "../prisma/prisma.module";
 import { SyncPayModule } from "src/syncpay/syncpay.module";
+import { TelegramController } from "./telegram.controller";
 
 @Module({
     imports: [PrismaModule, SyncPayModule],
     providers: [TelegramService],
+    controllers: [TelegramController],
     exports: [TelegramService],
 })
 export class TelegramModule {}

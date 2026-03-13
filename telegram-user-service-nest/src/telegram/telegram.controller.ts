@@ -4,8 +4,9 @@ import {
     Body,
     ForbiddenException,
     HttpCode,
+    Get,
 } from "@nestjs/common";
-import { TelegramService } from "./telegram.service";
+import { BotStatusResponse, TelegramService } from "./telegram.service";
 
 @Controller("telegram")
 export class TelegramController {
@@ -64,5 +65,10 @@ export class TelegramController {
     async registerBusinessBot(@Body() body: { botId: string; token: string }) {
         await this.telegramService.initBusinessBot(body.botId, body.token);
         return { message: "Business bot inicializado com sucesso." };
+    }
+
+    @Get("bot-status")
+    async getBotStatus(): Promise<BotStatusResponse> {
+        return this.telegramService.getBotStatus();
     }
 }

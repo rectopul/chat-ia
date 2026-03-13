@@ -17,6 +17,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { SyncPayService } from "../syncpay/syncpay.service";
+import { MessageTemplateKey } from "@prisma/client";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -35,6 +36,19 @@ type MediaMeta = {
     isImage: boolean;
 };
 
+export type BotStatusItem = {
+    key: string;
+    label: string;
+    description: string;
+    ok: boolean;
+    critical: boolean;
+};
+
+export type BotStatusResponse = {
+    allCriticalOk: boolean;
+    items: BotStatusItem[];
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 @Injectable()
@@ -48,7 +62,19 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     >();
     private businessBots: Map<string, TelegramBot> = new Map();
     private businessBotTokens: Map<string, string> = new Map();
+
+    /**
+     * Key: `${botId}:${userTelegramId}` → connectionId
+     * botId é sempre o id da BotAccount com isUserAccount=true
+     */
     private businessConnections: Map<string, string> = new Map();
+
+    /**
+     * Key: `${botId}:${chatId}` → connectionId
+     * Registrado a cada business_message recebida.
+     * Resolve o problema de chatId (cliente) ≠ userTelegramId (dono da conta).
+     */
+    private chatConnectionMap: Map<string, string> = new Map();
 
     constructor(
         private readonly prisma: PrismaService,
@@ -60,6 +86,19 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     // ─────────────────────────────────────────────────────────────────────
 
     async onModuleInit() {
+        /**
+         * ✅ CORREÇÃO CRÍTICA — causa raiz do BUSINESS_PEER_INVALID:
+         *
+         * A versão bugada buscava contas com isUserAccount=false numa query
+         * separada para inicializar o business bot, usando um botId diferente
+         * do que estava em businessConnections. Isso fazia o callback_query
+         * não encontrar nenhuma connection para o chat.
+         *
+         * A versão correta (igual à versão antiga que funcionava):
+         * busca isUserAccount=true e inicializa o business bot a partir do
+         * businessBotToken da MESMA conta, garantindo que o botId seja
+         * consistente em todos os mapas.
+         */
         const accounts = await this.prisma.botAccount.findMany({
             where: {
                 isUserAccount: true,
@@ -178,13 +217,11 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
             url.split(".").pop()?.split(/[#?]/)[0] ?? ""
         ).toLowerCase();
 
-        // ✅ Converte WebP → JPEG
         if (rawExt === "webp") {
             const sharp = require("sharp");
-            return await sharp(buffer).jpeg({ quality: 90 }).toBuffer(); // ✅ bug corrigido: retornava buffer original
+            return await sharp(buffer).jpeg({ quality: 90 }).toBuffer();
         }
 
-        // ✅ Converte áudio → OGG Opus para voz do Telegram
         const isAudioExt = ["mp3", "wav", "m4a", "aac", "flac"].includes(
             rawExt,
         );
@@ -212,6 +249,22 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
 
     private makeRandomId() {
         return bigInt(Math.floor(Math.random() * 1e15).toString());
+    }
+
+    private async getAudioDuration(buffer: Buffer): Promise<number> {
+        const ffmpeg = require("fluent-ffmpeg");
+        return new Promise<number>((resolve, reject) => {
+            const tmpPath = path.join(
+                os.tmpdir(),
+                `tg_probe_${Date.now()}.ogg`,
+            );
+            fs.writeFileSync(tmpPath, buffer);
+            ffmpeg.ffprobe(tmpPath, (err: any, metadata: any) => {
+                fs.unlink(tmpPath, () => {});
+                if (err) return reject(err);
+                resolve(Math.ceil(metadata?.format?.duration ?? 0));
+            });
+        });
     }
 
     private buildInputMedia(
@@ -318,7 +371,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // Audio de instruções PIX (método reutilizável)
+    // PIX Audio
     // ─────────────────────────────────────────────────────────────────────
 
     private async sendPixAudio(
@@ -328,7 +381,6 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         const instructionsAudio = await this.prisma.pixAudioConfig.findFirst({
             where: { botId, isActive: true },
         });
-
         if (!instructionsAudio) return;
 
         const client = this.clients.get(botId);
@@ -339,6 +391,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
             instructionsAudio.audioUrl,
             true,
         );
+        const duration = await this.getAudioDuration(audioBuffer);
         const uploadedFile = await this.uploadFromBuffer(
             client,
             `voice_${Date.now()}.ogg`,
@@ -349,7 +402,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
             file: uploadedFile,
             mimeType: "audio/ogg",
             attributes: [
-                new Api.DocumentAttributeAudio({ duration: 0, voice: true }),
+                new Api.DocumentAttributeAudio({ duration, voice: true }),
             ],
         });
 
@@ -364,7 +417,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // PIX generation (método reutilizável)
+    // PIX message builder
     // ─────────────────────────────────────────────────────────────────────
 
     private buildPixMessage(
@@ -394,9 +447,13 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // HTTP helpers para Business Bot API
+    // HTTP helper para Business Bot API
     // ─────────────────────────────────────────────────────────────────────
 
+    /**
+     * ✅ CORREÇÃO: reply_markup extraído do extra antes do spread,
+     * evitando double-serialize que causava Bad Request 400.
+     */
     private async sendMessageHttp(
         token: string,
         chatId: number | string,
@@ -404,15 +461,23 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         extra?: Record<string, any>,
     ): Promise<any> {
         const url = `https://api.telegram.org/bot${token}/sendMessage`;
-        const payload = {
+
+        const { reply_markup, ...restExtra } = extra ?? {};
+
+        const payload: Record<string, any> = {
             chat_id: chatId,
             text,
-            ...extra,
-            ...(extra?.reply_markup
-                ? { reply_markup: JSON.stringify(extra.reply_markup) }
-                : {}),
+            ...restExtra,
         };
 
+        if (reply_markup) {
+            payload.reply_markup =
+                typeof reply_markup === "string"
+                    ? reply_markup
+                    : JSON.stringify(reply_markup);
+        }
+
+        this.logger.debug("sendMessage payload: " + JSON.stringify(payload));
         const { data } = await axios.post(url, payload);
         if (!data.ok)
             throw new Error(`Telegram API error: ${JSON.stringify(data)}`);
@@ -426,9 +491,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         try {
             await axios.post(
                 `https://api.telegram.org/bot${token}/answerCallbackQuery`,
-                {
-                    callback_query_id: queryId,
-                },
+                { callback_query_id: queryId },
             );
         } catch (_) {}
     }
@@ -451,15 +514,20 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     // Business Connection helpers
     // ─────────────────────────────────────────────────────────────────────
 
-    private async resolveBusinessConnectionId(
+    /**
+     * Resolve connectionId pelo chatId da conversa.
+     * Prioridade: (1) chatConnectionMap, (2) businessConnections, (3) banco.
+     */
+    private async resolveConnectionForChat(
         botId: string,
+        chatId: string | number,
     ): Promise<string | undefined> {
-        // 1. Mapa em memória (rápido)
-        for (const [key, connId] of this.businessConnections.entries()) {
-            if (key.startsWith(`${botId}:`)) return connId;
-        }
+        const fromChat = this.chatConnectionMap.get(`${botId}:${chatId}`);
+        if (fromChat) return fromChat;
 
-        // 2. Fallback banco
+        const fromOwner = this.businessConnections.get(`${botId}:${chatId}`);
+        if (fromOwner) return fromOwner;
+
         const conn = await this.prisma.businessConnection.findFirst({
             where: { botId, isEnabled: true },
         });
@@ -478,7 +546,6 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     // ─────────────────────────────────────────────────────────────────────
 
     async initBusinessBot(botId: string, token: string): Promise<void> {
-        // Para instância anterior se existir
         if (this.businessBots.has(botId)) {
             this.logger.warn(`Business bot ${botId} já ativo, reiniciando...`);
             try {
@@ -488,7 +555,6 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
             this.businessBots.delete(botId);
         }
 
-        // Mata sessão de getUpdates anterior no Telegram
         try {
             await axios.post(
                 `https://api.telegram.org/bot${token}/getUpdates`,
@@ -526,11 +592,9 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
 
         this.businessBots.set(botId, bot);
 
-        // Recarrega connections do banco para o mapa em memória
         const saved = await this.prisma.businessConnection.findMany({
             where: { botId, isEnabled: true },
         });
-
         for (const conn of saved) {
             this.businessConnections.set(
                 `${botId}:${conn.userTelegramId}`,
@@ -544,7 +608,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // Business Bot — handlers separados
+    // Business Bot — handlers
     // ─────────────────────────────────────────────────────────────────────
 
     private registerBusinessConnectionHandler(bot: TelegramBot, botId: string) {
@@ -577,7 +641,10 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                     userTelegramId: String(user.id),
                     isEnabled: true,
                 },
-                update: { isEnabled: true },
+                update: {
+                    isEnabled: true,
+                    userTelegramId: String(user.id),
+                },
             });
         });
     }
@@ -588,15 +655,52 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         token: string,
     ) {
         bot.on("business_message" as any, async (msg: any) => {
+            // ── DEBUG COMPLETO — remover após diagnóstico ─────────────────
+            this.logger.debug(
+                `[business_message RAW] ${JSON.stringify({
+                    message_id: msg.message_id,
+                    text: msg.text,
+                    business_connection_id: msg.business_connection_id,
+                    from: msg.from,
+                    chat: msg.chat,
+                })}`,
+            );
+            // ─────────────────────────────────────────────────────────────
+
             const text: string = (msg.text ?? "").toLowerCase().trim();
             const chatId: number = msg.chat.id;
             const userId: number = msg.from?.id;
             const businessConnectionId: string | undefined =
                 msg.business_connection_id;
 
+            if (msg.from?.is_bot) return;
             if (!businessConnectionId) return;
 
-            // Upsert do usuário
+            // Busca o dono da connection no banco para filtrar corretamente
+            const ownerConn = await this.prisma.businessConnection.findFirst({
+                where: { connectionId: businessConnectionId, isEnabled: true },
+            });
+            const ownerTelegramId = ownerConn?.userTelegramId;
+
+            // Se quem enviou é o próprio dono da connection, ignora —
+            // responder neste evento causa BUSINESS_PEER_INVALID
+            if (ownerTelegramId && String(userId) === ownerTelegramId) {
+                this.logger.debug(
+                    `[business_message] ignorando mensagem do dono (userId=${userId})`,
+                );
+                return;
+            }
+
+            // ✅ Registra chatId → connectionId para o callback_query resolver corretamente
+            this.chatConnectionMap.set(
+                `${botId}:${chatId}`,
+                businessConnectionId,
+            );
+
+            this.logger.debug(
+                `[business_message] chatId=${chatId} userId=${userId} connId=${businessConnectionId}`,
+            );
+
             await this.prisma.telegramUser.upsert({
                 where: { chatId: chatId.toString() },
                 update: {
@@ -617,7 +721,6 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                 },
             });
 
-            // Helpers locais
             const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
             const sendMenu = async (
@@ -628,51 +731,22 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                     callbackData?: string;
                 }[][],
             ) => {
-                const escapeV2 = (s: string) =>
-                    s.replace(/[_*[\]()~`>#+=|{}.!-]/g, "\\$&");
-                const escapedMessage = escapeV2(message).replace(/\\\*/g, "*");
+                const inline_keyboard = buttons.map((row) =>
+                    row.map((btn) => ({
+                        text: btn.text,
+                        ...(btn.url
+                            ? { url: btn.url }
+                            : { callback_data: btn.callbackData ?? "noop" }),
+                    })),
+                );
 
-                try {
-                    await this.sendMessageHttp(token, chatId, escapedMessage, {
-                        business_connection_id: businessConnectionId,
-                        parse_mode: "MarkdownV2",
-                        reply_markup: {
-                            inline_keyboard: buttons.map((row) =>
-                                row.map((btn) => ({
-                                    text: btn.text,
-                                    ...(btn.url
-                                        ? { url: btn.url }
-                                        : {
-                                              callback_data:
-                                                  btn.callbackData ?? "noop",
-                                          }),
-                                })),
-                            ),
-                        },
-                    });
-                } catch (err: any) {
-                    this.logger.error(
-                        `Erro ao enviar menu: ${err.response?.data?.description || err.message}`,
-                    );
-                    // Fallback sem markdown
-                    await this.sendMessageHttp(
-                        token,
-                        chatId,
-                        "Olá! Escolha uma opção no menu abaixo:",
-                        {
-                            business_connection_id: businessConnectionId,
-                            reply_markup: {
-                                inline_keyboard: buttons.map((row) =>
-                                    row.map((btn) => ({
-                                        text: btn.text,
-                                        callback_data:
-                                            btn.callbackData ?? "noop",
-                                    })),
-                                ),
-                            },
-                        },
-                    );
-                }
+                // Usa Markdown simples — MarkdownV2 causa Bad Request 400 com
+                // emojis e caracteres especiais que exigem escape muito restrito.
+                await this.sendMessageHttp(token, chatId, message, {
+                    business_connection_id: businessConnectionId,
+                    parse_mode: "Markdown",
+                    reply_markup: { inline_keyboard },
+                });
             };
 
             const isGreeting =
@@ -680,14 +754,20 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                 text === "oi" ||
                 text === "olá" ||
                 text === "ola" ||
+                text === "oii" ||
+                text === "oiii" ||
                 text === "bom dia" ||
-                text === "boa noite" ||
                 text === "boa tarde" ||
+                text === "boa noite" ||
                 text === "menu" ||
-                text.includes("ae") ||
-                text.includes("bom") ||
-                text.includes("boa") ||
-                text.includes("oi");
+                text === "início" ||
+                text === "inicio" ||
+                text === "oi!" ||
+                text === "olá!" ||
+                text === "ae" ||
+                text === "eae" ||
+                text === "e aí" ||
+                text === "eai";
 
             if (isGreeting) {
                 try {
@@ -714,9 +794,9 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                     token,
                     chatId,
                     "🙋 Nossa equipe entrará em contato em breve!",
-                    {
-                        business_connection_id: businessConnectionId,
-                    },
+                    { business_connection_id: businessConnectionId },
+                ).catch((err) =>
+                    this.logger.error(`Erro ao enviar suporte:`, err),
                 );
             }
         });
@@ -731,29 +811,50 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         delay: (ms: number) => Promise<unknown>,
         sendMenu: (message: string, buttons: any[][]) => Promise<void>,
     ) {
-        // Welcome template
+        // ✅ Contexto business — todos os envios devem ir pela Bot API,
+        // nunca pelo MTProto, para evitar BUSINESS_PEER_INVALID
+        const businessCtx = { token, businessConnectionId, botId };
+
         const welcomeTemplate = await this.prisma.messageTemplate.findFirst({
-            where: { key: "WELCOME" },
+            where: { key: MessageTemplateKey.WELCOME },
             include: { mediaItems: true },
         });
         if (welcomeTemplate) {
-            await this.sendTemplate(botId, chatId.toString(), welcomeTemplate);
+            await this.sendTemplate(
+                botId,
+                chatId.toString(),
+                welcomeTemplate,
+                businessCtx,
+            );
         }
 
-        // Timed templates
         const timedTemplates = await this.prisma.timedMessageRule.findMany({
             where: { botId },
             include: { template: { include: { mediaItems: true } } },
             orderBy: { delaySeconds: "asc" },
         });
 
+        // O delaySeconds é absoluto (a partir do início do greeting).
+        // Calculamos o delta entre cada template para o delay ser relativo.
+        let elapsed = 0;
         for (const timedTemplate of timedTemplates) {
-            await delay(timedTemplate.delaySeconds * 1000);
-            await this.sendTemplate(
-                botId,
-                chatId.toString(),
-                timedTemplate.template,
-            );
+            const delta = timedTemplate.delaySeconds * 1000 - elapsed;
+            if (delta > 0) await delay(delta);
+            elapsed = timedTemplate.delaySeconds * 1000;
+            try {
+                await this.sendTemplate(
+                    botId,
+                    chatId.toString(),
+                    timedTemplate.template,
+                    businessCtx,
+                );
+            } catch (err) {
+                // Erro no template timed não deve impedir o sendMenu
+                this.logger.error(
+                    `[handleGreeting] Erro ao enviar timed template ${timedTemplate.id}:`,
+                    err,
+                );
+            }
         }
 
         await sendMenu(
@@ -764,8 +865,14 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
             ],
         );
 
-        // DONT_SELL fire and forget
-        this.scheduleDontSell(botId, chatId, token, userId, delay);
+        this.scheduleDontSell(
+            botId,
+            chatId,
+            token,
+            userId,
+            businessConnectionId,
+            delay,
+        );
     }
 
     private scheduleDontSell(
@@ -773,15 +880,15 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         chatId: number,
         token: string,
         userId: number,
+        businessConnectionId: string,
         delay: (ms: number) => Promise<unknown>,
     ) {
-        const DONT_SELL_DELAY = 4 * 60 * 1000; // 4 minutos
+        const DONT_SELL_DELAY = 4 * 60 * 1000;
 
         (async () => {
             try {
                 await delay(DONT_SELL_DELAY);
 
-                // Verifica se comprou nos últimos 4 minutos
                 const hasPurchased = await this.prisma.sale.findFirst({
                     where: {
                         telegramUserId: userId.toString(),
@@ -790,13 +897,11 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                         },
                     },
                 });
-
                 if (hasPurchased) return;
 
-                // Envia template DONT_SELL
                 const dontsellTemplate =
                     await this.prisma.messageTemplate.findFirst({
-                        where: { key: "DONT_SELL" },
+                        where: { key: MessageTemplateKey.DONT_SELL },
                         include: { mediaItems: true },
                     });
                 if (dontsellTemplate) {
@@ -804,19 +909,36 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                         botId,
                         chatId.toString(),
                         dontsellTemplate,
+                        {
+                            token,
+                            businessConnectionId,
+                            botId,
+                        },
                     );
                 }
 
-                const bcId = await this.resolveBusinessConnectionId(botId);
-                if (!bcId) return;
+                const connStillValid =
+                    await this.prisma.businessConnection.findFirst({
+                        where: {
+                            connectionId: businessConnectionId,
+                            isEnabled: true,
+                        },
+                    });
+                if (!connStillValid) {
+                    this.logger.warn(
+                        `[scheduleDontSell] connection ${businessConnectionId} não está mais ativa`,
+                    );
+                    return;
+                }
 
-                // Busca config de desconto
                 const discountConfig =
                     await this.prisma.discountConfig.findUnique({
                         where: { botId },
                         include: { product: true },
                     });
 
+                // Busca produtos: se há desconto ativo usa o produto do desconto,
+                // senão lista todos os produtos ativos
                 const products = discountConfig?.isActive
                     ? [discountConfig.product]
                     : await this.prisma.product.findMany({
@@ -826,34 +948,48 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
 
                 if (!products.length) return;
 
-                const discountPercent = discountConfig?.isActive
+                const hasDiscount =
+                    discountConfig?.isActive && discountConfig?.discountText;
+                const discountPercent = hasDiscount
                     ? discountConfig.discountPercent
-                    : 10;
+                    : 0;
 
                 const inlineKeyboard = products.map((p) => {
-                    const discountedCents = Math.round(
-                        p.priceCents * (1 - discountPercent / 100),
-                    );
-                    const originalPrice = (p.priceCents / 100)
-                        .toFixed(2)
-                        .replace(".", ",");
-                    const discountedPrice = (discountedCents / 100)
-                        .toFixed(2)
-                        .replace(".", ",");
-
+                    if (hasDiscount) {
+                        const discountedCents = Math.round(
+                            p.priceCents * (1 - discountPercent / 100),
+                        );
+                        const originalPrice = (p.priceCents / 100)
+                            .toFixed(2)
+                            .replace(".", ",");
+                        const discountedPrice = (discountedCents / 100)
+                            .toFixed(2)
+                            .replace(".", ",");
+                        return [
+                            {
+                                text: `${p.title} — R$ ${originalPrice} → R$ ${discountedPrice} (-${discountPercent}%)`,
+                                callback_data: `buy_discount:${p.id}:${discountPercent}`,
+                            },
+                        ];
+                    }
                     return [
                         {
-                            text: `${p.title} — R$ ${originalPrice} → R$ ${discountedPrice} (-${discountPercent}%)`,
-                            callback_data: `buy_discount:${p.id}:${discountPercent}`,
+                            text: `${p.title} — R$ ${(p.priceCents / 100).toFixed(2).replace(".", ",")}`,
+                            callback_data: `buy:${p.id}`,
                         },
                     ];
                 });
 
+                // Texto da mensagem: usa discountText se configurado, senão mensagem padrão
+                const messageText = hasDiscount
+                    ? discountConfig.discountText
+                    : "🛍️ *Que tal aproveitar e garantir agora?* Escolha um produto:";
+
                 await this.send(
-                    `🔥 *Oferta especial por tempo limitado!*\n\nGanhe *${discountPercent}% de desconto* agora:`,
+                    String(messageText),
                     token,
                     chatId.toString(),
-                    bcId,
+                    businessConnectionId,
                     { reply_markup: { inline_keyboard: inlineKeyboard } },
                 );
             } catch (err) {
@@ -877,12 +1013,15 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
 
             await this.answerCallbackQuery(token, queryId);
 
-            const businessConnectionId =
-                await this.resolveBusinessConnectionId(botId);
+            // ✅ Resolve pelo chatId — não pela primeira connection genérica do bot
+            const businessConnectionId = await this.resolveConnectionForChat(
+                botId,
+                chatId,
+            );
 
             if (!businessConnectionId) {
                 this.logger.error(
-                    `Nenhuma business connection ativa para bot ${botId}`,
+                    `[callback_query] Nenhuma connection encontrada para chatId=${chatId} bot=${botId}`,
                 );
                 return;
             }
@@ -903,7 +1042,6 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                     await this.handleListProducts(send);
                     return;
                 }
-
                 if (data.startsWith("buy:")) {
                     await this.handleBuy(
                         data,
@@ -915,7 +1053,6 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                     );
                     return;
                 }
-
                 if (data.startsWith("buy_discount:")) {
                     await this.handleBuyDiscount(
                         data,
@@ -927,7 +1064,6 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                     );
                     return;
                 }
-
                 if (data === "support") {
                     await send("🙋 Nossa equipe entrará em contato em breve!");
                     return;
@@ -1016,14 +1152,12 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
             },
         });
 
-        // Envia PIX primeiro — garantido
-        await send(
-            this.buildPixMessage(product, pixData.pix_code, product.priceCents),
-        );
-
-        // Tenta enviar áudio de instruções — erro não bloqueia
         await this.sendPixAudio(botId, chatId).catch((err) =>
             this.logger.error(`Erro ao enviar áudio PIX:`, err),
+        );
+
+        await send(
+            this.buildPixMessage(product, pixData.pix_code, product.priceCents),
         );
     }
 
@@ -1076,7 +1210,6 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
             },
         });
 
-        // Envia PIX primeiro — garantido
         await send(
             this.buildPixMessage(
                 product,
@@ -1086,74 +1219,9 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
             ),
         );
 
-        // Tenta enviar áudio de instruções — erro não bloqueia
         await this.sendPixAudio(botId, chatId).catch((err) =>
             this.logger.error(`Erro ao enviar áudio PIX:`, err),
         );
-    }
-
-    // ─────────────────────────────────────────────────────────────────────
-    // MTProto client (GramJS)
-    // ─────────────────────────────────────────────────────────────────────
-
-    private async initClient(bot: any) {
-        if (this.clients.has(bot.id)) return;
-
-        const client = new TelegramClient(
-            new StringSession(bot.session || ""),
-            Number(bot.apiId),
-            bot.apiHash!,
-            { connectionRetries: 5, retryDelay: 2000 },
-        );
-
-        await client.connect();
-        this.clients.set(bot.id, client);
-
-        if (!(await client.isUserAuthorized())) {
-            this.logger.warn(
-                `Client ${bot.id} não está autorizado, pulando...`,
-            );
-            this.clients.delete(bot.id);
-            return;
-        }
-
-        // Salva usuários que mandam mensagem
-        client.addEventHandler(async (event: NewMessageEvent) => {
-            const message = event.message;
-            if (!message || message.out) return;
-
-            const chatId = message.chatId?.toString();
-            if (!chatId || chatId.startsWith("-")) return; // só privado
-
-            const sender = (await message.getSender()) as any;
-            const telegramUserId = sender?.id?.toString();
-            if (!telegramUserId) return;
-
-            try {
-                await this.prisma.telegramUser.upsert({
-                    where: { chatId },
-                    update: {
-                        lastSeenAt: new Date(),
-                        username: sender.username || null,
-                        firstName: sender.firstName || null,
-                        lastName: sender.lastName || null,
-                        botId: bot.id,
-                    },
-                    create: {
-                        chatId,
-                        telegramUserId,
-                        botId: bot.id,
-                        username: sender.username || null,
-                        firstName: sender.firstName || null,
-                        lastName: sender.lastName || null,
-                        firstSeenAt: new Date(),
-                        lastSeenAt: new Date(),
-                    },
-                });
-            } catch (dbErr) {
-                this.logger.error("Erro ao salvar/atualizar usuário:", dbErr);
-            }
-        }, new NewMessage({}));
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -1206,6 +1274,146 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
             text,
             keyboard,
         );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Bot Status Checklist
+    // ─────────────────────────────────────────────────────────────────────
+
+    async getBotStatus(): Promise<BotStatusResponse> {
+        const items: BotStatusItem[] = [];
+
+        const botAccount = await this.prisma.botAccount.findFirst({
+            where: {
+                isUserAccount: true,
+                isActive: true,
+                session: { not: null },
+            },
+        });
+
+        items.push({
+            key: "bot_account",
+            label: "Conta MTProto conectada",
+            description:
+                "Autentique uma conta em Configurações → Bot (API ID + API Hash + OTP).",
+            ok: !!botAccount,
+            critical: true,
+        });
+
+        items.push({
+            key: "business_bot_token",
+            label: "Token do Business Bot configurado",
+            description:
+                "Configure o token do @BotFather em Configurações → Bot.",
+            ok: !!botAccount?.businessBotToken,
+            critical: true,
+        });
+
+        items.push({
+            key: "business_bot_running",
+            label: "Business Bot ativo e conectado",
+            description:
+                "O bot não está rodando. Verifique o token e reinicie.",
+            ok: botAccount ? this.businessBots.has(botAccount.id) : false,
+            critical: true,
+        });
+
+        const businessConn = botAccount
+            ? await this.prisma.businessConnection.findFirst({
+                  where: { botId: botAccount.id, isEnabled: true },
+              })
+            : null;
+
+        items.push({
+            key: "business_connection",
+            label: "Business Connection ativa",
+            description:
+                "Conecte o bot em: Telegram → Configurações → Telegram Business → Chatbots.",
+            ok: !!businessConn,
+            critical: true,
+        });
+
+        const welcomeTemplate = await this.prisma.messageTemplate.findFirst({
+            where: { key: MessageTemplateKey.WELCOME },
+        });
+
+        items.push({
+            key: "welcome_template",
+            label: 'Template "WELCOME" cadastrado',
+            description:
+                'Crie um template com a chave "WELCOME" em Templates → Novo Template.',
+            ok: !!welcomeTemplate,
+            critical: true,
+        });
+
+        const productCount = await this.prisma.product.count({
+            where: { isActive: true },
+        });
+
+        items.push({
+            key: "active_product",
+            label: "Pelo menos 1 produto ativo",
+            description: "Cadastre um produto em Produtos → Novo Produto.",
+            ok: productCount > 0,
+            critical: true,
+        });
+
+        items.push({
+            key: "syncpay",
+            label: "Integração de pagamento (SyncPay) configurada",
+            description:
+                "Defina SYNCPAY_CLIENT_SECRET e SYNCPAY_CLIENT_ID nas variáveis de ambiente.",
+            ok:
+                !!process.env.SYNCPAY_CLIENT_ID ||
+                !!process.env.SYNCPAY_CLIENT_SECRET,
+            critical: true,
+        });
+
+        const dontSellTemplate = await this.prisma.messageTemplate.findFirst({
+            where: { key: MessageTemplateKey.DONT_SELL },
+        });
+
+        items.push({
+            key: "dont_sell_template",
+            label: 'Template "DONT_SELL" cadastrado (opcional)',
+            description:
+                'Enviado 4 min após o primeiro contato sem compra. Chave: "DONT_SELL".',
+            ok: !!dontSellTemplate,
+            critical: false,
+        });
+
+        const discountConfig = botAccount
+            ? await this.prisma.discountConfig.findUnique({
+                  where: { botId: botAccount.id },
+              })
+            : null;
+
+        items.push({
+            key: "discount_config",
+            label: "Desconto automático configurado (opcional)",
+            description: "Configure em Configurações → Desconto.",
+            ok: !!discountConfig?.isActive,
+            critical: false,
+        });
+
+        const pixAudio = botAccount
+            ? await this.prisma.pixAudioConfig.findFirst({
+                  where: { botId: botAccount.id, isActive: true },
+              })
+            : null;
+
+        items.push({
+            key: "pix_audio",
+            label: "Áudio de instruções PIX (opcional)",
+            description: "Adicione em Configurações → Áudio PIX.",
+            ok: !!pixAudio,
+            critical: false,
+        });
+
+        return {
+            allCriticalOk: items.filter((i) => i.critical).every((i) => i.ok),
+            items,
+        };
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -1317,10 +1525,101 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     }
 
     // ─────────────────────────────────────────────────────────────────────
+    // MTProto client (GramJS)
+    // ─────────────────────────────────────────────────────────────────────
+
+    private async initClient(bot: any) {
+        if (this.clients.has(bot.id)) return;
+
+        const client = new TelegramClient(
+            new StringSession(bot.session || ""),
+            Number(bot.apiId),
+            bot.apiHash!,
+            { connectionRetries: 5, retryDelay: 2000 },
+        );
+
+        await client.connect();
+        this.clients.set(bot.id, client);
+
+        if (!(await client.isUserAuthorized())) {
+            this.logger.warn(
+                `Client ${bot.id} não está autorizado, pulando...`,
+            );
+            this.clients.delete(bot.id);
+            return;
+        }
+
+        client.addEventHandler(async (event: NewMessageEvent) => {
+            const message = event.message;
+            if (!message || message.out) return;
+
+            const chatId = message.chatId?.toString();
+            if (!chatId || chatId.startsWith("-")) return;
+
+            const sender = (await message.getSender()) as any;
+            const telegramUserId = sender?.id?.toString();
+            if (!telegramUserId) return;
+
+            try {
+                await this.prisma.telegramUser.upsert({
+                    where: { chatId },
+                    update: {
+                        lastSeenAt: new Date(),
+                        username: sender.username || null,
+                        firstName: sender.firstName || null,
+                        lastName: sender.lastName || null,
+                        botId: bot.id,
+                    },
+                    create: {
+                        chatId,
+                        telegramUserId,
+                        botId: bot.id,
+                        username: sender.username || null,
+                        firstName: sender.firstName || null,
+                        lastName: sender.lastName || null,
+                        firstSeenAt: new Date(),
+                        lastSeenAt: new Date(),
+                    },
+                });
+            } catch (dbErr) {
+                this.logger.error("Erro ao salvar/atualizar usuário:", dbErr);
+            }
+        }, new NewMessage({}));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
     // Template sender
     // ─────────────────────────────────────────────────────────────────────
 
-    async sendTemplate(botId: string, chatId: string, template: any) {
+    /**
+     * Envia um template para o chatId.
+     *
+     * @param businessCtx  Quando chamado a partir de um contexto business (business_message),
+     *                     passe { token, businessConnectionId } para que o envio seja feito
+     *                     inteiramente via Bot API. Sem isso, o MTProto é usado — o que causa
+     *                     BUSINESS_PEER_INVALID se misturado com a Bot API na mesma conversa.
+     */
+    async sendTemplate(
+        botId: string,
+        chatId: string,
+        template: any,
+        businessCtx?: {
+            token: string;
+            businessConnectionId: string;
+            botId: string;
+        },
+    ) {
+        this.logger.debug(
+            `[sendTemplate] id=${template.id} type=${template.type} business=${!!businessCtx}`,
+        );
+
+        // ── Envio via Bot API (contexto business) ────────────────────────
+        if (businessCtx) {
+            await this.sendTemplateViaBotApi(chatId, template, businessCtx);
+            return;
+        }
+
+        // ── Envio via MTProto (contexto normal) ──────────────────────────
         let client = this.clients.get(botId);
 
         if (!client || !client.connected) {
@@ -1336,10 +1635,6 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                 );
         }
 
-        this.logger.debug(
-            `[sendTemplate] id=${template.id} type=${template.type}`,
-        );
-
         try {
             if (template.type === "TEXT") {
                 await client.sendMessage(chatId, {
@@ -1353,7 +1648,6 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                 return;
             }
 
-            // Mídia única
             await this.sendSingleMedia(client, chatId, template);
         } catch (error) {
             this.logger.error(
@@ -1361,6 +1655,254 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                 error,
             );
             throw error;
+        }
+    }
+
+    /**
+     * Envia template inteiramente via Bot API HTTP, obrigatório em contexto business.
+     * Texto → sendMessage, imagem → sendPhoto, vídeo → sendVideo, áudio → sendAudio,
+     * COMBO → sequência de chamadas individuais.
+     */
+    /**
+     * Envia template via Bot API HTTP (obrigatório em contexto business).
+     *
+     * Regras de agrupamento:
+     * - Fotos  → agrupadas em sendMediaGroup (até 10 por grupo), SEMPRE PRIMEIRO
+     * - Vídeos → agrupados em sendMediaGroup separado (após as fotos)
+     * - Áudios → sendVoice individualmente (ogg opus, aparece como nota de voz)
+     * - Texto  → sendMessage
+     *
+     * A Bot API aceita URLs públicas diretamente — não precisa fazer upload.
+     */
+    private async sendTemplateViaBotApi(
+        chatId: string,
+        template: any,
+        ctx: { token: string; businessConnectionId: string; botId: string },
+    ) {
+        const base = { business_connection_id: ctx.businessConnectionId };
+
+        // ── Helpers ──────────────────────────────────────────────────────
+
+        const sendText = async (text: string) => {
+            if (!text?.trim()) return;
+            await this.sendMessageHttp(ctx.token, chatId, text, base);
+        };
+
+        /**
+         * Envia fotos agrupadas via sendMediaGroup — fotos aceitam URL direta.
+         * Máximo de 10 por chamada (limite da Bot API).
+         */
+        const sendPhotoGroup = async (urls: string[]) => {
+            if (!urls.length) return;
+
+            for (let i = 0; i < urls.length; i += 10) {
+                const chunk = urls.slice(i, i + 10);
+                const mediaJson = chunk.map((url) => ({
+                    type: "photo",
+                    media: url,
+                }));
+
+                const { data } = await axios.post(
+                    `https://api.telegram.org/bot${ctx.token}/sendMediaGroup`,
+                    {
+                        chat_id: chatId,
+                        media: JSON.stringify(mediaJson),
+                        ...base,
+                    },
+                );
+
+                if (!data.ok)
+                    throw new Error(
+                        `sendPhotoGroup error: ${JSON.stringify(data)}`,
+                    );
+                if (urls.length > 10)
+                    await new Promise((r) => setTimeout(r, 500));
+            }
+        };
+
+        /**
+         * Envia vídeos via MTProto (GramJS) diretamente para o chat do cliente.
+         *
+         * A Bot API tem limite de 50MB e não aceita IDs MTProto como file_id.
+         * O MTProto não tem limite de tamanho e funciona em contas business
+         * porque a conta user é a própria conta business do dono.
+         */
+        const sendVideos = async (urls: string[]) => {
+            const client = this.clients.get(ctx.botId);
+            if (!client)
+                throw new Error(
+                    `MTProto client não encontrado para bot ${ctx.botId}`,
+                );
+
+            /**
+             * getInputEntity falha se a conta MTProto nunca interagiu com o peer.
+             * InputPeerUser com accessHash=0n funciona para envio direto em contas
+             * business onde a conta user É o dono do chat.
+             */
+            const peer = new Api.InputPeerUser({
+                userId: bigInt(chatId.toString()),
+                accessHash: bigInt(0),
+            });
+
+            for (const url of urls) {
+                const meta = this.getMediaMeta(url);
+                const filename = `video_${Date.now()}.${meta.ext}`;
+                const buf = await this.fetchFileBuffer(url);
+                const uploadedFile = await this.uploadFromBuffer(
+                    client,
+                    filename,
+                    buf,
+                );
+
+                const inputMedia = new Api.InputMediaUploadedDocument({
+                    file: uploadedFile,
+                    mimeType: meta.mimeType,
+                    attributes: [
+                        new Api.DocumentAttributeVideo({
+                            duration: 0,
+                            w: 1280,
+                            h: 720,
+                            supportsStreaming: true,
+                            roundMessage: false,
+                        }),
+                        new Api.DocumentAttributeFilename({
+                            fileName: filename,
+                        }),
+                    ],
+                });
+
+                // Faz upload para o servidor e obtém referência permanente
+                const serverMedia = await client.invoke(
+                    new Api.messages.UploadMedia({ peer, media: inputMedia }),
+                );
+
+                if (
+                    !(serverMedia instanceof Api.MessageMediaDocument) ||
+                    !serverMedia.document
+                ) {
+                    throw new Error(
+                        `UploadMedia vídeo retornou tipo inesperado: ${serverMedia.className}`,
+                    );
+                }
+
+                const d = serverMedia.document as Api.Document;
+
+                // Envia direto para o chat do cliente via MTProto
+                await client.invoke(
+                    new Api.messages.SendMedia({
+                        peer,
+                        media: new Api.InputMediaDocument({
+                            id: new Api.InputDocument({
+                                id: d.id,
+                                accessHash: d.accessHash,
+                                fileReference: d.fileReference,
+                            }),
+                        }),
+                        message: "",
+                        randomId: this.makeRandomId(),
+                    }),
+                );
+
+                await new Promise((r) => setTimeout(r, 500));
+            }
+        };
+
+        /**
+         * Converte qualquer áudio para ogg opus e envia como nota de voz nativa.
+         * A Bot API não aceita conversão on-the-fly — precisa fazer upload do
+         * arquivo convertido via multipart/form-data.
+         */
+        const sendAudio = async (url: string) => {
+            const rawExt = (
+                url.split(".").pop()?.split(/[#?]/)[0] ?? "mp3"
+            ).toLowerCase();
+
+            // Baixa e converte para ogg opus (sempre, independente do formato)
+            const rawBuffer = await this.fetchFileBuffer(url);
+            const oggBuffer = await this.convertToOggOpus(rawBuffer, rawExt);
+
+            // Upload via multipart — única forma de enviar arquivo binário pela Bot API
+            const FormData = require("form-data");
+            const form = new FormData();
+            form.append("chat_id", chatId);
+            form.append("business_connection_id", ctx.businessConnectionId);
+            form.append("voice", oggBuffer, {
+                filename: `voice_${Date.now()}.ogg`,
+                contentType: "audio/ogg",
+            });
+
+            const { data } = await axios.post(
+                `https://api.telegram.org/bot${ctx.token}/sendVoice`,
+                form,
+                { headers: form.getHeaders() },
+            );
+
+            if (!data.ok)
+                throw new Error(`sendVoice error: ${JSON.stringify(data)}`);
+        };
+
+        // ── TEXT ─────────────────────────────────────────────────────────
+        if (template.type === "TEXT") {
+            await sendText(template.text || "");
+            return;
+        }
+
+        // ── Mídia única ───────────────────────────────────────────────────
+        if (template.type !== "COMBO") {
+            const url = template.mediaUrl || "";
+            const meta = this.getMediaMeta(url);
+
+            if (meta.isAudio) {
+                await sendAudio(url);
+            } else if (meta.isVideo) {
+                await sendVideos([url]);
+            } else {
+                await sendPhotoGroup([url]);
+            }
+            return;
+        }
+
+        // ── COMBO ─────────────────────────────────────────────────────────
+        if (template.mediaItems?.length > 0) {
+            const sorted = [...template.mediaItems].sort(
+                (a: any, b: any) => a.order - b.order,
+            );
+
+            // Separa por tipo
+            const photoUrls: string[] = [];
+            const videoUrls: string[] = [];
+            const audioUrls: string[] = [];
+
+            for (const item of sorted) {
+                const meta = this.getMediaMeta(item.url);
+                if (meta.isAudio) audioUrls.push(item.url);
+                else if (meta.isVideo) videoUrls.push(item.url);
+                else photoUrls.push(item.url);
+            }
+
+            // Ordem: texto (se sem mídia visual) → fotos → vídeos → áudios
+            if (
+                template.text &&
+                photoUrls.length === 0 &&
+                videoUrls.length === 0
+            ) {
+                await sendText(template.text);
+            }
+
+            if (photoUrls.length > 0) {
+                await sendPhotoGroup(photoUrls);
+                await new Promise((r) => setTimeout(r, 400));
+            }
+
+            if (videoUrls.length > 0) {
+                await sendVideos(videoUrls);
+                await new Promise((r) => setTimeout(r, 400));
+            }
+
+            for (const audioUrl of audioUrls) {
+                await sendAudio(audioUrl);
+                await new Promise((r) => setTimeout(r, 300));
+            }
         }
     }
 
@@ -1381,8 +1923,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         const peer = await client.getInputEntity(chatId);
         const readyItems: ReadyItem[] = [];
 
-        for (let i = 0; i < sortedMedia.length; i++) {
-            const item = sortedMedia[i];
+        for (const item of sortedMedia) {
             readyItems.push(await this.prepareMedia(item, client, peer));
         }
 
@@ -1445,7 +1986,6 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         const mediaUrl = template.mediaUrl || "";
         const meta = this.getMediaMeta(mediaUrl);
         const filename = `file.${meta.ext}`;
-
         const fileBuffer = await this.fetchFileBuffer(mediaUrl);
 
         if (meta.isVideo || meta.isAudio) {

@@ -11,7 +11,7 @@ export function BotConnectionManager({ bot }: { bot: any }) {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
 
-    const API = "http://localhost:3001/telegram";
+    const API = process.env.NEXT_PUBLIC_NEST_API_URL + "/telegram";
 
     // ── PASSO 1: Solicitar código SMS ──────────────────────────────────
     const handleSendCode = async () => {

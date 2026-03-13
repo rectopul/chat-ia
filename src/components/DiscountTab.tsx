@@ -4,6 +4,7 @@ import {
 } from "@/app/admin/configuracoes/page";
 import { BotAccount } from "@prisma/client";
 import { useEffect, useState } from "react";
+import { Textarea } from "./ui/textarea";
 
 // ─── Mock botId (troque pelo seu contexto real, ex: useParams ou prop) ────────
 const BOT_ID = "bot_default";
@@ -24,6 +25,7 @@ export function DiscountTab({
 
     const [productId, setProductId] = useState("");
     const [discountPercent, setDiscountPercent] = useState("10");
+    const [discountText, setDiscountText] = useState("");
 
     useEffect(() => {
         Promise.all([
@@ -60,6 +62,11 @@ export function DiscountTab({
             return;
         }
 
+        if (discountText === "" || null) {
+            flash("Informe um texto de desconto", true);
+            return;
+        }
+
         setSaving(true);
         try {
             const res = await fetch("/api/discount-config", {
@@ -69,6 +76,7 @@ export function DiscountTab({
                     botId: BOT_ID,
                     productId,
                     discountPercent: pct,
+                    discountText,
                 }),
             });
             const data = await res.json();
@@ -176,6 +184,19 @@ export function DiscountTab({
                         ? "Atualizar configuração"
                         : "Configurar desconto automático"}
                 </h2>
+
+                <Field
+                    label="Texto para o desconto"
+                    hint="Informe a frase a ser exibida acima do produto com desconto"
+                >
+                    <Textarea
+                        placeholder="Olá preparei um desconto exclusivo para você"
+                        onChange={(e) => setDiscountText(e.target.value)}
+                        value={discountText}
+                        className="mt-1"
+                        name="discount_text"
+                    />
+                </Field>
 
                 <Field
                     label="Conta Telegram"

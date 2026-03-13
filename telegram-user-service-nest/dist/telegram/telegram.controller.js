@@ -49,6 +49,9 @@ let TelegramController = class TelegramController {
         await this.telegramService.initBusinessBot(body.botId, body.token);
         return { message: "Business bot inicializado com sucesso." };
     }
+    async getBotStatus() {
+        return this.telegramService.getBotStatus();
+    }
 };
 exports.TelegramController = TelegramController;
 __decorate([
@@ -87,6 +90,12 @@ __decorate([
     __metadata("design:paramtypes", [Object]),
     __metadata("design:returntype", Promise)
 ], TelegramController.prototype, "registerBusinessBot", null);
+__decorate([
+    (0, common_1.Get)("bot-status"),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", []),
+    __metadata("design:returntype", Promise)
+], TelegramController.prototype, "getBotStatus", null);
 exports.TelegramController = TelegramController = __decorate([
     (0, common_1.Controller)("telegram"),
     __metadata("design:paramtypes", [telegram_service_1.TelegramService])

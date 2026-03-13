@@ -8,9 +8,18 @@ export const runtime = "nodejs"; // opcional, remove se preferir Node
 export async function POST(req: NextRequest) {
     const formData = await req.formData();
     const file = formData.get("file") as File | null;
-    const botId = formData.get("botId") as string | null;
+    const botId = await prisma.botAccount.findFirst({
+        where: {
+            isActive: true,
+            businessBotToken: {
+                not: null,
+            },
+        },
+    });
 
-    if (!file || !botId) {
+    console.log("file recebido: ", botId);
+
+    if (!file || !botId?.id) {
         return NextResponse.json(
             { error: "file e botId são obrigatórios" },
             { status: 400 },
@@ -19,7 +28,7 @@ export async function POST(req: NextRequest) {
 
     // check botid
     const hasBot = await prisma.botAccount.findFirst({
-        where: { id: String(botId) },
+        where: { id: botId.id },
     });
 
     if (!hasBot) {
@@ -46,7 +55,7 @@ export async function POST(req: NextRequest) {
 
     // Remove blob anterior se existir
     const existing = await prisma.pixAudioConfig.findUnique({
-        where: { botId },
+        where: { botId: botId.id },
     });
     if (existing?.audioUrl) {
         try {
@@ -62,7 +71,7 @@ export async function POST(req: NextRequest) {
     });
 
     const config = await prisma.pixAudioConfig.upsert({
-        where: { botId },
+        where: { botId: botId.id },
         update: {
             audioUrl: blob.url,
             fileName: file.name,
@@ -70,7 +79,7 @@ export async function POST(req: NextRequest) {
             updatedAt: new Date(),
         },
         create: {
-            botId,
+            botId: botId.id,
             audioUrl: blob.url,
             fileName: file.name,
             isActive: true,

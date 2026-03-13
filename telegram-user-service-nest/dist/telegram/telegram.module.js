@@ -11,6 +11,7 @@ const common_1 = require("@nestjs/common");
 const telegram_service_1 = require("./telegram.service");
 const prisma_module_1 = require("../prisma/prisma.module");
 const syncpay_module_1 = require("../syncpay/syncpay.module");
+const telegram_controller_1 = require("./telegram.controller");
 let TelegramModule = class TelegramModule {
 };
 exports.TelegramModule = TelegramModule;
@@ -18,6 +19,7 @@ exports.TelegramModule = TelegramModule = __decorate([
     (0, common_1.Module)({
         imports: [prisma_module_1.PrismaModule, syncpay_module_1.SyncPayModule],
         providers: [telegram_service_1.TelegramService],
+        controllers: [telegram_controller_1.TelegramController],
         exports: [telegram_service_1.TelegramService],
     })
 ], TelegramModule);

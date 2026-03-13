@@ -17,11 +17,18 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
     const body = await req.json();
-    const { botId, productId, discountPercent } = body;
+    const { botId, productId, discountPercent, discountText } = body;
 
-    if (!botId || !productId || discountPercent == null) {
+    if (
+        !botId ||
+        !productId ||
+        discountPercent == null ||
+        discountText == null
+    ) {
         return NextResponse.json(
-            { error: "botId, productId e discountPercent são obrigatórios" },
+            {
+                error: "botId, productId, discountPercent e discountText são obrigatórios",
+            },
             { status: 400 },
         );
     }
@@ -49,10 +56,16 @@ export async function POST(req: NextRequest) {
         update: {
             productId,
             discountPercent,
+            discountText,
             isActive: true,
             updatedAt: new Date(),
         },
-        create: { botId: activeBotId.id, productId, discountPercent },
+        create: {
+            botId: activeBotId.id,
+            productId,
+            discountPercent,
+            discountText,
+        },
         include: { product: true },
     });
 

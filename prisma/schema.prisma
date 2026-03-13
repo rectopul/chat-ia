@@ -284,6 +284,7 @@ model DiscountConfig {
   botId           String   @unique
   productId       String
   discountPercent Int // ex: 10 = 10%
+  discountText    String?
   isActive        Boolean  @default(true)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt

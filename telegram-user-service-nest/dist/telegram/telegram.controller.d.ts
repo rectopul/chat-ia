@@ -1,4 +1,4 @@
-import { TelegramService } from "./telegram.service";
+import { BotStatusResponse, TelegramService } from "./telegram.service";
 export declare class TelegramController {
     private readonly telegramService;
     constructor(telegramService: TelegramService);
@@ -26,4 +26,5 @@ export declare class TelegramController {
     }): Promise<{
         message: string;
     }>;
+    getBotStatus(): Promise<BotStatusResponse>;
 }

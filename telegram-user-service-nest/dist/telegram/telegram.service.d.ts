@@ -1,6 +1,17 @@
 import { OnModuleInit, OnModuleDestroy } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { SyncPayService } from "../syncpay/syncpay.service";
+export type BotStatusItem = {
+    key: string;
+    label: string;
+    description: string;
+    ok: boolean;
+    critical: boolean;
+};
+export type BotStatusResponse = {
+    allCriticalOk: boolean;
+    items: BotStatusItem[];
+};
 export declare class TelegramService implements OnModuleInit, OnModuleDestroy {
     private readonly prisma;
     private readonly syncPayService;
@@ -10,6 +21,7 @@ export declare class TelegramService implements OnModuleInit, OnModuleDestroy {
     private businessBots;
     private businessBotTokens;
     private businessConnections;
+    private chatConnectionMap;
     constructor(prisma: PrismaService, syncPayService: SyncPayService);
     onModuleInit(): Promise<void>;
     onModuleDestroy(): Promise<void>;
@@ -18,6 +30,7 @@ export declare class TelegramService implements OnModuleInit, OnModuleDestroy {
     private fetchFileBuffer;
     private uploadFromBuffer;
     private makeRandomId;
+    private getAudioDuration;
     private buildInputMedia;
     private prepareMedia;
     private sendPixAudio;
@@ -25,7 +38,7 @@ export declare class TelegramService implements OnModuleInit, OnModuleDestroy {
     private sendMessageHttp;
     private answerCallbackQuery;
     private send;
-    private resolveBusinessConnectionId;
+    private resolveConnectionForChat;
     getBusinessConnectionId(botId: string, userTelegramId: string): string | undefined;
     initBusinessBot(botId: string, token: string): Promise<void>;
     private registerBusinessConnectionHandler;
@@ -36,9 +49,9 @@ export declare class TelegramService implements OnModuleInit, OnModuleDestroy {
     private handleListProducts;
     private handleBuy;
     private handleBuyDiscount;
-    private initClient;
     sendBusinessMessageWithKeyboard(botId: string, businessConnectionId: string, recipientChatId: string | number, text: string, keyboard: string[][]): Promise<void>;
     sendKeyboardAsBusinessUser(botId: string, ownerTelegramId: string, recipientChatId: string | number, text: string, keyboard: string[][]): Promise<void>;
+    getBotStatus(): Promise<BotStatusResponse>;
     sendCode(botId: string, phoneNumber: string): Promise<{
         message: string;
     }>;
@@ -52,7 +65,13 @@ export declare class TelegramService implements OnModuleInit, OnModuleDestroy {
         session?: string;
     }>;
     private _finalizeLogin;
-    sendTemplate(botId: string, chatId: string, template: any): Promise<void>;
+    private initClient;
+    sendTemplate(botId: string, chatId: string, template: any, businessCtx?: {
+        token: string;
+        businessConnectionId: string;
+        botId: string;
+    }): Promise<void>;
+    private sendTemplateViaBotApi;
     private sendCombo;
     private sendSingleMedia;
 }
