@@ -30,14 +30,15 @@ model BotAccount {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  users          TelegramUser[]
-  sales          Sale[]
-  messageLogs    MessageLog[]
-  scheduledJobs  ScheduledMessageJob[]
-  rules          TimedMessageRule[]
-  recurring      RecurringSchedule[]
-  pixAudioConfig PixAudioConfig?
-  discountConfig DiscountConfig?
+  users             TelegramUser[]
+  sales             Sale[]
+  messageLogs       MessageLog[]
+  scheduledJobs     ScheduledMessageJob[]
+  rules             TimedMessageRule[]
+  recurring         RecurringSchedule[]
+  pixAudioConfig    PixAudioConfig?
+  discountConfig    DiscountConfig?
+  dontSellIntervals DontSellInterval[]
 }
 
 model RecurringSchedule {
@@ -93,15 +94,16 @@ enum MediaType {
 }
 
 model MessageTemplate {
-  id        String             @id @default(cuid())
-  key       MessageTemplateKey
-  title     String
-  type      MediaType // Default type if single, or COMBO
-  text      String?            @db.Text
-  mediaUrl  String? // Legacy for single media
-  isActive  Boolean            @default(true)
-  createdAt DateTime           @default(now())
-  updatedAt DateTime           @updatedAt
+  id             String             @id @default(cuid())
+  key            MessageTemplateKey
+  title          String
+  type           MediaType // Default type if single, or COMBO
+  text           String?            @db.Text
+  mediaUrl       String? // Legacy for single media
+  telegramFileId String? // file_id retornado pelo Telegram após primeiro envio
+  isActive       Boolean            @default(true)
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
 
   mediaItems    MessageTemplateMedia[]
   rules         TimedMessageRule[]
@@ -110,11 +112,12 @@ model MessageTemplate {
 }
 
 model MessageTemplateMedia {
-  id         String    @id @default(cuid())
-  templateId String
-  type       MediaType
-  url        String
-  order      Int       @default(0)
+  id             String    @id @default(cuid())
+  templateId     String
+  type           MediaType
+  url            String
+  order          Int       @default(0)
+  telegramFileId String? // file_id retornado pelo Telegram após primeiro envio
 
   template MessageTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
 }
@@ -291,4 +294,19 @@ model DiscountConfig {
 
   bot     BotAccount @relation(fields: [botId], references: [id], onDelete: Cascade)
   product Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+}
+
+// Depois rode: npx prisma migrate dev --name add_dont_sell_intervals
+
+model DontSellInterval {
+  id           String   @id @default(cuid())
+  botId        String
+  delaySeconds Int // ex: 240 = 4min, 3600 = 1h, 18000 = 5h
+  order        Int // ordem de exibição (1, 2, 3...)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  bot BotAccount @relation(fields: [botId], references: [id], onDelete: Cascade)
+
+  @@index([botId, isActive])
 }

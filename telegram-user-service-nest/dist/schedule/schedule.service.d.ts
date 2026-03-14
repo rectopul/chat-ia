@@ -2,9 +2,13 @@ import { PrismaService } from "../prisma/prisma.service";
 import { TelegramService } from "../telegram/telegram.service";
 export declare class ScheduleService {
     private readonly prisma;
-    private readonly telegram;
+    private readonly telegramService;
     private readonly logger;
-    constructor(prisma: PrismaService, telegram: TelegramService);
+    constructor(prisma: PrismaService, telegramService: TelegramService);
+    processJobs(): Promise<{
+        processed: number;
+        failed: number;
+    }>;
     processRecurringSchedules(): Promise<{
         fired: number;
         errors: number;

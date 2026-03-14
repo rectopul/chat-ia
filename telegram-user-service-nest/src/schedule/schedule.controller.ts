@@ -26,8 +26,8 @@ export class ScheduleController {
         if (expected && secret !== expected) {
             throw new UnauthorizedException("Invalid cron secret.");
         }
-
+        const donntsells = await this.scheduleService.processJobs();
         const result = await this.scheduleService.processRecurringSchedules();
-        return { success: true, ...result };
+        return { success: true, ...result, ...donntsells };
     }
 }

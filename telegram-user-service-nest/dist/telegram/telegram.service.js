@@ -138,21 +138,25 @@ let TelegramService = TelegramService_1 = class TelegramService {
         const tmpInput = path.join(os.tmpdir(), `tg_audio_in_${Date.now()}.${inputExt}`);
         const tmpOutput = path.join(os.tmpdir(), `tg_audio_out_${Date.now()}.ogg`);
         await fs.promises.writeFile(tmpInput, inputBuffer);
-        await new Promise((resolve, reject) => {
-            ffmpeg(tmpInput)
-                .audioCodec("libopus")
-                .audioChannels(1)
-                .audioFrequency(48000)
-                .format("ogg")
-                .on("end", resolve)
-                .on("error", reject)
-                .save(tmpOutput);
-        });
+        try {
+            await new Promise((resolve, reject) => {
+                ffmpeg(tmpInput)
+                    .audioCodec("libopus")
+                    .audioChannels(1)
+                    .audioFrequency(48000)
+                    .format("ogg")
+                    .on("end", resolve)
+                    .on("error", (err) => {
+                    reject(new Error(`ffmpeg conversion failed: ${err?.message ?? JSON.stringify(err)}`));
+                })
+                    .save(tmpOutput);
+            });
+        }
+        finally {
+            await fs.promises.unlink(tmpInput).catch(() => { });
+        }
         const outputBuffer = await fs.promises.readFile(tmpOutput);
-        await Promise.all([
-            fs.promises.unlink(tmpInput).catch(() => { }),
-            fs.promises.unlink(tmpOutput).catch(() => { }),
-        ]);
+        await fs.promises.unlink(tmpOutput).catch(() => { });
         return outputBuffer;
     }
     async fetchFileBuffer(url, forceOgg = false) {
@@ -294,23 +298,142 @@ let TelegramService = TelegramService_1 = class TelegramService {
             randomId: this.makeRandomId(),
         }));
     }
+    getBusinessBotToken(botId) {
+        return this.businessBotTokens.get(botId);
+    }
+    async sendDontSellMenu(botId, chatId, token, businessConnectionId) {
+        const discountConfig = await this.prisma.discountConfig.findUnique({
+            where: { botId },
+            include: { product: true },
+        });
+        const products = discountConfig?.isActive
+            ? [discountConfig.product]
+            : await this.prisma.product.findMany({
+                where: { isActive: true },
+                orderBy: { priceCents: "asc" },
+            });
+        if (!products.length)
+            return;
+        const hasDiscount = discountConfig?.isActive && discountConfig?.discountText;
+        const discountPercent = hasDiscount
+            ? discountConfig.discountPercent
+            : 0;
+        const inlineKeyboard = products.map((p) => {
+            if (hasDiscount) {
+                const discountedCents = Math.round(p.priceCents * (1 - discountPercent / 100));
+                const originalPrice = (p.priceCents / 100)
+                    .toFixed(2)
+                    .replace(".", ",");
+                const discountedPrice = (discountedCents / 100)
+                    .toFixed(2)
+                    .replace(".", ",");
+                return [
+                    {
+                        text: `${p.title} — R$ ${originalPrice} → R$ ${discountedPrice} (-${discountPercent}%)`,
+                        callback_data: `buy_discount:${p.id}:${discountPercent}`,
+                    },
+                ];
+            }
+            return [
+                {
+                    text: `${p.title} — R$ ${(p.priceCents / 100).toFixed(2).replace(".", ",")}`,
+                    callback_data: `buy:${p.id}`,
+                },
+            ];
+        });
+        const messageText = hasDiscount
+            ? discountConfig.discountText
+            : "🛍️ *Que tal aproveitar e garantir agora?* Escolha um produto:";
+        await this.sendMessageHttp(token, chatId, String(messageText), {
+            business_connection_id: businessConnectionId,
+            parse_mode: "Markdown",
+            reply_markup: { inline_keyboard: inlineKeyboard },
+        });
+    }
+    async scheduleDontSellJobs(botId, chatId, userId, businessConnectionId) {
+        const dontSellTemplate = await this.prisma.messageTemplate.findFirst({
+            where: { key: client_1.MessageTemplateKey.DONT_SELL, isActive: true },
+        });
+        if (!dontSellTemplate) {
+            this.logger.debug(`[scheduleDontSellJobs] Nenhum template DONT_SELL ativo`);
+            return;
+        }
+        const user = await this.prisma.telegramUser.findUnique({
+            where: { chatId: chatId.toString() },
+        });
+        if (!user) {
+            this.logger.warn(`[scheduleDontSellJobs] Usuário não encontrado para chatId=${chatId}`);
+            return;
+        }
+        let intervals = await this.prisma.dontSellInterval.findMany({
+            where: { botId, isActive: true },
+            orderBy: { delaySeconds: "asc" },
+        });
+        if (!intervals.length) {
+            intervals = await this.prisma.dontSellInterval.findMany({
+                where: { isActive: true },
+                orderBy: { delaySeconds: "asc" },
+            });
+        }
+        if (!intervals.length) {
+            this.logger.debug(`[scheduleDontSellJobs] Nenhum intervalo DONT_SELL configurado`);
+            return;
+        }
+        const botAccountExists = await this.prisma.botAccount.findUnique({
+            where: { id: botId },
+            select: { id: true },
+        });
+        if (!botAccountExists) {
+            this.logger.error(`[scheduleDontSellJobs] botId=${botId} não encontrado em BotAccount — jobs não criados`);
+            return;
+        }
+        this.logger.debug(`[scheduleDontSellJobs] botId=${botId} connId=${businessConnectionId}`);
+        let dontSellRule = await this.prisma.timedMessageRule.findFirst({
+            where: { botId, templateId: dontSellTemplate.id },
+        });
+        if (!dontSellRule) {
+            dontSellRule = await this.prisma.timedMessageRule.findFirst({
+                where: { templateId: dontSellTemplate.id },
+            });
+        }
+        if (!dontSellRule) {
+            dontSellRule = await this.prisma.timedMessageRule.create({
+                data: {
+                    botId,
+                    name: "DONT_SELL Auto",
+                    templateId: dontSellTemplate.id,
+                    delaySeconds: intervals[0].delaySeconds,
+                    segment: "NON_BUYERS",
+                    isActive: true,
+                },
+            });
+        }
+        const now = new Date();
+        const jobsToCreate = intervals.map((interval) => ({
+            botId,
+            telegramUserId: user.telegramUserId,
+            chatId: chatId.toString(),
+            templateId: dontSellTemplate.id,
+            ruleId: dontSellRule.id,
+            runAt: new Date(now.getTime() + interval.delaySeconds * 1000),
+            status: "PENDING",
+        }));
+        await this.prisma.scheduledMessageJob.createMany({
+            data: jobsToCreate,
+            skipDuplicates: true,
+        });
+        this.logger.log(`[scheduleDontSellJobs] ${jobsToCreate.length} jobs agendados para chatId=${chatId} ` +
+            `(botId=${botId}): ${intervals.map((i) => `T+${i.delaySeconds}s`).join(", ")}`);
+    }
     buildPixMessage(product, pixCode, finalAmountCents, discountPercent) {
         const price = (finalAmountCents / 100).toFixed(2).replace(".", ",");
         const discountLine = discountPercent
             ? `💰 Valor com desconto: *R$ ${price}* (-${discountPercent}%)`
             : `💰 Valor: *R$ ${price}*`;
         return [
-            `✅ *PIX gerado com sucesso!*`,
-            ``,
-            `🏷️ *${product.title}*`,
-            discountLine,
-            ``,
-            `📋 *Copia e Cola:*`,
             `\`${pixCode}\``,
             ``,
-            `⏰ Válido por 30 minutos`,
-            ``,
-            `Após o pagamento você receberá a confirmação automaticamente!`,
+            `Seu PIX tá aqui — Clica para copiar, paga e me avisa.`,
         ].join("\n");
     }
     async sendMessageHttp(token, chatId, text, extra) {
@@ -433,6 +556,7 @@ let TelegramService = TelegramService_1 = class TelegramService {
                 },
                 update: {
                     isEnabled: true,
+                    botId,
                     userTelegramId: String(user.id),
                 },
             });
@@ -465,6 +589,10 @@ let TelegramService = TelegramService_1 = class TelegramService {
             }
             this.chatConnectionMap.set(`${botId}:${chatId}`, businessConnectionId);
             this.logger.debug(`[business_message] chatId=${chatId} userId=${userId} connId=${businessConnectionId}`);
+            const existingUser = await this.prisma.telegramUser.findUnique({
+                where: { chatId: chatId.toString() },
+            });
+            const isNewUser = !existingUser;
             await this.prisma.telegramUser.upsert({
                 where: { chatId: chatId.toString() },
                 update: {
@@ -517,11 +645,24 @@ let TelegramService = TelegramService_1 = class TelegramService {
                 text === "e aí" ||
                 text === "eai";
             if (isGreeting) {
-                try {
-                    await this.handleGreeting(botId, chatId, token, businessConnectionId, userId, delay, sendMenu);
+                if (isNewUser) {
+                    this.logger.debug(`[business_message] novo usuário chatId=${chatId}, iniciando fluxo completo`);
+                    this.handleGreeting(botId, chatId, token, businessConnectionId, userId, delay, sendMenu).catch((err) => this.logger.error(`Erro no handleGreeting para ${chatId}:`, err));
                 }
-                catch (err) {
-                    this.logger.error(`Erro ao enviar menu para ${chatId}:`, err);
+                else {
+                    this.logger.debug(`[business_message] usuário existente chatId=${chatId}, agendando DONT_SELL se aplicável`);
+                    const hasPurchased = await this.prisma.sale.findFirst({
+                        where: {
+                            telegramUserId: userId.toString(),
+                            status: "PAID",
+                        },
+                    });
+                    if (!hasPurchased) {
+                        this.scheduleDontSellJobs(botId, chatId, userId, businessConnectionId).catch((err) => this.logger.error(`Erro ao agendar DONT_SELL para ${chatId}:`, err));
+                    }
+                    else {
+                        this.logger.debug(`[business_message] usuário ${chatId} já comprou, nenhuma ação`);
+                    }
                 }
                 return;
             }
@@ -540,28 +681,68 @@ let TelegramService = TelegramService_1 = class TelegramService {
             await this.sendTemplate(botId, chatId.toString(), welcomeTemplate, businessCtx);
         }
         const timedTemplates = await this.prisma.timedMessageRule.findMany({
-            where: { botId },
+            where: {
+                botId,
+                name: { not: "DONT_SELL Auto" },
+            },
             include: { template: { include: { mediaItems: true } } },
             orderBy: { delaySeconds: "asc" },
         });
-        let elapsed = 0;
+        const greetingStart = Date.now();
         for (const timedTemplate of timedTemplates) {
-            const delta = timedTemplate.delaySeconds * 1000 - elapsed;
-            if (delta > 0)
-                await delay(delta);
-            elapsed = timedTemplate.delaySeconds * 1000;
+            const templateId = timedTemplate.template?.id;
+            const targetMs = timedTemplate.delaySeconds * 1000;
+            const elapsedMs = Date.now() - greetingStart;
+            const waitMs = targetMs - elapsedMs;
+            if (waitMs > 0) {
+                this.logger.debug(`[handleGreeting] Aguardando ${(waitMs / 1000).toFixed(1)}s ` +
+                    `para "${timedTemplate.name}" (alvo T+${timedTemplate.delaySeconds}s)`);
+                await delay(waitMs);
+            }
+            this.logger.debug(`[handleGreeting] Enviando "${timedTemplate.name}" ` +
+                `em T+${((Date.now() - greetingStart) / 1000).toFixed(1)}s (templateId=${templateId})`);
             try {
                 await this.sendTemplate(botId, chatId.toString(), timedTemplate.template, businessCtx);
             }
             catch (err) {
-                this.logger.error(`[handleGreeting] Erro ao enviar timed template ${timedTemplate.id}:`, err);
+                this.logger.error(`[handleGreeting] Erro ao enviar timed template ${templateId} ` +
+                    `(${timedTemplate.template?.type}): ${err?.message ?? err}`);
+                if (err?.errors) {
+                    this.logger.error(`[handleGreeting] AggregateError details:`, err.errors);
+                }
             }
         }
-        await sendMenu("👋 Olá! Gostou das prévias, que tal adquirir um dos nossos planos e receber mais conteúdos exclusivos?", [
-            [{ text: "🛍️ Ver Produtos", callbackData: "list_products" }],
-            [{ text: "💬 Suporte", callbackData: "support" }],
-        ]);
-        this.scheduleDontSell(botId, chatId, token, userId, businessConnectionId, delay);
+        const send = async (text, extra) => this.sendMessageHttp(token, chatId, text, {
+            business_connection_id: businessConnectionId,
+            parse_mode: "Markdown",
+            ...extra,
+        });
+        try {
+            const products = await this.prisma.product.findMany({
+                where: { isActive: true },
+                orderBy: { priceCents: "asc" },
+            });
+            if (!products.length) {
+                await sendMenu("😔 Nenhum produto disponível no momento.", []);
+                return;
+            }
+            const inlineKeyboard = products.map((p) => [
+                {
+                    text: `${p.title} — R$ ${(p.priceCents / 100).toFixed(2).replace(".", ",")}`,
+                    callback_data: `buy:${p.id}`,
+                },
+            ]);
+            await send("🛍️ *Escolha o produto:*", {
+                reply_markup: { inline_keyboard: inlineKeyboard },
+            });
+        }
+        catch (err) {
+            this.logger.error(`[handleGreeting] Erro ao enviar sendMenu para ${chatId}: ${err?.message ?? err}`);
+            if (err?.errors) {
+                this.logger.error(`[handleGreeting] sendMenu AggregateError details:`, err.errors);
+            }
+        }
+        this.scheduleDontSellJobs(botId, chatId, userId, businessConnectionId);
     }
     scheduleDontSell(botId, chatId, token, userId, businessConnectionId, delay) {
         const DONT_SELL_DELAY = 4 * 60 * 1000;
@@ -723,7 +904,7 @@ let TelegramService = TelegramService_1 = class TelegramService {
             await send("❌ Usuário não encontrado.");
             return;
         }
-        await send(`⏳ Gerando PIX para *${product.title}*...`);
+        await send(`Só um minutinho que já estou gerando seu pix tá`);
         const pixData = await this.syncPayService.createCharge({
             amountCents: product.priceCents,
             productTitle: product.title,
@@ -777,8 +958,8 @@ let TelegramService = TelegramService_1 = class TelegramService {
                 rawPayload: pixData,
             },
         });
-        await send(this.buildPixMessage(product, pixData.pix_code, finalAmountCents, discountPercent));
         await this.sendPixAudio(botId, chatId).catch((err) => this.logger.error(`Erro ao enviar áudio PIX:`, err));
+        await send(this.buildPixMessage(product, pixData.pix_code, finalAmountCents, discountPercent));
     }
     async sendBusinessMessageWithKeyboard(botId, businessConnectionId, recipientChatId, text, keyboard) {
         const token = this.businessBotTokens.get(botId);
@@ -865,9 +1046,8 @@ let TelegramService = TelegramService_1 = class TelegramService {
         items.push({
             key: "syncpay",
             label: "Integração de pagamento (SyncPay) configurada",
-            description: "Defina SYNCPAY_CLIENT_SECRET e SYNCPAY_CLIENT_ID nas variáveis de ambiente.",
-            ok: !!process.env.SYNCPAY_CLIENT_ID ||
-                !!process.env.SYNCPAY_CLIENT_SECRET,
+            description: "Defina SYNCPAY_API_KEY e SYNCPAY_TOKEN nas variáveis de ambiente.",
+            ok: !!process.env.SYNCPAY_API_KEY || !!process.env.SYNCPAY_TOKEN,
             critical: true,
         });
         const dontSellTemplate = await this.prisma.messageTemplate.findFirst({
@@ -1067,6 +1247,26 @@ let TelegramService = TelegramService_1 = class TelegramService {
             throw error;
         }
     }
+    async saveFileId(itemId, isTemplateMedia, fileId) {
+        try {
+            if (isTemplateMedia) {
+                await this.prisma.messageTemplateMedia.update({
+                    where: { id: itemId },
+                    data: { telegramFileId: fileId },
+                });
+            }
+            else {
+                await this.prisma.messageTemplate.update({
+                    where: { id: itemId },
+                    data: { telegramFileId: fileId },
+                });
+            }
+            this.logger.debug(`[saveFileId] file_id salvo para ${itemId}: ${fileId.slice(0, 40)}...`);
+        }
+        catch (err) {
+            this.logger.warn(`[saveFileId] Falha ao salvar file_id para ${itemId}: ${err?.message}`);
+        }
+    }
     async sendTemplateViaBotApi(chatId, template, ctx) {
         const base = { business_connection_id: ctx.businessConnectionId };
         const sendText = async (text) => {
@@ -1074,14 +1274,14 @@ let TelegramService = TelegramService_1 = class TelegramService {
                 return;
             await this.sendMessageHttp(ctx.token, chatId, text, base);
         };
-        const sendPhotoGroup = async (urls) => {
-            if (!urls.length)
+        const sendPhotoGroup = async (items) => {
+            if (!items.length)
                 return;
-            for (let i = 0; i < urls.length; i += 10) {
-                const chunk = urls.slice(i, i + 10);
-                const mediaJson = chunk.map((url) => ({
+            for (let i = 0; i < items.length; i += 10) {
+                const chunk = items.slice(i, i + 10);
+                const mediaJson = chunk.map((item) => ({
                     type: "photo",
-                    media: url,
+                    media: item.fileId ?? item.url,
                 }));
                 const { data } = await axios_1.default.post(`https://api.telegram.org/bot${ctx.token}/sendMediaGroup`, {
                     chat_id: chatId,
@@ -1090,19 +1290,63 @@ let TelegramService = TelegramService_1 = class TelegramService {
                 });
                 if (!data.ok)
                     throw new Error(`sendPhotoGroup error: ${JSON.stringify(data)}`);
-                if (urls.length > 10)
+                if (Array.isArray(data.result)) {
+                    for (let j = 0; j < data.result.length; j++) {
+                        const msg = data.result[j];
+                        const item = chunk[j];
+                        if (item?.itemId && !item.fileId) {
+                            const photos = msg?.photo;
+                            const bestPhoto = Array.isArray(photos)
+                                ? photos[photos.length - 1]
+                                : null;
+                            if (bestPhoto?.file_id) {
+                                await this.saveFileId(item.itemId, true, bestPhoto.file_id);
+                                item.fileId = bestPhoto.file_id;
+                            }
+                        }
+                    }
+                }
+                if (items.length > 10)
                     await new Promise((r) => setTimeout(r, 500));
             }
         };
-        const sendVideos = async (urls) => {
-            const client = this.clients.get(ctx.botId);
+        const sendVideos = async (items) => {
+            const withFileId = items.filter((i) => i.fileId);
+            const withoutFileId = items.filter((i) => !i.fileId);
+            for (const item of withFileId) {
+                const { data } = await axios_1.default.post(`https://api.telegram.org/bot${ctx.token}/sendVideo`, {
+                    chat_id: chatId,
+                    video: item.fileId,
+                    supports_streaming: true,
+                    ...base,
+                });
+                if (!data.ok) {
+                    this.logger.warn(`[sendVideos] file_id inválido para ${item.itemId}, tentando re-upload`);
+                    withoutFileId.push({ ...item, fileId: undefined });
+                }
+                else {
+                    this.logger.debug(`[sendVideos] Enviado via file_id (instantâneo): ${item.itemId}`);
+                }
+                await new Promise((r) => setTimeout(r, 300));
+            }
+            if (!withoutFileId.length)
+                return;
+            let client = this.clients.get(ctx.botId);
             if (!client)
                 throw new Error(`MTProto client não encontrado para bot ${ctx.botId}`);
+            if (!client.connected) {
+                this.logger.warn(`[sendVideos] Client desconectado, reconectando...`);
+                await Promise.race([
+                    client.connect(),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout ao reconectar MTProto")), 15000)),
+                ]);
+            }
             const peer = new telegram_1.Api.InputPeerUser({
                 userId: (0, big_integer_1.default)(chatId.toString()),
                 accessHash: (0, big_integer_1.default)(0),
             });
-            for (const url of urls) {
+            for (const item of withoutFileId) {
+                const url = item.url;
                 const meta = this.getMediaMeta(url);
                 const filename = `video_${Date.now()}.${meta.ext}`;
                 const buf = await this.fetchFileBuffer(url);
@@ -1123,13 +1367,14 @@ let TelegramService = TelegramService_1 = class TelegramService {
                         }),
                     ],
                 });
-                const serverMedia = await client.invoke(new telegram_1.Api.messages.UploadMedia({ peer, media: inputMedia }));
+                const serverMedia = (await client.invoke(new telegram_1.Api.messages.UploadMedia({ peer, media: inputMedia })));
                 if (!(serverMedia instanceof telegram_1.Api.MessageMediaDocument) ||
                     !serverMedia.document) {
-                    throw new Error(`UploadMedia vídeo retornou tipo inesperado: ${serverMedia.className}`);
+                    const className = serverMedia?.className ?? "unknown";
+                    throw new Error(`UploadMedia vídeo retornou tipo inesperado: ${className}`);
                 }
                 const d = serverMedia.document;
-                await client.invoke(new telegram_1.Api.messages.SendMedia({
+                const sentMsg = (await client.invoke(new telegram_1.Api.messages.SendMedia({
                     peer,
                     media: new telegram_1.Api.InputMediaDocument({
                         id: new telegram_1.Api.InputDocument({
@@ -1140,73 +1385,131 @@ let TelegramService = TelegramService_1 = class TelegramService {
                     }),
                     message: "",
                     randomId: this.makeRandomId(),
-                }));
+                })));
+                if (item.itemId) {
+                    try {
+                        const updates = sentMsg?.updates ?? sentMsg?.Updates ?? [];
+                        const sentMessage = Array.isArray(updates)
+                            ? updates.find((u) => u?.message?.media?.document)
+                            : null;
+                        const fileId = sentMessage?.message?.media?.document?.id?.toString();
+                        if (fileId) {
+                            await this.saveFileId(item.itemId, true, fileId);
+                        }
+                    }
+                    catch (_) {
+                    }
+                }
                 await new Promise((r) => setTimeout(r, 500));
             }
         };
-        const sendAudio = async (url) => {
+        const sendAudio = async (item) => {
+            const url = item.url;
             const rawExt = (url.split(".").pop()?.split(/[#?]/)[0] ?? "mp3").toLowerCase();
-            const rawBuffer = await this.fetchFileBuffer(url);
-            const oggBuffer = await this.convertToOggOpus(rawBuffer, rawExt);
             const FormData = require("form-data");
+            if (item.fileId) {
+                this.logger.debug(`[sendAudio] Enviando via file_id (instantâneo): ${item.itemId}`);
+                const { data } = await axios_1.default.post(`https://api.telegram.org/bot${ctx.token}/sendVoice`, { chat_id: chatId, voice: item.fileId, ...base });
+                if (data.ok)
+                    return;
+                this.logger.warn(`[sendAudio] file_id inválido, re-enviando via upload`);
+            }
+            let audioBuffer;
+            let filename;
+            let contentType;
+            let method;
+            try {
+                const rawBuffer = await this.fetchFileBuffer(url);
+                audioBuffer = await this.convertToOggOpus(rawBuffer, rawExt);
+                filename = `voice_${Date.now()}.ogg`;
+                contentType = "audio/ogg";
+                method = "sendVoice";
+                this.logger.debug(`[sendAudio] Convertido para OGG opus, enviando como voice note`);
+            }
+            catch (convErr) {
+                this.logger.warn(`[sendAudio] Conversão OGG falhou (${convErr?.message}), usando sendAudio`);
+                audioBuffer = await this.fetchFileBuffer(url);
+                filename = `audio_${Date.now()}.${rawExt}`;
+                contentType =
+                    rawExt === "mp3" ? "audio/mpeg" : `audio/${rawExt}`;
+                method = "sendAudio";
+            }
             const form = new FormData();
             form.append("chat_id", chatId);
             form.append("business_connection_id", ctx.businessConnectionId);
-            form.append("voice", oggBuffer, {
-                filename: `voice_${Date.now()}.ogg`,
-                contentType: "audio/ogg",
-            });
-            const { data } = await axios_1.default.post(`https://api.telegram.org/bot${ctx.token}/sendVoice`, form, { headers: form.getHeaders() });
+            const fieldName = method === "sendVoice" ? "voice" : "audio";
+            form.append(fieldName, audioBuffer, { filename, contentType });
+            const { data } = await axios_1.default.post(`https://api.telegram.org/bot${ctx.token}/${method}`, form, { headers: form.getHeaders() });
             if (!data.ok)
-                throw new Error(`sendVoice error: ${JSON.stringify(data)}`);
+                throw new Error(`${method} error: ${JSON.stringify(data)}`);
+            if (item.itemId) {
+                const fileId = data.result?.voice?.file_id ?? data.result?.audio?.file_id;
+                if (fileId)
+                    await this.saveFileId(item.itemId, true, fileId);
+            }
         };
         if (template.type === "TEXT") {
             await sendText(template.text || "");
             return;
         }
         if (template.type !== "COMBO") {
-            const url = template.mediaUrl || "";
+            const url = template.mediaUrl || template.mediaItems?.[0]?.url || "";
+            const fileId = template.telegramFileId ||
+                template.mediaItems?.[0]?.telegramFileId;
+            const itemId = template.mediaItems?.[0]?.id ?? template.id;
+            if (!url) {
+                this.logger.warn(`[sendTemplateViaBotApi] Template ${template.id} sem URL de mídia`);
+                if (template.text)
+                    await sendText(template.text);
+                return;
+            }
             const meta = this.getMediaMeta(url);
+            this.logger.debug(`[sendTemplateViaBotApi] single media ` +
+                `isAudio=${meta.isAudio} isVideo=${meta.isVideo} ` +
+                `hasFileId=${!!fileId}`);
             if (meta.isAudio) {
-                await sendAudio(url);
+                await sendAudio({ url, fileId, itemId });
             }
             else if (meta.isVideo) {
-                await sendVideos([url]);
+                await sendVideos([{ url, fileId, itemId }]);
             }
             else {
-                await sendPhotoGroup([url]);
+                await sendPhotoGroup([{ url, fileId, itemId }]);
             }
             return;
         }
         if (template.mediaItems?.length > 0) {
             const sorted = [...template.mediaItems].sort((a, b) => a.order - b.order);
-            const photoUrls = [];
-            const videoUrls = [];
-            const audioUrls = [];
+            const photos = [];
+            const videos = [];
+            const audios = [];
             for (const item of sorted) {
                 const meta = this.getMediaMeta(item.url);
+                const entry = {
+                    url: item.url,
+                    fileId: item.telegramFileId ?? undefined,
+                    itemId: item.id,
+                };
                 if (meta.isAudio)
-                    audioUrls.push(item.url);
+                    audios.push(entry);
                 else if (meta.isVideo)
-                    videoUrls.push(item.url);
+                    videos.push(entry);
                 else
-                    photoUrls.push(item.url);
+                    photos.push(entry);
             }
-            if (template.text &&
-                photoUrls.length === 0 &&
-                videoUrls.length === 0) {
+            const hasVisual = photos.length > 0 || videos.length > 0;
+            if (template.text && !hasVisual)
                 await sendText(template.text);
-            }
-            if (photoUrls.length > 0) {
-                await sendPhotoGroup(photoUrls);
+            if (photos.length > 0) {
+                await sendPhotoGroup(photos);
                 await new Promise((r) => setTimeout(r, 400));
             }
-            if (videoUrls.length > 0) {
-                await sendVideos(videoUrls);
+            if (videos.length > 0) {
+                await sendVideos(videos);
                 await new Promise((r) => setTimeout(r, 400));
             }
-            for (const audioUrl of audioUrls) {
-                await sendAudio(audioUrl);
+            for (const audio of audios) {
+                await sendAudio(audio);
                 await new Promise((r) => setTimeout(r, 300));
             }
         }

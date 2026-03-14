@@ -186,22 +186,29 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
 
         await fs.promises.writeFile(tmpInput, inputBuffer);
 
-        await new Promise<void>((resolve, reject) => {
-            ffmpeg(tmpInput)
-                .audioCodec("libopus")
-                .audioChannels(1)
-                .audioFrequency(48000)
-                .format("ogg")
-                .on("end", resolve)
-                .on("error", reject)
-                .save(tmpOutput);
-        });
+        try {
+            await new Promise<void>((resolve, reject) => {
+                ffmpeg(tmpInput)
+                    .audioCodec("libopus")
+                    .audioChannels(1)
+                    .audioFrequency(48000)
+                    .format("ogg")
+                    .on("end", resolve)
+                    .on("error", (err: any) => {
+                        reject(
+                            new Error(
+                                `ffmpeg conversion failed: ${err?.message ?? JSON.stringify(err)}`,
+                            ),
+                        );
+                    })
+                    .save(tmpOutput);
+            });
+        } finally {
+            await fs.promises.unlink(tmpInput).catch(() => {});
+        }
 
         const outputBuffer = await fs.promises.readFile(tmpOutput);
-        await Promise.all([
-            fs.promises.unlink(tmpInput).catch(() => {}),
-            fs.promises.unlink(tmpOutput).catch(() => {}),
-        ]);
+        await fs.promises.unlink(tmpOutput).catch(() => {});
 
         return outputBuffer;
     }
@@ -416,6 +423,201 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         );
     }
 
+    // ─── getBusinessBotToken ──────────────────────────────────────────────────────
+    // Expõe o token do business bot para o ScheduleService poder montar o contexto
+
+    getBusinessBotToken(botId: string): string | undefined {
+        return this.businessBotTokens.get(botId);
+    }
+
+    // ─── sendDontSellMenu ─────────────────────────────────────────────────────────
+    // Envia o menu de desconto (ou menu padrão de produtos) após o template DONT_SELL
+    // Reutiliza a lógica do scheduleDontSell mas de forma chamável externamente
+
+    async sendDontSellMenu(
+        botId: string,
+        chatId: string | number,
+        token: string,
+        businessConnectionId: string,
+    ): Promise<void> {
+        const discountConfig = await this.prisma.discountConfig.findUnique({
+            where: { botId },
+            include: { product: true },
+        });
+
+        const products = discountConfig?.isActive
+            ? [discountConfig.product]
+            : await this.prisma.product.findMany({
+                  where: { isActive: true },
+                  orderBy: { priceCents: "asc" },
+              });
+
+        if (!products.length) return;
+
+        const hasDiscount =
+            discountConfig?.isActive && discountConfig?.discountText;
+        const discountPercent = hasDiscount
+            ? discountConfig.discountPercent
+            : 0;
+
+        const inlineKeyboard = products.map((p) => {
+            if (hasDiscount) {
+                const discountedCents = Math.round(
+                    p.priceCents * (1 - discountPercent / 100),
+                );
+                const originalPrice = (p.priceCents / 100)
+                    .toFixed(2)
+                    .replace(".", ",");
+                const discountedPrice = (discountedCents / 100)
+                    .toFixed(2)
+                    .replace(".", ",");
+                return [
+                    {
+                        text: `${p.title} — R$ ${originalPrice} → R$ ${discountedPrice} (-${discountPercent}%)`,
+                        callback_data: `buy_discount:${p.id}:${discountPercent}`,
+                    },
+                ];
+            }
+            return [
+                {
+                    text: `${p.title} — R$ ${(p.priceCents / 100).toFixed(2).replace(".", ",")}`,
+                    callback_data: `buy:${p.id}`,
+                },
+            ];
+        });
+
+        const messageText = hasDiscount
+            ? discountConfig.discountText
+            : "🛍️ *Que tal aproveitar e garantir agora?* Escolha um produto:";
+
+        await this.sendMessageHttp(token, chatId, String(messageText), {
+            business_connection_id: businessConnectionId,
+            parse_mode: "Markdown",
+            reply_markup: { inline_keyboard: inlineKeyboard },
+        });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Substitua o método scheduleDontSell no telegram.service.ts por este.
+    //
+    // Em vez de um setTimeout em memória, cria ScheduledMessageJob no banco
+    // para cada intervalo cadastrado. A cron job existente se encarrega do envio.
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    private async scheduleDontSellJobs(
+        botId: string,
+        chatId: number,
+        userId: number,
+        businessConnectionId: string,
+    ): Promise<void> {
+        const dontSellTemplate = await this.prisma.messageTemplate.findFirst({
+            where: { key: MessageTemplateKey.DONT_SELL, isActive: true },
+        });
+
+        if (!dontSellTemplate) {
+            this.logger.debug(
+                `[scheduleDontSellJobs] Nenhum template DONT_SELL ativo`,
+            );
+            return;
+        }
+
+        const user = await this.prisma.telegramUser.findUnique({
+            where: { chatId: chatId.toString() },
+        });
+
+        if (!user) {
+            this.logger.warn(
+                `[scheduleDontSellJobs] Usuário não encontrado para chatId=${chatId}`,
+            );
+            return;
+        }
+
+        // Busca intervalos pelo botId — mas também tenta busca global
+        // caso o botId do handler não bata com o da connection cadastrada
+        let intervals = await this.prisma.dontSellInterval.findMany({
+            where: { botId, isActive: true },
+            orderBy: { delaySeconds: "asc" },
+        });
+
+        // Fallback: se não encontrou pelo botId, pega de qualquer bot ativo
+        if (!intervals.length) {
+            intervals = await this.prisma.dontSellInterval.findMany({
+                where: { isActive: true },
+                orderBy: { delaySeconds: "asc" },
+            });
+        }
+
+        if (!intervals.length) {
+            this.logger.debug(
+                `[scheduleDontSellJobs] Nenhum intervalo DONT_SELL configurado`,
+            );
+            return;
+        }
+
+        // Valida que o botId do handler existe em BotAccount (FK constraint)
+        const botAccountExists = await this.prisma.botAccount.findUnique({
+            where: { id: botId },
+            select: { id: true },
+        });
+
+        if (!botAccountExists) {
+            this.logger.error(
+                `[scheduleDontSellJobs] botId=${botId} não encontrado em BotAccount — jobs não criados`,
+            );
+            return;
+        }
+
+        // Sempre usa o botId do handler — é garantidamente válido (FK)
+        // O businessConnectionId é salvo separadamente para o processJobs resolver
+        this.logger.debug(
+            `[scheduleDontSellJobs] botId=${botId} connId=${businessConnectionId}`,
+        );
+
+        let dontSellRule = await this.prisma.timedMessageRule.findFirst({
+            where: { botId, templateId: dontSellTemplate.id },
+        });
+
+        if (!dontSellRule) {
+            dontSellRule = await this.prisma.timedMessageRule.findFirst({
+                where: { templateId: dontSellTemplate.id },
+            });
+        }
+
+        if (!dontSellRule) {
+            dontSellRule = await this.prisma.timedMessageRule.create({
+                data: {
+                    botId,
+                    name: "DONT_SELL Auto",
+                    templateId: dontSellTemplate.id,
+                    delaySeconds: intervals[0].delaySeconds,
+                    segment: "NON_BUYERS",
+                    isActive: true,
+                },
+            });
+        }
+
+        const now = new Date();
+        const jobsToCreate = intervals.map((interval) => ({
+            botId, // ← sempre o botId do handler (FK válida)
+            telegramUserId: user.telegramUserId,
+            chatId: chatId.toString(),
+            templateId: dontSellTemplate.id,
+            ruleId: dontSellRule!.id,
+            runAt: new Date(now.getTime() + interval.delaySeconds * 1000),
+            status: "PENDING" as const,
+        }));
+
+        await this.prisma.scheduledMessageJob.createMany({
+            data: jobsToCreate,
+            skipDuplicates: true,
+        });
+
+        this.logger.log(
+            `[scheduleDontSellJobs] ${jobsToCreate.length} jobs agendados para chatId=${chatId} ` +
+                `(botId=${botId}): ${intervals.map((i) => `T+${i.delaySeconds}s`).join(", ")}`,
+        );
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // PIX message builder
     // ─────────────────────────────────────────────────────────────────────
@@ -432,17 +634,9 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
             : `💰 Valor: *R$ ${price}*`;
 
         return [
-            `✅ *PIX gerado com sucesso!*`,
-            ``,
-            `🏷️ *${product.title}*`,
-            discountLine,
-            ``,
-            `📋 *Copia e Cola:*`,
             `\`${pixCode}\``,
             ``,
-            `⏰ Válido por 30 minutos`,
-            ``,
-            `Após o pagamento você receberá a confirmação automaticamente!`,
+            `Seu PIX tá aqui — Clica para copiar, paga e me avisa.`,
         ].join("\n");
     }
 
@@ -643,6 +837,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                 },
                 update: {
                     isEnabled: true,
+                    botId,
                     userTelegramId: String(user.id),
                 },
             });
@@ -701,6 +896,12 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                 `[business_message] chatId=${chatId} userId=${userId} connId=${businessConnectionId}`,
             );
 
+            // Verifica se é um usuário novo ANTES do upsert
+            const existingUser = await this.prisma.telegramUser.findUnique({
+                where: { chatId: chatId.toString() },
+            });
+            const isNewUser = !existingUser;
+
             await this.prisma.telegramUser.upsert({
                 where: { chatId: chatId.toString() },
                 update: {
@@ -740,8 +941,6 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                     })),
                 );
 
-                // Usa Markdown simples — MarkdownV2 causa Bad Request 400 com
-                // emojis e caracteres especiais que exigem escape muito restrito.
                 await this.sendMessageHttp(token, chatId, message, {
                     business_connection_id: businessConnectionId,
                     parse_mode: "Markdown",
@@ -770,8 +969,14 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                 text === "eai";
 
             if (isGreeting) {
-                try {
-                    await this.handleGreeting(
+                if (isNewUser) {
+                    // Novo usuário — fire-and-forget para não bloquear o handler.
+                    // O handleGreeting tem await delay() internamente e pode levar
+                    // minutos — se rodar com await trava o polling inteiro do bot.
+                    this.logger.debug(
+                        `[business_message] novo usuário chatId=${chatId}, iniciando fluxo completo`,
+                    );
+                    this.handleGreeting(
                         botId,
                         chatId,
                         token,
@@ -779,12 +984,40 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                         userId,
                         delay,
                         sendMenu,
+                    ).catch((err) =>
+                        this.logger.error(
+                            `Erro no handleGreeting para ${chatId}:`,
+                            err,
+                        ),
                     );
-                } catch (err) {
-                    this.logger.error(
-                        `Erro ao enviar menu para ${chatId}:`,
-                        err,
+                } else {
+                    // Usuário existente — agenda DONT_SELL se não comprou
+                    this.logger.debug(
+                        `[business_message] usuário existente chatId=${chatId}, agendando DONT_SELL se aplicável`,
                     );
+                    const hasPurchased = await this.prisma.sale.findFirst({
+                        where: {
+                            telegramUserId: userId.toString(),
+                            status: "PAID",
+                        },
+                    });
+                    if (!hasPurchased) {
+                        this.scheduleDontSellJobs(
+                            botId,
+                            chatId,
+                            userId,
+                            businessConnectionId!,
+                        ).catch((err) =>
+                            this.logger.error(
+                                `Erro ao agendar DONT_SELL para ${chatId}:`,
+                                err,
+                            ),
+                        );
+                    } else {
+                        this.logger.debug(
+                            `[business_message] usuário ${chatId} já comprou, nenhuma ação`,
+                        );
+                    }
                 }
                 return;
             }
@@ -829,18 +1062,44 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         }
 
         const timedTemplates = await this.prisma.timedMessageRule.findMany({
-            where: { botId },
+            where: {
+                botId,
+                // Exclui a regra auto-gerada pelo scheduleDontSellJobs —
+                // ela é usada apenas como referência na fila, não deve
+                // aparecer no fluxo de boas-vindas
+                name: { not: "DONT_SELL Auto" },
+            },
             include: { template: { include: { mediaItems: true } } },
             orderBy: { delaySeconds: "asc" },
         });
 
-        // O delaySeconds é absoluto (a partir do início do greeting).
-        // Calculamos o delta entre cada template para o delay ser relativo.
-        let elapsed = 0;
+        // Usa tempo de parede (wall clock) desde o início do greeting para
+        // calcular o delay preciso de cada template, descontando o tempo
+        // que o sendTemplate anterior levou (upload de vídeo, conversão de áudio etc.)
+        const greetingStart = Date.now();
+
         for (const timedTemplate of timedTemplates) {
-            const delta = timedTemplate.delaySeconds * 1000 - elapsed;
-            if (delta > 0) await delay(delta);
-            elapsed = timedTemplate.delaySeconds * 1000;
+            const templateId = timedTemplate.template?.id;
+
+            // Calcula quanto falta para o momento alvo baseado no clock real
+            // Ex: template deve ir em T+10s, já passaram 3s enviando o anterior → espera 7s
+            const targetMs = timedTemplate.delaySeconds * 1000;
+            const elapsedMs = Date.now() - greetingStart;
+            const waitMs = targetMs - elapsedMs;
+
+            if (waitMs > 0) {
+                this.logger.debug(
+                    `[handleGreeting] Aguardando ${(waitMs / 1000).toFixed(1)}s ` +
+                        `para "${timedTemplate.name}" (alvo T+${timedTemplate.delaySeconds}s)`,
+                );
+                await delay(waitMs);
+            }
+
+            this.logger.debug(
+                `[handleGreeting] Enviando "${timedTemplate.name}" ` +
+                    `em T+${((Date.now() - greetingStart) / 1000).toFixed(1)}s (templateId=${templateId})`,
+            );
+
             try {
                 await this.sendTemplate(
                     botId,
@@ -848,31 +1107,61 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                     timedTemplate.template,
                     businessCtx,
                 );
-            } catch (err) {
-                // Erro no template timed não deve impedir o sendMenu
+            } catch (err: any) {
                 this.logger.error(
-                    `[handleGreeting] Erro ao enviar timed template ${timedTemplate.id}:`,
-                    err,
+                    `[handleGreeting] Erro ao enviar timed template ${templateId} ` +
+                        `(${timedTemplate.template?.type}): ${err?.message ?? err}`,
+                );
+                if (err?.errors) {
+                    this.logger.error(
+                        `[handleGreeting] AggregateError details:`,
+                        err.errors,
+                    );
+                }
+            }
+        }
+
+        const send = async (text: string, extra?: Record<string, any>) =>
+            this.sendMessageHttp(token, chatId, text, {
+                business_connection_id: businessConnectionId,
+                parse_mode: "Markdown",
+                ...extra,
+            });
+
+        try {
+            const products = await this.prisma.product.findMany({
+                where: { isActive: true },
+                orderBy: { priceCents: "asc" },
+            });
+
+            if (!products.length) {
+                await sendMenu("😔 Nenhum produto disponível no momento.", []);
+                return;
+            }
+
+            const inlineKeyboard = products.map((p) => [
+                {
+                    text: `${p.title} — R$ ${(p.priceCents / 100).toFixed(2).replace(".", ",")}`,
+                    callback_data: `buy:${p.id}`,
+                },
+            ]);
+
+            await send("🛍️ *Escolha o produto:*", {
+                reply_markup: { inline_keyboard: inlineKeyboard },
+            });
+        } catch (err: any) {
+            this.logger.error(
+                `[handleGreeting] Erro ao enviar sendMenu para ${chatId}: ${err?.message ?? err}`,
+            );
+            if (err?.errors) {
+                this.logger.error(
+                    `[handleGreeting] sendMenu AggregateError details:`,
+                    err.errors,
                 );
             }
         }
 
-        await sendMenu(
-            "👋 Olá! Gostou das prévias, que tal adquirir um dos nossos planos e receber mais conteúdos exclusivos?",
-            [
-                [{ text: "🛍️ Ver Produtos", callbackData: "list_products" }],
-                [{ text: "💬 Suporte", callbackData: "support" }],
-            ],
-        );
-
-        this.scheduleDontSell(
-            botId,
-            chatId,
-            token,
-            userId,
-            businessConnectionId,
-            delay,
-        );
+        this.scheduleDontSellJobs(botId, chatId, userId, businessConnectionId);
     }
 
     private scheduleDontSell(
@@ -1131,7 +1420,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
             return;
         }
 
-        await send(`⏳ Gerando PIX para *${product.title}*...`);
+        await send(`Só um minutinho que já estou gerando seu pix tá`);
 
         const pixData = await this.syncPayService.createCharge({
             amountCents: product.priceCents,
@@ -1210,6 +1499,10 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
             },
         });
 
+        await this.sendPixAudio(botId, chatId).catch((err) =>
+            this.logger.error(`Erro ao enviar áudio PIX:`, err),
+        );
+
         await send(
             this.buildPixMessage(
                 product,
@@ -1217,10 +1510,6 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                 finalAmountCents,
                 discountPercent,
             ),
-        );
-
-        await this.sendPixAudio(botId, chatId).catch((err) =>
-            this.logger.error(`Erro ao enviar áudio PIX:`, err),
         );
     }
 
@@ -1362,10 +1651,8 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
             key: "syncpay",
             label: "Integração de pagamento (SyncPay) configurada",
             description:
-                "Defina SYNCPAY_CLIENT_SECRET e SYNCPAY_CLIENT_ID nas variáveis de ambiente.",
-            ok:
-                !!process.env.SYNCPAY_CLIENT_ID ||
-                !!process.env.SYNCPAY_CLIENT_SECRET,
+                "Defina SYNCPAY_API_KEY e SYNCPAY_TOKEN nas variáveis de ambiente.",
+            ok: !!process.env.SYNCPAY_API_KEY || !!process.env.SYNCPAY_TOKEN,
             critical: true,
         });
 
@@ -1549,6 +1836,8 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
             return;
         }
 
+        // Mantém a conexão viva com keep-alive implícito do GramJS
+        // Se desconectar, tenta reconectar automaticamente
         client.addEventHandler(async (event: NewMessageEvent) => {
             const message = event.message;
             if (!message || message.out) return;
@@ -1674,6 +1963,39 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
      *
      * A Bot API aceita URLs públicas diretamente — não precisa fazer upload.
      */
+    /**
+     * Persiste o file_id retornado pelo Telegram no banco para reutilização futura.
+     * Na próxima vez que o template for enviado, o arquivo é enviado instantaneamente
+     * sem nenhum upload — o Telegram serve direto do servidor deles.
+     */
+    private async saveFileId(
+        itemId: string,
+        isTemplateMedia: boolean,
+        fileId: string,
+    ): Promise<void> {
+        try {
+            if (isTemplateMedia) {
+                await this.prisma.messageTemplateMedia.update({
+                    where: { id: itemId },
+                    data: { telegramFileId: fileId },
+                });
+            } else {
+                await this.prisma.messageTemplate.update({
+                    where: { id: itemId },
+                    data: { telegramFileId: fileId },
+                });
+            }
+            this.logger.debug(
+                `[saveFileId] file_id salvo para ${itemId}: ${fileId.slice(0, 40)}...`,
+            );
+        } catch (err: any) {
+            // Não crítico — apenas loga se falhar
+            this.logger.warn(
+                `[saveFileId] Falha ao salvar file_id para ${itemId}: ${err?.message}`,
+            );
+        }
+    }
+
     private async sendTemplateViaBotApi(
         chatId: string,
         template: any,
@@ -1689,17 +2011,21 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         };
 
         /**
-         * Envia fotos agrupadas via sendMediaGroup — fotos aceitam URL direta.
-         * Máximo de 10 por chamada (limite da Bot API).
+         * Envia fotos agrupadas via sendMediaGroup.
+         * Usa file_id se disponível (instantâneo), senão URL direta.
+         * Salva o file_id retornado para as próximas chamadas.
          */
-        const sendPhotoGroup = async (urls: string[]) => {
-            if (!urls.length) return;
+        const sendPhotoGroup = async (
+            items: { url: string; fileId?: string; itemId?: string }[],
+        ) => {
+            if (!items.length) return;
 
-            for (let i = 0; i < urls.length; i += 10) {
-                const chunk = urls.slice(i, i + 10);
-                const mediaJson = chunk.map((url) => ({
+            for (let i = 0; i < items.length; i += 10) {
+                const chunk = items.slice(i, i + 10);
+                const mediaJson = chunk.map((item) => ({
                     type: "photo",
-                    media: url,
+                    // file_id tem prioridade — instantâneo e sem consumo de banda
+                    media: item.fileId ?? item.url,
                 }));
 
                 const { data } = await axios.post(
@@ -1715,36 +2041,104 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                     throw new Error(
                         `sendPhotoGroup error: ${JSON.stringify(data)}`,
                     );
-                if (urls.length > 10)
+
+                // Salva file_id dos itens que ainda não têm
+                if (Array.isArray(data.result)) {
+                    for (let j = 0; j < data.result.length; j++) {
+                        const msg = data.result[j];
+                        const item = chunk[j];
+                        if (item?.itemId && !item.fileId) {
+                            // Pega o maior tamanho disponível da foto
+                            const photos = msg?.photo;
+                            const bestPhoto = Array.isArray(photos)
+                                ? photos[photos.length - 1]
+                                : null;
+                            if (bestPhoto?.file_id) {
+                                await this.saveFileId(
+                                    item.itemId,
+                                    true,
+                                    bestPhoto.file_id,
+                                );
+                                item.fileId = bestPhoto.file_id; // atualiza em memória
+                            }
+                        }
+                    }
+                }
+
+                if (items.length > 10)
                     await new Promise((r) => setTimeout(r, 500));
             }
         };
 
         /**
          * Envia vídeos via MTProto (GramJS) diretamente para o chat do cliente.
-         *
-         * A Bot API tem limite de 50MB e não aceita IDs MTProto como file_id.
-         * O MTProto não tem limite de tamanho e funciona em contas business
-         * porque a conta user é a própria conta business do dono.
+         * Usa file_id se disponível — evita re-upload via MTProto (muito mais rápido).
+         * Na primeira vez sobe via MTProto e salva o file_id para as próximas.
          */
-        const sendVideos = async (urls: string[]) => {
-            const client = this.clients.get(ctx.botId);
+        const sendVideos = async (
+            items: { url: string; fileId?: string; itemId?: string }[],
+        ) => {
+            // Vídeos que já têm file_id: envia direto via Bot API (instantâneo)
+            const withFileId = items.filter((i) => i.fileId);
+            const withoutFileId = items.filter((i) => !i.fileId);
+
+            for (const item of withFileId) {
+                const { data } = await axios.post(
+                    `https://api.telegram.org/bot${ctx.token}/sendVideo`,
+                    {
+                        chat_id: chatId,
+                        video: item.fileId,
+                        supports_streaming: true,
+                        ...base,
+                    },
+                );
+                if (!data.ok) {
+                    this.logger.warn(
+                        `[sendVideos] file_id inválido para ${item.itemId}, tentando re-upload`,
+                    );
+                    withoutFileId.push({ ...item, fileId: undefined });
+                } else {
+                    this.logger.debug(
+                        `[sendVideos] Enviado via file_id (instantâneo): ${item.itemId}`,
+                    );
+                }
+                await new Promise((r) => setTimeout(r, 300));
+            }
+
+            if (!withoutFileId.length) return;
+
+            // Vídeos sem file_id: sobe via MTProto e salva o file_id
+            let client = this.clients.get(ctx.botId);
             if (!client)
                 throw new Error(
                     `MTProto client não encontrado para bot ${ctx.botId}`,
                 );
 
-            /**
-             * getInputEntity falha se a conta MTProto nunca interagiu com o peer.
-             * InputPeerUser com accessHash=0n funciona para envio direto em contas
-             * business onde a conta user É o dono do chat.
-             */
+            if (!client.connected) {
+                this.logger.warn(
+                    `[sendVideos] Client desconectado, reconectando...`,
+                );
+                await Promise.race([
+                    client.connect(),
+                    new Promise((_, reject) =>
+                        setTimeout(
+                            () =>
+                                reject(
+                                    new Error("Timeout ao reconectar MTProto"),
+                                ),
+                            15000,
+                        ),
+                    ),
+                ]);
+            }
+
             const peer = new Api.InputPeerUser({
                 userId: bigInt(chatId.toString()),
                 accessHash: bigInt(0),
             });
 
-            for (const url of urls) {
+            for (const item of withoutFileId) {
+                const url = item.url;
                 const meta = this.getMediaMeta(url);
                 const filename = `video_${Date.now()}.${meta.ext}`;
                 const buf = await this.fetchFileBuffer(url);
@@ -1771,24 +2165,27 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                     ],
                 });
 
-                // Faz upload para o servidor e obtém referência permanente
-                const serverMedia = await client.invoke(
+                // Faz upload para o servidor — sem timeout artificial, o GramJS
+                // tem retry interno e o upload pode demorar para vídeos grandes
+                const serverMedia = (await client.invoke(
                     new Api.messages.UploadMedia({ peer, media: inputMedia }),
-                );
+                )) as Api.TypeMessageMedia;
 
                 if (
                     !(serverMedia instanceof Api.MessageMediaDocument) ||
                     !serverMedia.document
                 ) {
+                    const className =
+                        (serverMedia as any)?.className ?? "unknown";
                     throw new Error(
-                        `UploadMedia vídeo retornou tipo inesperado: ${serverMedia.className}`,
+                        `UploadMedia vídeo retornou tipo inesperado: ${className}`,
                     );
                 }
 
                 const d = serverMedia.document as Api.Document;
 
                 // Envia direto para o chat do cliente via MTProto
-                await client.invoke(
+                const sentMsg = (await client.invoke(
                     new Api.messages.SendMedia({
                         peer,
                         media: new Api.InputMediaDocument({
@@ -1801,7 +2198,28 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                         message: "",
                         randomId: this.makeRandomId(),
                     }),
-                );
+                )) as any;
+
+                // Salva o file_id retornado para reutilização futura
+                // O MTProto retorna Updates com a mensagem enviada
+                if (item.itemId) {
+                    try {
+                        const updates =
+                            sentMsg?.updates ?? sentMsg?.Updates ?? [];
+                        const sentMessage = Array.isArray(updates)
+                            ? updates.find(
+                                  (u: any) => u?.message?.media?.document,
+                              )
+                            : null;
+                        const fileId =
+                            sentMessage?.message?.media?.document?.id?.toString();
+                        if (fileId) {
+                            await this.saveFileId(item.itemId, true, fileId);
+                        }
+                    } catch (_) {
+                        /* não crítico */
+                    }
+                }
 
                 await new Promise((r) => setTimeout(r, 500));
             }
@@ -1809,36 +2227,82 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
 
         /**
          * Converte qualquer áudio para ogg opus e envia como nota de voz nativa.
-         * A Bot API não aceita conversão on-the-fly — precisa fazer upload do
-         * arquivo convertido via multipart/form-data.
+         * Usa file_id se disponível (instantâneo), senão converte e faz upload.
          */
-        const sendAudio = async (url: string) => {
+        const sendAudio = async (item: {
+            url: string;
+            fileId?: string;
+            itemId?: string;
+        }) => {
+            const url = item.url;
             const rawExt = (
                 url.split(".").pop()?.split(/[#?]/)[0] ?? "mp3"
             ).toLowerCase();
-
-            // Baixa e converte para ogg opus (sempre, independente do formato)
-            const rawBuffer = await this.fetchFileBuffer(url);
-            const oggBuffer = await this.convertToOggOpus(rawBuffer, rawExt);
-
-            // Upload via multipart — única forma de enviar arquivo binário pela Bot API
             const FormData = require("form-data");
+
+            // Se já tem file_id — envia instantaneamente sem upload
+            if (item.fileId) {
+                this.logger.debug(
+                    `[sendAudio] Enviando via file_id (instantâneo): ${item.itemId}`,
+                );
+                const { data } = await axios.post(
+                    `https://api.telegram.org/bot${ctx.token}/sendVoice`,
+                    { chat_id: chatId, voice: item.fileId, ...base },
+                );
+                if (data.ok) return;
+                // Se o file_id falhou (expirou), continua para re-upload
+                this.logger.warn(
+                    `[sendAudio] file_id inválido, re-enviando via upload`,
+                );
+            }
+
+            // Sem file_id — converte e faz upload
+            let audioBuffer: Buffer;
+            let filename: string;
+            let contentType: string;
+            let method: "sendVoice" | "sendAudio";
+
+            try {
+                const rawBuffer = await this.fetchFileBuffer(url);
+                audioBuffer = await this.convertToOggOpus(rawBuffer, rawExt);
+                filename = `voice_${Date.now()}.ogg`;
+                contentType = "audio/ogg";
+                method = "sendVoice";
+                this.logger.debug(
+                    `[sendAudio] Convertido para OGG opus, enviando como voice note`,
+                );
+            } catch (convErr: any) {
+                this.logger.warn(
+                    `[sendAudio] Conversão OGG falhou (${convErr?.message}), usando sendAudio`,
+                );
+                audioBuffer = await this.fetchFileBuffer(url);
+                filename = `audio_${Date.now()}.${rawExt}`;
+                contentType =
+                    rawExt === "mp3" ? "audio/mpeg" : `audio/${rawExt}`;
+                method = "sendAudio";
+            }
+
             const form = new FormData();
             form.append("chat_id", chatId);
             form.append("business_connection_id", ctx.businessConnectionId);
-            form.append("voice", oggBuffer, {
-                filename: `voice_${Date.now()}.ogg`,
-                contentType: "audio/ogg",
-            });
+            const fieldName = method === "sendVoice" ? "voice" : "audio";
+            form.append(fieldName, audioBuffer, { filename, contentType });
 
             const { data } = await axios.post(
-                `https://api.telegram.org/bot${ctx.token}/sendVoice`,
+                `https://api.telegram.org/bot${ctx.token}/${method}`,
                 form,
                 { headers: form.getHeaders() },
             );
 
             if (!data.ok)
-                throw new Error(`sendVoice error: ${JSON.stringify(data)}`);
+                throw new Error(`${method} error: ${JSON.stringify(data)}`);
+
+            // Salva file_id para as próximas chamadas
+            if (item.itemId) {
+                const fileId =
+                    data.result?.voice?.file_id ?? data.result?.audio?.file_id;
+                if (fileId) await this.saveFileId(item.itemId, true, fileId);
+            }
         };
 
         // ── TEXT ─────────────────────────────────────────────────────────
@@ -1847,17 +2311,36 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
             return;
         }
 
-        // ── Mídia única ───────────────────────────────────────────────────
+        // ── Mídia única (IMAGE, VIDEO, AUDIO) ────────────────────────────
         if (template.type !== "COMBO") {
-            const url = template.mediaUrl || "";
+            const url =
+                template.mediaUrl || template.mediaItems?.[0]?.url || "";
+            const fileId =
+                template.telegramFileId ||
+                template.mediaItems?.[0]?.telegramFileId;
+            const itemId = template.mediaItems?.[0]?.id ?? template.id;
+
+            if (!url) {
+                this.logger.warn(
+                    `[sendTemplateViaBotApi] Template ${template.id} sem URL de mídia`,
+                );
+                if (template.text) await sendText(template.text);
+                return;
+            }
+
             const meta = this.getMediaMeta(url);
+            this.logger.debug(
+                `[sendTemplateViaBotApi] single media ` +
+                    `isAudio=${meta.isAudio} isVideo=${meta.isVideo} ` +
+                    `hasFileId=${!!fileId}`,
+            );
 
             if (meta.isAudio) {
-                await sendAudio(url);
+                await sendAudio({ url, fileId, itemId });
             } else if (meta.isVideo) {
-                await sendVideos([url]);
+                await sendVideos([{ url, fileId, itemId }]);
             } else {
-                await sendPhotoGroup([url]);
+                await sendPhotoGroup([{ url, fileId, itemId }]);
             }
             return;
         }
@@ -1868,39 +2351,39 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                 (a: any, b: any) => a.order - b.order,
             );
 
-            // Separa por tipo
-            const photoUrls: string[] = [];
-            const videoUrls: string[] = [];
-            const audioUrls: string[] = [];
+            // Separa por tipo, mantendo id e telegramFileId para cache
+            type MediaItem = { url: string; fileId?: string; itemId?: string };
+            const photos: MediaItem[] = [];
+            const videos: MediaItem[] = [];
+            const audios: MediaItem[] = [];
 
             for (const item of sorted) {
                 const meta = this.getMediaMeta(item.url);
-                if (meta.isAudio) audioUrls.push(item.url);
-                else if (meta.isVideo) videoUrls.push(item.url);
-                else photoUrls.push(item.url);
+                const entry: MediaItem = {
+                    url: item.url,
+                    fileId: item.telegramFileId ?? undefined,
+                    itemId: item.id,
+                };
+                if (meta.isAudio) audios.push(entry);
+                else if (meta.isVideo) videos.push(entry);
+                else photos.push(entry);
             }
 
-            // Ordem: texto (se sem mídia visual) → fotos → vídeos → áudios
-            if (
-                template.text &&
-                photoUrls.length === 0 &&
-                videoUrls.length === 0
-            ) {
-                await sendText(template.text);
-            }
+            const hasVisual = photos.length > 0 || videos.length > 0;
+            if (template.text && !hasVisual) await sendText(template.text);
 
-            if (photoUrls.length > 0) {
-                await sendPhotoGroup(photoUrls);
+            if (photos.length > 0) {
+                await sendPhotoGroup(photos);
                 await new Promise((r) => setTimeout(r, 400));
             }
 
-            if (videoUrls.length > 0) {
-                await sendVideos(videoUrls);
+            if (videos.length > 0) {
+                await sendVideos(videos);
                 await new Promise((r) => setTimeout(r, 400));
             }
 
-            for (const audioUrl of audioUrls) {
-                await sendAudio(audioUrl);
+            for (const audio of audios) {
+                await sendAudio(audio);
                 await new Promise((r) => setTimeout(r, 300));
             }
         }

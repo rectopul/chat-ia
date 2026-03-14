@@ -2,46 +2,37 @@
 import { useState } from "react";
 import { MediaUploader } from "./MediaUploader";
 import {
-  Plus,
-  Trash2,
-  Check,
-  FileText,
-  Image as ImageIcon,
-  Video,
-  Mic,
-  Layers,
-  Info
+    Plus,
+    Trash2,
+    Check,
+    FileText,
+    Image as ImageIcon,
+    Video,
+    Mic,
+    Layers,
+    Info,
+    Loader2,
+    GripVertical,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue
-} from "@/components/ui/select";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger
+    Tooltip,
+    TooltipContent,
+    TooltipTrigger,
 } from "@/components/ui/tooltip";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle
-} from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 
 const TEMPLATE_KEYS = ["WELCOME", "DONT_SELL", "SUBSCRIBER_CONTENT", "TIMED"];
 const MEDIA_TYPES = ["TEXT", "IMAGE", "VIDEO", "AUDIO", "COMBO"];
 
 interface ComboItem {
+    localId: string;
     type: string;
     url: string;
-    localId: string;
+    uploading: boolean;
 }
 
 interface Props {
@@ -55,20 +46,42 @@ interface Props {
     }) => Promise<void>;
 }
 
+// Detecta o tipo de mídia a partir de uma URL
+function detectTypeFromUrl(url: string): string {
+    const ext = url.split("?")[0].split(".").pop()?.toLowerCase() ?? "";
+    if (["jpg", "jpeg", "png", "gif", "webp"].includes(ext)) return "IMAGE";
+    if (["mp4", "mov", "avi", "mkv", "webm"].includes(ext)) return "VIDEO";
+    if (["mp3", "ogg", "wav", "m4a", "aac", "flac"].includes(ext))
+        return "AUDIO";
+    return "IMAGE";
+}
+
 export function TemplateForm({ onSubmit }: Props) {
     const [key, setKey] = useState(TEMPLATE_KEYS[0]);
     const [title, setTitle] = useState("");
     const [type, setType] = useState("TEXT");
     const [text, setText] = useState("");
     const [mediaUrl, setMediaUrl] = useState("");
+    const [mainUploading, setMainUploading] = useState(false);
     const [comboItems, setComboItems] = useState<ComboItem[]>([]);
     const [saving, setSaving] = useState(false);
     const [success, setSuccess] = useState(false);
 
-    const addComboItem = () => {
+    const anyUploading = mainUploading || comboItems.some((i) => i.uploading);
+
+    // ── Combo helpers ─────────────────────────────────────────────────────
+
+    // Chamado pelo MediaUploader do COMBO cada vez que um arquivo é concluído
+    const onComboUploaded = (url: string) => {
+        const detectedType = detectTypeFromUrl(url);
         setComboItems((prev) => [
             ...prev,
-            { type: "IMAGE", url: "", localId: crypto.randomUUID() },
+            {
+                localId: crypto.randomUUID(),
+                type: detectedType,
+                url,
+                uploading: false,
+            },
         ]);
     };
 
@@ -76,17 +89,25 @@ export function TemplateForm({ onSubmit }: Props) {
         setComboItems((prev) => prev.filter((i) => i.localId !== localId));
     };
 
-    const updateComboItem = (localId: string, patch: Partial<ComboItem>) => {
+    const updateComboType = (localId: string, newType: string) => {
         setComboItems((prev) =>
-            prev.map((i) => (i.localId === localId ? { ...i, ...patch } : i)),
+            prev.map((i) =>
+                i.localId === localId ? { ...i, type: newType } : i,
+            ),
         );
     };
 
-    const handleSubmit = async () => {
-        if (!title || !key) return;
-        if (type !== "TEXT" && type !== "COMBO" && !mediaUrl) return;
-        if (type === "COMBO" && comboItems.some((i) => !i.url)) return;
+    // ── Submit ────────────────────────────────────────────────────────────
 
+    const canSubmit =
+        !saving &&
+        !anyUploading &&
+        !!title &&
+        (type === "TEXT" || type === "COMBO" || !!mediaUrl) &&
+        (type !== "COMBO" || comboItems.length > 0);
+
+    const handleSubmit = async () => {
+        if (!canSubmit) return;
         setSaving(true);
         try {
             await onSubmit({
@@ -100,7 +121,6 @@ export function TemplateForm({ onSubmit }: Props) {
                         ? comboItems.map(({ type, url }) => ({ type, url }))
                         : undefined,
             });
-
             // Reset
             setTitle("");
             setText("");
@@ -114,12 +134,12 @@ export function TemplateForm({ onSubmit }: Props) {
         }
     };
 
-    const typeIcons: Record<string, any> = {
+    const typeIcons: Record<string, React.ElementType> = {
         TEXT: FileText,
         IMAGE: ImageIcon,
         VIDEO: Video,
         AUDIO: Mic,
-        COMBO: Layers
+        COMBO: Layers,
     };
 
     return (
@@ -130,14 +150,21 @@ export function TemplateForm({ onSubmit }: Props) {
                     Novo Template
                 </CardTitle>
             </CardHeader>
+
             <CardContent className="p-6 space-y-6">
+                {/* Key + Título */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="space-y-2">
                         <Label className="font-semibold flex items-center gap-2">
                             Finalidade (Key)
                             <Tooltip>
-                                <TooltipTrigger asChild><Info className="w-3.5 h-3.5 text-slate-400" /></TooltipTrigger>
-                                <TooltipContent>Identificador para o sistema disparar no evento correto.</TooltipContent>
+                                <TooltipTrigger asChild>
+                                    <Info className="w-3.5 h-3.5 text-slate-400" />
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                    Identificador para o sistema disparar no
+                                    evento correto.
+                                </TooltipContent>
                             </Tooltip>
                         </Label>
                         <select
@@ -146,12 +173,16 @@ export function TemplateForm({ onSubmit }: Props) {
                             className="w-full h-10 px-3 py-2 bg-slate-50/50 border border-slate-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
                         >
                             {TEMPLATE_KEYS.map((k) => (
-                                <option key={k} value={k}>{k}</option>
+                                <option key={k} value={k}>
+                                    {k}
+                                </option>
                             ))}
                         </select>
                     </div>
                     <div className="space-y-2">
-                        <Label className="font-semibold">Título do Template</Label>
+                        <Label className="font-semibold">
+                            Título do Template
+                        </Label>
                         <Input
                             value={title}
                             onChange={(e) => setTitle(e.target.value)}
@@ -161,6 +192,7 @@ export function TemplateForm({ onSubmit }: Props) {
                     </div>
                 </div>
 
+                {/* Tipo de conteúdo */}
                 <div className="space-y-3">
                     <Label className="font-semibold">Tipo de Conteúdo</Label>
                     <div className="flex flex-wrap gap-2 p-1.5 bg-slate-100/50 rounded-lg w-fit border border-slate-200">
@@ -174,8 +206,9 @@ export function TemplateForm({ onSubmit }: Props) {
                                         setType(t);
                                         setMediaUrl("");
                                         setComboItems([]);
+                                        setMainUploading(false);
                                     }}
-                                    className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-2 ${
+                                    className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1.5 ${
                                         type === t
                                             ? "bg-white text-primary shadow-sm"
                                             : "text-slate-500 hover:text-slate-700"
@@ -189,6 +222,7 @@ export function TemplateForm({ onSubmit }: Props) {
                     </div>
                 </div>
 
+                {/* Texto */}
                 <div className="space-y-2">
                     <Label className="font-semibold flex items-center gap-2">
                         Texto / Legenda
@@ -205,9 +239,22 @@ export function TemplateForm({ onSubmit }: Props) {
                     />
                 </div>
 
+                {/* Mídia única (IMAGE / VIDEO / AUDIO) */}
                 {(type === "IMAGE" || type === "VIDEO" || type === "AUDIO") && (
-                    <div className="space-y-3 p-4 bg-slate-50 border border-slate-200 rounded-lg border-dashed">
-                        <Label className="font-semibold text-slate-700">Arquivo de Mídia</Label>
+                    <div className="space-y-3 p-4 bg-slate-50 border border-dashed border-slate-200 rounded-lg">
+                        <Label className="font-semibold text-slate-700 flex items-center gap-2">
+                            Arquivo de Mídia
+                            {type === "AUDIO" && (
+                                <span className="text-[10px] font-normal text-slate-400 bg-slate-200 rounded px-1.5 py-0.5">
+                                    converte para OGG Opus automaticamente
+                                </span>
+                            )}
+                            {type === "VIDEO" && (
+                                <span className="text-[10px] font-normal text-slate-400 bg-slate-200 rounded px-1.5 py-0.5">
+                                    comprime para H.264 720p automaticamente
+                                </span>
+                            )}
+                        </Label>
                         <MediaUploader
                             accept={
                                 type === "IMAGE"
@@ -216,112 +263,140 @@ export function TemplateForm({ onSubmit }: Props) {
                                       ? "video/*"
                                       : "audio/*"
                             }
+                            multiple={false}
                             currentUrl={mediaUrl}
                             onUploaded={(url) => setMediaUrl(url)}
+                            onUploadingChange={setMainUploading}
+                            label="Clique ou arraste o arquivo aqui"
                         />
                     </div>
                 )}
 
+                {/* COMBO */}
                 {type === "COMBO" && (
                     <div className="space-y-4 border border-slate-200 rounded-lg p-5 bg-slate-50/30">
-                        <div className="flex items-center justify-between">
-                            <Label className="font-bold text-slate-800 flex items-center gap-2">
-                                <Layers className="w-4 h-4 text-primary" />
-                                Elementos do Combo
-                            </Label>
-                            <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                onClick={addComboItem}
-                                className="h-8 text-[10px] font-bold uppercase tracking-wider bg-white border-slate-200"
+                        <div className="flex items-start justify-between gap-4">
+                            <div>
+                                <Label className="font-bold text-slate-800 flex items-center gap-2">
+                                    <Layers className="w-4 h-4 text-primary" />
+                                    Elementos do Combo
+                                </Label>
+                                <p className="text-[11px] text-slate-400 mt-1">
+                                    Selecione vários arquivos de uma vez. O tipo
+                                    é detectado automaticamente e pode ser
+                                    ajustado.
+                                </p>
+                            </div>
+                            <Badge
+                                variant="secondary"
+                                className="shrink-0 bg-slate-100 text-slate-600 text-[10px]"
                             >
-                                <Plus className="w-3 h-3 mr-1" />
-                                Novo Arquivo
-                            </Button>
+                                {comboItems.length} arquivo(s)
+                            </Badge>
                         </div>
 
-                        {comboItems.length === 0 && (
-                            <div className="text-center py-8 border border-dashed border-slate-300 rounded-md bg-white">
-                                <p className="text-xs text-slate-400">Nenhum elemento adicionado ao combo.</p>
-                            </div>
-                        )}
+                        {/* Uploader multi-arquivo para COMBO */}
+                        <MediaUploader
+                            accept="image/*,video/*,audio/*"
+                            multiple={true}
+                            onUploaded={onComboUploaded}
+                            onUploadingChange={setMainUploading}
+                            label="Clique ou arraste múltiplos arquivos"
+                        />
 
-                        <div className="space-y-3">
-                            {comboItems.map((item, index) => (
-                                <div
-                                    key={item.localId}
-                                    className="flex gap-4 items-start p-4 border border-slate-200 rounded-xl bg-white shadow-sm transition-all"
-                                >
-                                    <Badge variant="secondary" className="bg-slate-100 text-slate-500 font-mono text-[10px] h-6 w-6 flex items-center justify-center rounded-full shrink-0">
-                                        {index + 1}
-                                    </Badge>
-                                    <div className="flex-1 space-y-3">
+                        {/* Lista dos itens já carregados com tipo ajustável */}
+                        {comboItems.length > 0 && (
+                            <div className="space-y-2 pt-2 border-t border-slate-200">
+                                <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                                    Ordem e tipo dos arquivos
+                                </p>
+                                {comboItems.map((item, idx) => (
+                                    <div
+                                        key={item.localId}
+                                        className="flex items-center gap-3 bg-white border border-slate-100 rounded-lg px-3 py-2"
+                                    >
+                                        <GripVertical className="w-3.5 h-3.5 text-slate-300 shrink-0" />
+                                        <Badge
+                                            variant="secondary"
+                                            className="bg-slate-100 text-slate-500 font-mono text-[10px] h-5 w-5 flex items-center justify-center rounded-full shrink-0 p-0"
+                                        >
+                                            {idx + 1}
+                                        </Badge>
+                                        <span className="text-xs text-slate-600 truncate flex-1 font-mono">
+                                            {
+                                                item.url
+                                                    .split("/")
+                                                    .pop()
+                                                    ?.split("?")[0]
+                                            }
+                                        </span>
                                         <select
                                             value={item.type}
                                             onChange={(e) =>
-                                                updateComboItem(item.localId, {
-                                                    type: e.target.value,
-                                                    url: "",
-                                                })
+                                                updateComboType(
+                                                    item.localId,
+                                                    e.target.value,
+                                                )
                                             }
-                                            className="w-full h-8 px-2 bg-slate-50/50 border border-slate-200 rounded text-xs focus:outline-none"
+                                            className="h-7 px-2 bg-slate-50 border border-slate-200 rounded text-[11px] focus:outline-none shrink-0"
                                         >
-                                            {["IMAGE", "VIDEO", "AUDIO"].map((t) => (
-                                                <option key={t} value={t}>{t}</option>
-                                            ))}
+                                            {["IMAGE", "VIDEO", "AUDIO"].map(
+                                                (t) => (
+                                                    <option key={t} value={t}>
+                                                        {t}
+                                                    </option>
+                                                ),
+                                            )}
                                         </select>
-                                        <MediaUploader
-                                            accept={
-                                                item.type === "IMAGE"
-                                                    ? "image/*"
-                                                    : item.type === "VIDEO"
-                                                      ? "video/*"
-                                                      : "audio/*"
+                                        <button
+                                            type="button"
+                                            onClick={() =>
+                                                removeComboItem(item.localId)
                                             }
-                                            currentUrl={item.url}
-                                            onUploaded={(url) =>
-                                                updateComboItem(item.localId, { url })
-                                            }
-                                        />
+                                            className="text-slate-300 hover:text-red-500 transition-colors shrink-0"
+                                        >
+                                            <Trash2 className="w-3.5 h-3.5" />
+                                        </button>
                                     </div>
-                                    <Button
-                                        type="button"
-                                        variant="ghost"
-                                        size="icon"
-                                        onClick={() => removeComboItem(item.localId)}
-                                        className="text-slate-300 hover:text-red-500"
-                                    >
-                                        <Trash2 className="w-4 h-4" />
-                                    </Button>
-                                </div>
-                            ))}
-                        </div>
+                                ))}
+                            </div>
+                        )}
                     </div>
                 )}
 
+                {/* Aviso global de upload ativo */}
+                {anyUploading && (
+                    <div className="flex items-center gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+                        <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                        Aguarde o processamento terminar antes de salvar…
+                    </div>
+                )}
+
+                {/* Submit */}
                 <Button
                     onClick={handleSubmit}
-                    disabled={
-                        saving ||
-                        !title ||
-                        (type !== "TEXT" && type !== "COMBO" && !mediaUrl) ||
-                        (type === "COMBO" && comboItems.some((i) => !i.url))
-                    }
+                    disabled={!canSubmit}
                     className={`w-full h-12 text-sm font-bold uppercase tracking-widest shadow-lg shadow-primary/20 transition-all ${
-                        success ? "bg-emerald-500 hover:bg-emerald-600" : "bg-primary hover:bg-primary/90"
+                        success
+                            ? "bg-emerald-500 hover:bg-emerald-600"
+                            : "bg-primary hover:bg-primary/90"
                     }`}
                 >
                     {saving ? (
-                        <div className="flex items-center gap-2">
-                            <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                            Salvando...
-                        </div>
+                        <span className="flex items-center gap-2">
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Salvando…
+                        </span>
+                    ) : anyUploading ? (
+                        <span className="flex items-center gap-2">
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Processando mídia…
+                        </span>
                     ) : success ? (
-                        <div className="flex items-center gap-2">
+                        <span className="flex items-center gap-2">
                             <Check className="w-4 h-4" />
                             Sucesso!
-                        </div>
+                        </span>
                     ) : (
                         "Salvar Template"
                     )}
