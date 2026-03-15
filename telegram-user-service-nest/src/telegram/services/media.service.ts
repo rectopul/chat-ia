@@ -26,6 +26,80 @@ export class MediaService {
         private readonly mtproto: MtprotoProvider,
     ) {}
 
+    /**
+     * Obtém a media pronta para envio.
+     * Se já existir no cache, retorna um InputDocument (reuso).
+     * Se não existir, faz o processamento e retorna o buffer para upload.
+     */
+    async getMediaForTelegram(url: string): Promise<{
+        inputMedia?: Api.InputMediaDocument | Api.InputMediaPhoto;
+        buffer?: Buffer;
+        meta: any;
+    }> {
+        const cache = await this.prisma.mediaCache.findUnique({
+            where: { url },
+        });
+        const meta = this.getMediaMeta(url);
+
+        // Lógica de Reuso: Se temos o DocId e o AccessHash de um vídeo/arquivo
+        if (cache?.telegramDocId && cache?.accessHash && !meta.isImage) {
+            this.logger.log(`Reutilizando mídia do cache: ${url}`);
+
+            const inputMedia = new Api.InputMediaDocument({
+                id: new Api.InputDocument({
+                    id: bigInt(cache.telegramDocId),
+                    accessHash: bigInt(cache.accessHash),
+                    fileReference: cache.fileReference
+                        ? Buffer.from(cache.fileReference)
+                        : Buffer.alloc(0),
+                }),
+            });
+
+            return { inputMedia, meta };
+        }
+
+        // Se for imagem ou não tiver cache, precisamos do buffer
+        this.logger.log(
+            `Mídia não encontrada no cache ou é imagem. Baixando: ${url}`,
+        );
+        let buffer = await this.fetchFileBuffer(url);
+
+        // Se for áudio, aplicamos a conversão necessária para Telegram
+        if (meta.isAudio) {
+            buffer = await this.convertToOggOpus(buffer, meta.ext);
+        }
+
+        return { buffer, meta };
+    }
+
+    /**
+     * Salva os dados de um upload bem sucedido para reuso futuro
+     */
+    async saveMediaCache(url: string, document: Api.Document) {
+        await this.prisma.mediaCache.upsert({
+            where: { url },
+            update: {
+                telegramDocId: document.id.toString(),
+                accessHash: document.accessHash.toString(),
+                fileReference: document.fileReference
+                    ? Buffer.from(document.fileReference)
+                    : null,
+                size: document.size.toJSNumber(),
+                mimeType: document.mimeType,
+            },
+            create: {
+                url,
+                telegramDocId: document.id.toString(),
+                accessHash: document.accessHash.toString(),
+                fileReference: document.fileReference
+                    ? Buffer.from(document.fileReference)
+                    : null,
+                size: document.size.toJSNumber(),
+                mimeType: document.mimeType,
+            },
+        });
+    }
+
     // ── Meta ──────────────────────────────────────────────────────────────
 
     getMediaMeta(url: string): MediaMeta {
