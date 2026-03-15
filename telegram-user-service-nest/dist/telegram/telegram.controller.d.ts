@@ -27,4 +27,7 @@ export declare class TelegramController {
         message: string;
     }>;
     getBotStatus(): Promise<BotStatusResponse>;
+    confirmPayment(body: {
+        saleId: string;
+    }): Promise<any>;
 }

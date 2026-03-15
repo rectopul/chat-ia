@@ -3,16 +3,19 @@ import { prisma } from "@/lib/prisma";
 import { SyncPayService } from "@/lib/syncpay";
 import { TelegramService } from "@/lib/telegram";
 import { SaleStatus } from "@prisma/client";
+import axios from "axios";
+
+const NESTAPI_URL = process.env.API_URL;
 
 export async function POST(req: NextRequest) {
     const signature = req.headers.get("x-syncpay-signature") || "";
     const rawBody = await req.text();
 
-    if (!SyncPayService.verifyWebhookSignature(rawBody, signature)) {
-        // In many cases, you might want to log this but return 200 to stop retries if it's just a config issue
-        console.warn("Invalid SyncPay signature received");
-        // return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
-    }
+    // if (!SyncPayService.verifyWebhookSignature(rawBody, signature)) {
+    //     // In many cases, you might want to log this but return 200 to stop retries if it's just a config issue
+    //     console.warn("Invalid SyncPay signature received");
+    //     // return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
+    // }
 
     try {
         const payload = JSON.parse(rawBody);
@@ -105,26 +108,11 @@ export async function POST(req: NextRequest) {
                         subscriberUntil: newUntil,
                     },
                 });
-
-                // Notify User
-                await TelegramService.sendText(
-                    targetSale.user.chatId,
-                    `✅ <b>Pagamento Confirmado!</b>\n\nSua compra de <b>${targetSale.product.title}</b> foi processada com sucesso. Você já tem acesso ao conteúdo!`,
-                    targetSale.telegramUserId,
-                    targetSale.botId,
-                    targetSale.bot.token || undefined,
-                );
-
-                // Trigger BUYERS drip campaign
-                const { scheduleCampaignsForUser } =
-                    await import("@/lib/scheduler");
-                await scheduleCampaignsForUser(
-                    targetSale.botId,
-                    targetSale.telegramUserId,
-                    targetSale.user.chatId,
-                    "BUYERS",
-                );
             }
+
+            await axios.post(`${NESTAPI_URL}/telegram/confirm-payment`, {
+                saleId: sale?.id,
+            });
         }
 
         return NextResponse.json({ ok: true });

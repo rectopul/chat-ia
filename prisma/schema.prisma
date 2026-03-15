@@ -138,8 +138,8 @@ model TimedMessageRule {
   repeatIntervalSeconds Int? // For recurring messages
   segment               UserSegment
   templateId            String
-  template              MessageTemplate       @relation(fields: [templateId], references: [id])
-  bot                   BotAccount            @relation(fields: [botId], references: [id])
+  template              MessageTemplate       @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  bot                   BotAccount            @relation(fields: [botId], references: [id], onDelete: Cascade)
   createdAt             DateTime              @default(now())
   updatedAt             DateTime              @updatedAt
   jobs                  ScheduledMessageJob[]
@@ -160,7 +160,7 @@ model ScheduledMessageJob {
   templateId     String
 
   bot      BotAccount       @relation(fields: [botId], references: [id], onDelete: Cascade)
-  user     TelegramUser     @relation(fields: [telegramUserId, botId], references: [telegramUserId, botId])
+  user     TelegramUser     @relation(fields: [telegramUserId, botId], references: [telegramUserId, botId], onDelete: Cascade)
   template MessageTemplate  @relation(fields: [templateId], references: [id], onDelete: Cascade)
   ruleId   String
   rule     TimedMessageRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)

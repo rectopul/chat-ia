@@ -37,6 +37,7 @@ export declare class TelegramService implements OnModuleInit, OnModuleDestroy {
     getBusinessBotToken(botId: string): string | undefined;
     sendDontSellMenu(botId: string, chatId: string | number, token: string, businessConnectionId: string): Promise<void>;
     private scheduleDontSellJobs;
+    confirmPayment(saleId: string): Promise<void>;
     private buildPixMessage;
     private sendMessageHttp;
     private answerCallbackQuery;

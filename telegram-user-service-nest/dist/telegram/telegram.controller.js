@@ -52,6 +52,9 @@ let TelegramController = class TelegramController {
     async getBotStatus() {
         return this.telegramService.getBotStatus();
     }
+    async confirmPayment(body) {
+        return this.telegramService.confirmPayment(body.saleId);
+    }
 };
 exports.TelegramController = TelegramController;
 __decorate([
@@ -96,6 +99,13 @@ __decorate([
     __metadata("design:paramtypes", []),
     __metadata("design:returntype", Promise)
 ], TelegramController.prototype, "getBotStatus", null);
+__decorate([
+    (0, common_1.Post)("confirm-payment"),
+    __param(0, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", Promise)
+], TelegramController.prototype, "confirmPayment", null);
 exports.TelegramController = TelegramController = __decorate([
     (0, common_1.Controller)("telegram"),
     __metadata("design:paramtypes", [telegram_service_1.TelegramService])

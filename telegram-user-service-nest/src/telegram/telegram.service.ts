@@ -618,6 +618,61 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         );
     }
 
+    async confirmPayment(saleId: string): Promise<void> {
+        const sale = await this.prisma.sale.findUnique({
+            where: { id: saleId },
+            include: { product: true, user: true },
+        });
+
+        if (!sale) throw new Error(`Venda não encontrada: ${saleId}`);
+
+        if (!sale.product.description) {
+            throw new Error(
+                `Produto "${sale.product.title}" não tem descrição/link configurado`,
+            );
+        }
+
+        const token = this.businessBotTokens.get(sale.botId);
+        if (!token) {
+            throw new Error(
+                `Token do business bot não encontrado para botId: ${sale.botId}`,
+            );
+        }
+
+        const businessConnectionId = await this.resolveConnectionForChat(
+            sale.botId,
+            sale.user.chatId,
+        );
+
+        if (!businessConnectionId) {
+            throw new Error(
+                `Business connection não encontrada para chatId: ${sale.user.chatId}`,
+            );
+        }
+
+        // Usa parse_mode: null — URLs e conteúdo de usuário não precisam
+        // de Markdown e podem conter caracteres que quebram o parser
+        const message = [
+            `✅ Pagamento confirmado! Obrigado pela compra!`,
+            ``,
+            `🏷️ ${sale.product.title}`,
+            ``,
+            `📦 Seu acesso:`,
+            sale.product.description,
+            ``,
+            `Qualquer dúvida é só chamar aqui. 💬`,
+        ].join("\n");
+
+        await this.sendMessageHttp(token, sale.user.chatId, message, {
+            business_connection_id: businessConnectionId,
+            // sem parse_mode — evita falha com URLs e caracteres especiais na descrição
+        });
+
+        this.logger.log(
+            `[confirmPayment] Conteúdo enviado para chatId=${sale.user.chatId} (saleId=${saleId})`,
+        );
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // PIX message builder
     // ─────────────────────────────────────────────────────────────────────

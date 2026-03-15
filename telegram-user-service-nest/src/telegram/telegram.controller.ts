@@ -71,4 +71,9 @@ export class TelegramController {
     async getBotStatus(): Promise<BotStatusResponse> {
         return this.telegramService.getBotStatus();
     }
+
+    @Post("confirm-payment")
+    async confirmPayment(@Body() body: { saleId: string }): Promise<any> {
+        return this.telegramService.confirmPayment(body.saleId);
+    }
 }

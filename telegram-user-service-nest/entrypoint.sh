@@ -13,5 +13,8 @@ npx prisma db push --accept-data-loss
 echo "⚙️ Gerando Prisma Client..."
 npx prisma generate
 
+echo "⚙️ Rodando seed..."
+npx prisma db seed
+
 echo "🚀 Iniciando NestJS..."
 exec node dist/main.js

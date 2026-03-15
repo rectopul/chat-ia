@@ -425,6 +425,39 @@ let TelegramService = TelegramService_1 = class TelegramService {
         this.logger.log(`[scheduleDontSellJobs] ${jobsToCreate.length} jobs agendados para chatId=${chatId} ` +
             `(botId=${botId}): ${intervals.map((i) => `T+${i.delaySeconds}s`).join(", ")}`);
     }
+    async confirmPayment(saleId) {
+        const sale = await this.prisma.sale.findUnique({
+            where: { id: saleId },
+            include: { product: true, user: true },
+        });
+        if (!sale)
+            throw new Error(`Venda não encontrada: ${saleId}`);
+        if (!sale.product.description) {
+            throw new Error(`Produto "${sale.product.title}" não tem descrição/link configurado`);
+        }
+        const token = this.businessBotTokens.get(sale.botId);
+        if (!token) {
+            throw new Error(`Token do business bot não encontrado para botId: ${sale.botId}`);
+        }
+        const businessConnectionId = await this.resolveConnectionForChat(sale.botId, sale.user.chatId);
+        if (!businessConnectionId) {
+            throw new Error(`Business connection não encontrada para chatId: ${sale.user.chatId}`);
+        }
+        const message = [
+            `✅ Pagamento confirmado! Obrigado pela compra!`,
+            ``,
+            `🏷️ ${sale.product.title}`,
+            ``,
+            `📦 Seu acesso:`,
+            sale.product.description,
+            ``,
+            `Qualquer dúvida é só chamar aqui. 💬`,
+        ].join("\n");
+        await this.sendMessageHttp(token, sale.user.chatId, message, {
+            business_connection_id: businessConnectionId,
+        });
+        this.logger.log(`[confirmPayment] Conteúdo enviado para chatId=${sale.user.chatId} (saleId=${saleId})`);
+    }
     buildPixMessage(product, pixCode, finalAmountCents, discountPercent) {
         const price = (finalAmountCents / 100).toFixed(2).replace(".", ",");
         const discountLine = discountPercent
