@@ -41,3 +41,45 @@ export type BotStatusResponse = {
     allCriticalOk: boolean;
     items: BotStatusItem[];
 };
+
+// ─── Job payloads ─────────────────────────────────────────────────────────────
+
+export interface SendComboJobData {
+    botId: string;
+    chatId: string;
+    template: {
+        id: string;
+        type: string;
+        text?: string | null;
+        mediaUrl?: string | null;
+        telegramFileId?: string | null;
+        mediaItems: Array<{
+            id: string;
+            url: string;
+            type: string;
+            order: number;
+            telegramFileId?: string | null;
+        }>;
+    };
+    businessCtx?: BusinessCtx; // presente quando é contexto business (Bot API)
+}
+
+export interface SendSingleMediaJobData {
+    botId: string;
+    chatId: string;
+    template: {
+        id: string;
+        type: string;
+        text?: string | null;
+        mediaUrl?: string | null;
+        telegramFileId?: string | null;
+        mediaItems?: Array<{
+            id: string;
+            url: string;
+            type: string;
+            order: number;
+            telegramFileId?: string | null;
+        }>;
+    };
+    businessCtx?: BusinessCtx;
+}

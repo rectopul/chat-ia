@@ -6,7 +6,8 @@ import {
     HttpCode,
     Get,
 } from "@nestjs/common";
-import { BotStatusResponse, TelegramService } from "./telegram.service";
+import { TelegramService } from "./services/telegram.service";
+import { BotStatusResponse } from "./interfaces";
 
 @Controller("telegram")
 export class TelegramController {

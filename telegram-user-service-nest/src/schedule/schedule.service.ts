@@ -1,8 +1,8 @@
 // schedule/schedule.service.ts
 import { Injectable, Logger } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
-import { TelegramService } from "../telegram/telegram.service";
 import { JobStatus, SaleStatus } from "@prisma/client";
+import { TelegramService } from "src/telegram/services/telegram.service";
 
 @Injectable()
 export class ScheduleService {

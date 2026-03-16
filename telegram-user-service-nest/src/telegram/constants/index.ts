@@ -24,3 +24,6 @@ export const GREETING_TEXTS = new Set([
 // Nome da TimedMessageRule criada automaticamente pelo scheduleDontSellJobs.
 // Usada para excluir essa regra do fluxo de greeting.
 export const DONT_SELL_AUTO_RULE_NAME = "DONT_SELL Auto";
+export const SEND_COMBO_JOB = "send-combo";
+export const SEND_SINGLE_JOB = "send-single-media";
+export const QUEUE_NAME = "send-message";

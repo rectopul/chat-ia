@@ -18,6 +18,8 @@ import { TemplateService } from "./template.service";
 import { SchedulerService } from "./scheduler.service";
 import { MessageTemplateKey } from "@prisma/client";
 import { BusinessCtx, BotStatusResponse, BotStatusItem } from "../interfaces";
+import { InjectQueue } from "@nestjs/bullmq";
+import { Queue } from "bullmq";
 
 @Injectable()
 export class TelegramService implements OnModuleInit, OnModuleDestroy {
@@ -31,6 +33,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         private readonly session: SessionService,
         private readonly templateService: TemplateService,
         private readonly scheduler: SchedulerService,
+        @InjectQueue("send-message") private readonly messageQueue: Queue,
     ) {}
 
     // ── Lifecycle ─────────────────────────────────────────────────────────
@@ -70,6 +73,17 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     async onModuleDestroy(): Promise<void> {
         await this.mtproto.onModuleDestroy();
         await this.botApi.onModuleDestroy();
+    }
+
+    async queueCombo(data: any) {
+        await this.messageQueue.add("process-combo", data, {
+            attempts: 3, // Tenta 3 vezes se falhar
+            backoff: {
+                type: "exponential",
+                delay: 5000, // Espera 5s antes de tentar de novo
+            },
+            removeOnComplete: true, // Limpa o Redis ao terminar
+        });
     }
 
     // ── Delegações ao BusinessBotService ─────────────────────────────────

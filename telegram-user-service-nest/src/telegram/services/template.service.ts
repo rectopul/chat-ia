@@ -1,16 +1,24 @@
 // src/telegram/services/template.service.ts
 //
 // Responsabilidade única: envio de MessageTemplates.
-// Conhece o esquema de roteamento MTProto vs Bot API, mas delega
-// as operações técnicas de mídia ao MediaService.
+// Templates do tipo COMBO e mídia pesada são enfileirados via BullMQ.
+// Texto e operações leves são enviados diretamente.
 
 import { Injectable, Logger } from "@nestjs/common";
-import { TelegramClient, Api } from "telegram";
+import { InjectQueue } from "@nestjs/bullmq";
+import { Queue } from "bullmq";
+import { TelegramClient } from "telegram";
 import { PrismaService } from "../../prisma/prisma.service";
 import { MtprotoProvider } from "../providers/mtproto.provider";
 import { BotApiProvider } from "../providers/bot-api.provider";
 import { MediaService } from "./media.service";
-import { BusinessCtx, MediaItem, ReadyItem } from "../interfaces";
+import { BusinessCtx } from "../interfaces";
+import { SendComboJobData, SendSingleMediaJobData } from "../interfaces";
+import {
+    QUEUE_NAME,
+    SEND_COMBO_JOB,
+    SEND_SINGLE_JOB,
+} from "../constants/index";
 
 @Injectable()
 export class TemplateService {
@@ -21,15 +29,18 @@ export class TemplateService {
         private readonly mtproto: MtprotoProvider,
         private readonly botApi: BotApiProvider,
         private readonly media: MediaService,
+        @InjectQueue(QUEUE_NAME) private readonly messageQueue: Queue,
     ) {}
 
     // ── Entry point ───────────────────────────────────────────────────────
 
     /**
-     * Envia um template para o chatId.
+     * Envia um template.
      *
-     * Quando businessCtx está presente, usa Bot API obrigatoriamente —
-     * misturar MTProto com Bot API em contexto business causa BUSINESS_PEER_INVALID.
+     * - TEXT → enviado direto (leve, sem risco de timeout)
+     * - COMBO / mídia pesada → enfileirado no BullMQ (retry automático)
+     *
+     * Quando businessCtx está presente, usa Bot API obrigatoriamente.
      */
     async sendTemplate(
         botId: string,
@@ -41,12 +52,92 @@ export class TemplateService {
             `[sendTemplate] id=${template.id} type=${template.type} business=${!!businessCtx}`,
         );
 
-        if (businessCtx) {
-            await this.sendTemplateViaBotApi(chatId, template, businessCtx);
+        // TEXT: envia direto — leve e sem risco de timeout
+        if (template.type === "TEXT") {
+            if (businessCtx) {
+                await this.botApi.sendMessageHttp(
+                    businessCtx.token,
+                    chatId,
+                    template.text || "",
+                    {
+                        business_connection_id:
+                            businessCtx.businessConnectionId,
+                    },
+                );
+            } else {
+                const client = await this.ensureClient(botId);
+                await client.sendMessage(chatId, {
+                    message: template.text || "",
+                });
+            }
             return;
         }
 
-        // MTProto path
+        // COMBO → enfileira
+        if (template.type === "COMBO" && template.mediaItems?.length > 0) {
+            await this.messageQueue.add(
+                SEND_COMBO_JOB,
+                {
+                    botId,
+                    chatId,
+                    template: this.serializeTemplate(template),
+                    businessCtx,
+                } as SendComboJobData,
+                {
+                    attempts: 3,
+                    backoff: { type: "exponential", delay: 5000 },
+                    removeOnComplete: { count: 100 },
+                    removeOnFail: { count: 50 },
+                },
+            );
+            this.logger.debug(
+                `[sendTemplate] COMBO enfileirado para chatId=${chatId}`,
+            );
+            return;
+        }
+
+        // Mídia única → enfileira
+        await this.messageQueue.add(
+            SEND_SINGLE_JOB,
+            {
+                botId,
+                chatId,
+                template: this.serializeTemplate(template),
+                businessCtx,
+            } as SendSingleMediaJobData,
+            {
+                attempts: 3,
+                backoff: { type: "exponential", delay: 3000 },
+                removeOnComplete: { count: 100 },
+                removeOnFail: { count: 50 },
+            },
+        );
+        this.logger.debug(
+            `[sendTemplate] ${template.type} enfileirado para chatId=${chatId}`,
+        );
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────
+
+    /** Serializa apenas os campos necessários — evita objetos circulares no job */
+    private serializeTemplate(template: any) {
+        return {
+            id: template.id,
+            type: template.type,
+            text: template.text ?? null,
+            mediaUrl: template.mediaUrl ?? null,
+            telegramFileId: template.telegramFileId ?? null,
+            mediaItems: (template.mediaItems ?? []).map((item: any) => ({
+                id: item.id,
+                url: item.url,
+                type: item.type,
+                order: item.order,
+                telegramFileId: item.telegramFileId ?? null,
+            })),
+        };
+    }
+
+    private async ensureClient(botId: string): Promise<TelegramClient> {
         let client = this.mtproto.getClient(botId);
         if (!client || !client.connected) {
             const bot = await this.prisma.botAccount.findUnique({
@@ -60,253 +151,7 @@ export class TemplateService {
                     `Failed to initialize client for bot: ${botId}`,
                 );
         }
-
-        try {
-            if (template.type === "TEXT") {
-                await client.sendMessage(chatId, {
-                    message: template.text || "",
-                });
-                return;
-            }
-            if (template.type === "COMBO" && template.mediaItems?.length > 0) {
-                await this.sendCombo(client, chatId, template);
-                return;
-            }
-            await this.sendSingleMedia(client, chatId, template);
-        } catch (error) {
-            this.logger.error(
-                `Error sending template to ${chatId} via bot ${botId}:`,
-                error,
-            );
-            throw error;
-        }
-    }
-
-    // ── Bot API path ──────────────────────────────────────────────────────
-
-    private async sendTemplateViaBotApi(
-        chatId: string,
-        template: any,
-        ctx: BusinessCtx,
-    ): Promise<void> {
-        const base = { business_connection_id: ctx.businessConnectionId };
-
-        const sendText = async (text: string) => {
-            if (!text?.trim()) return;
-            await this.botApi.sendMessageHttp(ctx.token, chatId, text, base);
-        };
-
-        // ── TEXT ──────────────────────────────────────────────────────────
-        if (template.type === "TEXT") {
-            await sendText(template.text || "");
-            return;
-        }
-
-        // ── Mídia única ───────────────────────────────────────────────────
-        if (template.type !== "COMBO") {
-            const url =
-                template.mediaUrl || template.mediaItems?.[0]?.url || "";
-            const fileId =
-                template.telegramFileId ||
-                template.mediaItems?.[0]?.telegramFileId;
-            const itemId = template.mediaItems?.[0]?.id ?? template.id;
-
-            if (!url) {
-                this.logger.warn(
-                    `[sendTemplateViaBotApi] Template ${template.id} sem URL de mídia`,
-                );
-                if (template.text) await sendText(template.text);
-                return;
-            }
-
-            const meta = this.media.getMediaMeta(url);
-            this.logger.debug(
-                `[sendTemplateViaBotApi] single media isAudio=${meta.isAudio} isVideo=${meta.isVideo} hasFileId=${!!fileId}`,
-            );
-
-            if (meta.isAudio) {
-                await this.media.sendVoiceBotApi(ctx.token, chatId, base, {
-                    url,
-                    fileId,
-                    itemId,
-                });
-            } else if (meta.isVideo) {
-                await this.media.sendVideosMtproto(ctx.botId, chatId, base, [
-                    { url, fileId, itemId },
-                ]);
-            } else {
-                await this.media.sendPhotoGroup(ctx.token, chatId, base, [
-                    { url, fileId, itemId },
-                ]);
-            }
-            return;
-        }
-
-        // ── COMBO ─────────────────────────────────────────────────────────
-        if (template.mediaItems?.length > 0) {
-            const sorted = [...template.mediaItems].sort(
-                (a: any, b: any) => a.order - b.order,
-            );
-
-            const photos: MediaItem[] = [];
-            const videos: MediaItem[] = [];
-            const audios: MediaItem[] = [];
-
-            for (const item of sorted) {
-                const meta = this.media.getMediaMeta(item.url);
-                const entry: MediaItem = {
-                    url: item.url,
-                    fileId: item.telegramFileId ?? undefined,
-                    itemId: item.id,
-                };
-                if (meta.isAudio) audios.push(entry);
-                else if (meta.isVideo) videos.push(entry);
-                else photos.push(entry);
-            }
-
-            const hasVisual = photos.length > 0 || videos.length > 0;
-            if (template.text && !hasVisual) await sendText(template.text);
-
-            if (photos.length > 0) {
-                await this.media.sendPhotoGroup(
-                    ctx.token,
-                    chatId,
-                    base,
-                    photos,
-                );
-                await new Promise((r) => setTimeout(r, 400));
-            }
-            if (videos.length > 0) {
-                await this.media.sendVideosMtproto(
-                    ctx.botId,
-                    chatId,
-                    base,
-                    videos,
-                );
-                await new Promise((r) => setTimeout(r, 400));
-            }
-            for (const audio of audios) {
-                await this.media.sendVoiceBotApi(
-                    ctx.token,
-                    chatId,
-                    base,
-                    audio,
-                );
-                await new Promise((r) => setTimeout(r, 300));
-            }
-        }
-    }
-
-    // ── MTProto path ──────────────────────────────────────────────────────
-
-    private async sendCombo(
-        client: TelegramClient,
-        chatId: string,
-        template: any,
-    ): Promise<void> {
-        const sortedMedia = [...template.mediaItems].sort(
-            (a: any, b: any) => a.order - b.order,
-        );
-
-        if (template.text) {
-            await client.sendMessage(chatId, { message: template.text });
-            await new Promise((r) => setTimeout(r, 300));
-        }
-
-        const peer = await client.getInputEntity(chatId);
-        const readyItems: ReadyItem[] = [];
-        for (const item of sortedMedia) {
-            readyItems.push(await this.media.prepareMedia(item, client, peer));
-        }
-
-        let imageQueue: Api.InputSingleMedia[] = [];
-
-        const flushImages = async () => {
-            if (!imageQueue.length) return;
-            if (imageQueue.length === 1) {
-                await client.invoke(
-                    new Api.messages.SendMedia({
-                        peer,
-                        media: imageQueue[0].media,
-                        message: "",
-                        randomId: this.mtproto.makeRandomId(),
-                    }),
-                );
-            } else {
-                await client.invoke(
-                    new Api.messages.SendMultiMedia({
-                        peer,
-                        multiMedia: imageQueue,
-                    }),
-                );
-            }
-            imageQueue = [];
-            await new Promise((r) => setTimeout(r, 400));
-        };
-
-        for (const readyItem of readyItems) {
-            if (readyItem.isImage) {
-                imageQueue.push(
-                    new Api.InputSingleMedia({
-                        media: readyItem.finalMedia,
-                        message: "",
-                        randomId: this.mtproto.makeRandomId(),
-                    }),
-                );
-            } else {
-                await flushImages();
-                await client.invoke(
-                    new Api.messages.SendMedia({
-                        peer,
-                        media: readyItem.finalMedia,
-                        message: "",
-                        randomId: this.mtproto.makeRandomId(),
-                    }),
-                );
-                await new Promise((r) => setTimeout(r, 400));
-            }
-        }
-
-        await flushImages();
-    }
-
-    private async sendSingleMedia(
-        client: TelegramClient,
-        chatId: string,
-        template: any,
-    ): Promise<void> {
-        const mediaUrl = template.mediaUrl || "";
-        const meta = this.media.getMediaMeta(mediaUrl);
-        const filename = `file.${meta.ext}`;
-        const fileBuffer = await this.media.fetchFileBuffer(mediaUrl);
-
-        if (meta.isVideo || meta.isAudio) {
-            const uploadedFile = await this.media.uploadFromBuffer(
-                client,
-                filename,
-                fileBuffer,
-            );
-            const media = this.media.buildInputMedia(
-                uploadedFile,
-                meta,
-                filename,
-                false,
-            );
-            await client.invoke(
-                new Api.messages.SendMedia({
-                    peer: await client.getInputEntity(chatId),
-                    media,
-                    message: template.text || "",
-                    randomId: this.mtproto.makeRandomId(),
-                }),
-            );
-        } else {
-            await client.sendFile(chatId, {
-                file: fileBuffer,
-                caption: template.text || undefined,
-                forceDocument: false,
-            });
-        }
+        return client;
     }
 
     // ── DONT_SELL menu ────────────────────────────────────────────────────

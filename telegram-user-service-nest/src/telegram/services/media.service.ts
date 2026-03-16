@@ -76,6 +76,13 @@ export class MediaService {
      * Salva os dados de um upload bem sucedido para reuso futuro
      */
     async saveMediaCache(url: string, document: Api.Document) {
+        const size =
+            typeof document.size === "number"
+                ? document.size
+                : document.size.toJSNumber
+                  ? document.size.toJSNumber()
+                  : Number(document.size);
+
         await this.prisma.mediaCache.upsert({
             where: { url },
             update: {
@@ -84,7 +91,7 @@ export class MediaService {
                 fileReference: document.fileReference
                     ? Buffer.from(document.fileReference)
                     : null,
-                size: document.size.toJSNumber(),
+                size: size,
                 mimeType: document.mimeType,
             },
             create: {
@@ -94,7 +101,7 @@ export class MediaService {
                 fileReference: document.fileReference
                     ? Buffer.from(document.fileReference)
                     : null,
-                size: document.size.toJSNumber(),
+                size: size,
                 mimeType: document.mimeType,
             },
         });
@@ -269,29 +276,56 @@ export class MediaService {
         client: TelegramClient,
         peer: Api.TypeInputPeer,
     ): Promise<ReadyItem> {
-        const meta = this.getMediaMeta(item.url);
+        // 1. Tenta buscar do MediaService (Cache de Banco de Dados)
+        const { inputMedia, buffer, meta } = await this.getMediaForTelegram(
+            item.url,
+        );
+
+        // 2. Se retornou inputMedia, o arquivo já existe no Telegram. Retorno imediato!
+        if (inputMedia) {
+            return {
+                finalMedia: inputMedia,
+                isImage: meta.isImage,
+                isVideo: meta.isVideo,
+                isAudio: meta.isAudio,
+            };
+        }
+
+        // 3. Se não tem cache, precisamos fazer o upload do buffer
+        if (!buffer) {
+            throw new Error(`Buffer não encontrado para o arquivo ${item.url}`);
+        }
+
         const filename = `file_${Date.now()}.${meta.ext}`;
-        const fileBuffer = await this.fetchFileBuffer(item.url);
+
+        // Faz o upload dos bytes crus para o servidor do Telegram
         const uploadedFile = await this.uploadFromBuffer(
             client,
             filename,
-            fileBuffer,
+            buffer,
         );
+
+        // Converte o arquivo uploadado em um objeto "UploadedMedia"
         const uploadedMedia = this.buildInputMedia(
             uploadedFile,
             meta,
             filename,
-            true,
+            true, // forceDocument: true para vídeos/áudios
         );
 
+        // 4. Registra a mídia no servidor do Telegram para obter o ID definitivo e o AccessHash
         const serverMedia = await client.invoke(
             new Api.messages.UploadMedia({ peer, media: uploadedMedia }),
         );
 
         let finalMedia: Api.TypeInputMedia;
 
-        if (serverMedia instanceof Api.MessageMediaPhoto && serverMedia.photo) {
-            const p = serverMedia.photo as Api.Photo;
+        // 5. Trata a resposta e SALVA NO CACHE para a próxima vez
+        if (
+            serverMedia instanceof Api.MessageMediaPhoto &&
+            serverMedia.photo instanceof Api.Photo
+        ) {
+            const p = serverMedia.photo;
             finalMedia = new Api.InputMediaPhoto({
                 id: new Api.InputPhoto({
                     id: p.id,
@@ -299,11 +333,17 @@ export class MediaService {
                     fileReference: p.fileReference,
                 }),
             });
+            // Opcional: Você pode implementar cache de fotos também se desejar
         } else if (
             serverMedia instanceof Api.MessageMediaDocument &&
-            serverMedia.document
+            serverMedia.document instanceof Api.Document
         ) {
-            const d = serverMedia.document as Api.Document;
+            const d = serverMedia.document;
+
+            // --- AQUI ESTÁ O PULO DO GATO ---
+            // Salva no banco de dados para que na próxima chamada o 'inputMedia' (passo 1) exista
+            await this.saveMediaCache(item.url, d);
+
             finalMedia = new Api.InputMediaDocument({
                 id: new Api.InputDocument({
                     id: d.id,
@@ -410,52 +450,72 @@ export class MediaService {
         });
 
         for (const item of items) {
-            const meta = this.getMediaMeta(item.url);
-            const filename = `video_${Date.now()}.${meta.ext}`;
-            const buf = await this.fetchFileBuffer(item.url);
-            const uploadedFile = await this.uploadFromBuffer(
-                client,
-                filename,
-                buf,
+            // 1. TENTAR OBTER DO CACHE OU BAIXAR BUFFER
+            const { inputMedia, buffer, meta } = await this.getMediaForTelegram(
+                item.url,
             );
 
-            const inputMedia = new Api.InputMediaUploadedDocument({
-                file: uploadedFile,
-                mimeType: meta.mimeType,
-                attributes: [
-                    new Api.DocumentAttributeVideo({
-                        duration: 0,
-                        w: 1280,
-                        h: 720,
-                        supportsStreaming: true,
-                        roundMessage: false,
+            let finalMedia: Api.TypeInputMedia;
+
+            if (inputMedia) {
+                // SE EXISTE NO CACHE, usamos a referência direta
+                this.logger.debug("[ENVIO DIRETO DE VIDEO EM CACHE]");
+                finalMedia = inputMedia;
+            } else if (buffer) {
+                // SE NÃO EXISTE, fazemos o processo de upload manual
+                const filename = `video_${Date.now()}.${meta.ext}`;
+                const uploadedFile = await this.uploadFromBuffer(
+                    client,
+                    filename,
+                    buffer,
+                );
+
+                const uploadedMedia = this.buildInputMedia(
+                    uploadedFile,
+                    meta,
+                    filename,
+                    true,
+                );
+
+                // Registra no Telegram para ganhar o ID e AccessHash
+                const serverMedia = await client.invoke(
+                    new Api.messages.UploadMedia({
+                        peer,
+                        media: uploadedMedia,
                     }),
-                    new Api.DocumentAttributeFilename({ fileName: filename }),
-                ],
-            });
+                );
 
-            const serverMedia = (await client.invoke(
-                new Api.messages.UploadMedia({ peer, media: inputMedia }),
-            )) as Api.TypeMessageMedia;
+                if (
+                    serverMedia instanceof Api.MessageMediaDocument &&
+                    serverMedia.document instanceof Api.Document
+                ) {
+                    const d = serverMedia.document;
 
-            if (
-                !(serverMedia instanceof Api.MessageMediaDocument) ||
-                !serverMedia.document
-            ) {
-                throw new Error(`UploadMedia vídeo retornou tipo inesperado`);
-            }
+                    // SALVA NO CACHE PARA A PRÓXIMA VEZ
+                    await this.saveMediaCache(item.url, d);
 
-            const d = serverMedia.document as Api.Document;
-            await client.invoke(
-                new Api.messages.SendMedia({
-                    peer,
-                    media: new Api.InputMediaDocument({
+                    finalMedia = new Api.InputMediaDocument({
                         id: new Api.InputDocument({
                             id: d.id,
                             accessHash: d.accessHash,
                             fileReference: d.fileReference,
                         }),
-                    }),
+                    });
+                } else {
+                    this.logger.error(
+                        "Falha ao registrar vídeo no Telegram para cache",
+                    );
+                    continue;
+                }
+            } else {
+                continue; // Evita erro se não houver buffer nem cache
+            }
+
+            // 2. ENVIAR A MÍDIA (seja ela vinda do cache ou do upload novo)
+            await client.invoke(
+                new Api.messages.SendMedia({
+                    peer,
+                    media: finalMedia,
                     message: "",
                     randomId: this.mtproto.makeRandomId(),
                 }),
