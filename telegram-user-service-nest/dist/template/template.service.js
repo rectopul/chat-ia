@@ -13,7 +13,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.TemplateService = void 0;
 const common_1 = require("@nestjs/common");
 const prisma_service_1 = require("../prisma/prisma.service");
-const telegram_service_1 = require("../telegram/telegram.service");
+const telegram_service_1 = require("../telegram/services/telegram.service");
 const client_1 = require("@prisma/client");
 let TemplateService = TemplateService_1 = class TemplateService {
     constructor(prisma, telegram) {

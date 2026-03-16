@@ -1,5 +1,5 @@
 import { PrismaService } from "../prisma/prisma.service";
-import { TelegramService } from "../telegram/telegram.service";
+import { TelegramService } from "../telegram/services/telegram.service";
 import { UserSegment } from "@prisma/client";
 export declare class TemplateService {
     private readonly prisma;

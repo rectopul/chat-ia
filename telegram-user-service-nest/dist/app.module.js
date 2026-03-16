@@ -13,12 +13,31 @@ const schedule_module_1 = require("./schedule/schedule.module");
 const telegram_module_1 = require("./telegram/telegram.module");
 const syncpay_module_1 = require("./syncpay/syncpay.module");
 const template_module_1 = require("./template/template.module");
+const bullmq_1 = require("@nestjs/bullmq");
+const nestjs_1 = require("@bull-board/nestjs");
+const express_1 = require("@bull-board/express");
+const bullMQAdapter_1 = require("@bull-board/api/bullMQAdapter");
+const constants_1 = require("./telegram/constants");
 let AppModule = class AppModule {
 };
 exports.AppModule = AppModule;
 exports.AppModule = AppModule = __decorate([
     (0, common_1.Module)({
         imports: [
+            bullmq_1.BullModule.forRoot({
+                connection: {
+                    host: process.env.REDIS_HOST ?? "localhost",
+                    port: Number(process.env.REDIS_PORT ?? 6379),
+                },
+            }),
+            nestjs_1.BullBoardModule.forRoot({
+                route: "/admin/queues",
+                adapter: express_1.ExpressAdapter,
+            }),
+            nestjs_1.BullBoardModule.forFeature({
+                name: constants_1.QUEUE_NAME,
+                adapter: bullMQAdapter_1.BullMQAdapter,
+            }),
             config_1.ConfigModule.forRoot({
                 envFilePath: [".env.local", ".env"],
                 isGlobal: true,

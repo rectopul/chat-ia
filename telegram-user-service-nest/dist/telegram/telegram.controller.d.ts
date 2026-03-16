@@ -1,4 +1,5 @@
-import { BotStatusResponse, TelegramService } from "./telegram.service";
+import { TelegramService } from "./services/telegram.service";
+import { BotStatusResponse } from "./interfaces";
 export declare class TelegramController {
     private readonly telegramService;
     constructor(telegramService: TelegramService);

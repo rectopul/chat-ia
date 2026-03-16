@@ -8,19 +8,45 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.TelegramModule = void 0;
 const common_1 = require("@nestjs/common");
-const telegram_service_1 = require("./telegram.service");
 const prisma_module_1 = require("../prisma/prisma.module");
 const syncpay_module_1 = require("../syncpay/syncpay.module");
+const mtproto_provider_1 = require("./providers/mtproto.provider");
+const bot_api_provider_1 = require("./providers/bot-api.provider");
+const media_service_1 = require("./services/media.service");
+const session_service_1 = require("./services/session.service");
+const template_service_1 = require("./services/template.service");
+const scheduler_service_1 = require("./services/scheduler.service");
+const business_bot_service_1 = require("./services/business-bot.service");
+const telegram_service_1 = require("./services/telegram.service");
+const bullmq_1 = require("@nestjs/bullmq");
 const telegram_controller_1 = require("./telegram.controller");
+const constants_1 = require("./constants");
+const message_processor_1 = require("./processors/message.processor");
 let TelegramModule = class TelegramModule {
 };
 exports.TelegramModule = TelegramModule;
 exports.TelegramModule = TelegramModule = __decorate([
     (0, common_1.Module)({
-        imports: [prisma_module_1.PrismaModule, syncpay_module_1.SyncPayModule],
-        providers: [telegram_service_1.TelegramService],
-        controllers: [telegram_controller_1.TelegramController],
+        imports: [
+            bullmq_1.BullModule.registerQueue({
+                name: constants_1.QUEUE_NAME,
+            }),
+            prisma_module_1.PrismaModule,
+            syncpay_module_1.SyncPayModule,
+        ],
+        providers: [
+            mtproto_provider_1.MtprotoProvider,
+            bot_api_provider_1.BotApiProvider,
+            media_service_1.MediaService,
+            session_service_1.SessionService,
+            template_service_1.TemplateService,
+            scheduler_service_1.SchedulerService,
+            business_bot_service_1.BusinessBotService,
+            telegram_service_1.TelegramService,
+            message_processor_1.MessageProcessor,
+        ],
         exports: [telegram_service_1.TelegramService],
+        controllers: [telegram_controller_1.TelegramController],
     })
 ], TelegramModule);
 //# sourceMappingURL=telegram.module.js.map
