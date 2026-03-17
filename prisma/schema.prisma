@@ -310,3 +310,14 @@ model DontSellInterval {
 
   @@index([botId, isActive])
 }
+
+model MediaCache {
+  id            String   @id @default(uuid())
+  url           String   @unique
+  telegramDocId String? // O ID numérico
+  accessHash    String? // O segredo necessário para o reuso
+  fileReference Bytes? // Referência binária (opcional, ajuda na performance)
+  mimeType      String?
+  size          Int?
+  createdAt     DateTime @default(now())
+}

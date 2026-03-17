@@ -1,7 +1,7 @@
 // template/template.service.ts
 import { Injectable, Logger } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
-import { TelegramService } from "../telegram/telegram.service";
+import { TelegramService } from "../telegram/services/telegram.service";
 import { JobStatus, UserSegment } from "@prisma/client";
 
 @Injectable()

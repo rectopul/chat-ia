@@ -11,6 +11,9 @@
 !.yarn/versions
 projeto.zip
 sessions
+/telegram-user-service-nest/dist
+/telegram-user-service-nest/node_modules
+telegram-user-service-nest/dist
 
 # testing
 /coverage

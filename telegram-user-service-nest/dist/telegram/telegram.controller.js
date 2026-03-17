@@ -14,7 +14,7 @@ var __param = (this && this.__param) || function (paramIndex, decorator) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.TelegramController = void 0;
 const common_1 = require("@nestjs/common");
-const telegram_service_1 = require("./telegram.service");
+const telegram_service_1 = require("./services/telegram.service");
 let TelegramController = class TelegramController {
     constructor(telegramService) {
         this.telegramService = telegramService;
