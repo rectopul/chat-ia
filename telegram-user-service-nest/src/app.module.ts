@@ -9,6 +9,7 @@ import { BullBoardModule } from "@bull-board/nestjs";
 import { ExpressAdapter } from "@bull-board/express";
 import { BullMQAdapter } from "@bull-board/api/bullMQAdapter";
 import { QUEUE_NAME } from "./telegram/constants";
+import { WhatsappModule } from './whatsapp/whatsapp.module';
 
 @Module({
     imports: [
@@ -41,6 +42,7 @@ import { QUEUE_NAME } from "./telegram/constants";
         TelegramModule,
         SyncPayModule,
         TemplateModule,
+        WhatsappModule,
     ],
     controllers: [],
     providers: [],
