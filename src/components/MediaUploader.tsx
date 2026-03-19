@@ -15,6 +15,7 @@ import {
     FileIcon,
     Trash2,
 } from "lucide-react";
+import { generateId } from "@/lib/services";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -309,7 +310,7 @@ export function MediaUploader({
         if (!currentUrl) return [];
         return [
             {
-                id: crypto.randomUUID(),
+                id: generateId(),
                 file: new File([], currentUrl.split("/").pop() ?? "file"),
                 previewUrl: currentUrl.match(/\.(jpg|jpeg|png|gif|webp)/i)
                     ? currentUrl
@@ -351,7 +352,7 @@ export function MediaUploader({
 
     const uploadFile = useCallback(
         (file: File) => {
-            const id = crypto.randomUUID();
+            const id = generateId();
             const previewUrl = file.type.startsWith("image/")
                 ? URL.createObjectURL(file)
                 : null;

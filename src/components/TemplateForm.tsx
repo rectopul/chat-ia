@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { generateId } from "@/lib/services";
 
 const TEMPLATE_KEYS = ["WELCOME", "DONT_SELL", "SUBSCRIBER_CONTENT", "TIMED"];
 const MEDIA_TYPES = ["TEXT", "IMAGE", "VIDEO", "AUDIO", "COMBO"];
@@ -77,7 +78,7 @@ export function TemplateForm({ onSubmit }: Props) {
         setComboItems((prev) => [
             ...prev,
             {
-                localId: crypto.randomUUID(),
+                localId: generateId(),
                 type: detectedType,
                 url,
                 uploading: false,
