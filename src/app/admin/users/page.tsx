@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import Link from "next/link";
+import { UserActionsMenu } from "./user-actions-menu";
 
 export default async function AdminUsersPage({
     searchParams,
@@ -185,13 +186,10 @@ export default async function AdminUsersPage({
                                     )}
                                 </TableCell>
                                 <TableCell className="text-right">
-                                    <Button
-                                        variant="ghost"
-                                        size="icon"
-                                        className="text-slate-400 hover:text-slate-600"
-                                    >
-                                        <MoreVertical className="w-4 h-4" />
-                                    </Button>
+                                    <UserActionsMenu
+                                        userId={user.id}
+                                        userName={`${user.firstName} ${user.lastName}`}
+                                    />
                                 </TableCell>
                             </TableRow>
                         ))}
