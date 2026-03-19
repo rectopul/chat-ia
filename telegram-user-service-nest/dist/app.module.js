@@ -18,6 +18,7 @@ const nestjs_1 = require("@bull-board/nestjs");
 const express_1 = require("@bull-board/express");
 const bullMQAdapter_1 = require("@bull-board/api/bullMQAdapter");
 const constants_1 = require("./telegram/constants");
+const whatsapp_module_1 = require("./whatsapp/whatsapp.module");
 let AppModule = class AppModule {
 };
 exports.AppModule = AppModule;
@@ -46,6 +47,7 @@ exports.AppModule = AppModule = __decorate([
             telegram_module_1.TelegramModule,
             syncpay_module_1.SyncPayModule,
             template_module_1.TemplateModule,
+            whatsapp_module_1.WhatsappModule,
         ],
         controllers: [],
         providers: [],

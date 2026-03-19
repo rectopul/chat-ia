@@ -1318,7 +1318,7 @@ let TelegramService = TelegramService_1 = class TelegramService {
                 }));
                 const { data } = await axios_1.default.post(`https://api.telegram.org/bot${ctx.token}/sendMediaGroup`, {
                     chat_id: chatId,
-                    media: JSON.stringify(mediaJson),
+                    media: mediaJson,
                     ...base,
                 });
                 if (!data.ok)

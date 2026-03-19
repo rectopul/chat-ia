@@ -1,22 +1,8 @@
 import { prisma } from "@/lib/prisma";
 import { ProductType } from "@prisma/client";
 import { revalidatePath } from "next/cache";
-import {
-    ShoppingBag,
-    Plus,
-    Info,
-    Tag,
-    Calendar,
-    CheckCircle2,
-    XCircle,
-} from "lucide-react";
-import {
-    Card,
-    CardContent,
-    CardDescription,
-    CardHeader,
-    CardTitle,
-} from "@/components/ui/card";
+import { ShoppingBag, Plus, Info, Tag, Calendar, Trash2 } from "lucide-react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -60,6 +46,13 @@ export default async function AdminProductsPage() {
                 subscriberDays,
             },
         });
+        revalidatePath("/admin/products");
+    }
+
+    async function deleteProduct(formData: FormData) {
+        "use server";
+        const id = formData.get("id") as string;
+        await prisma.product.delete({ where: { id } });
         revalidatePath("/admin/products");
     }
 
@@ -201,6 +194,7 @@ export default async function AdminProductsPage() {
                             <TableHead className="font-bold text-slate-700">
                                 Status
                             </TableHead>
+                            <TableHead className="font-bold text-slate-700 w-16" />
                         </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -225,7 +219,9 @@ export default async function AdminProductsPage() {
                                         R${" "}
                                         {(p.priceCents / 100).toLocaleString(
                                             "pt-BR",
-                                            { minimumFractionDigits: 2 },
+                                            {
+                                                minimumFractionDigits: 2,
+                                            },
                                         )}
                                     </Badge>
                                 </TableCell>
@@ -255,12 +251,31 @@ export default async function AdminProductsPage() {
                                         </Badge>
                                     )}
                                 </TableCell>
+
+                                {/* ✅ Botão de excluir */}
+                                <TableCell>
+                                    <form action={deleteProduct}>
+                                        <input
+                                            type="hidden"
+                                            name="id"
+                                            value={p.id}
+                                        />
+                                        <Button
+                                            type="submit"
+                                            variant="ghost"
+                                            size="icon"
+                                            className="text-slate-400 hover:text-red-500 hover:bg-red-50"
+                                        >
+                                            <Trash2 className="w-4 h-4" />
+                                        </Button>
+                                    </form>
+                                </TableCell>
                             </TableRow>
                         ))}
                         {products.length === 0 && (
                             <TableRow>
                                 <TableCell
-                                    colSpan={4}
+                                    colSpan={5}
                                     className="h-32 text-center text-slate-400 italic"
                                 >
                                     Nenhum produto cadastrado.
