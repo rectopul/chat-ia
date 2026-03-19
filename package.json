@@ -34,6 +34,7 @@
     "tdl": "^8.0.2",
     "tdl-tdlib-addon": "^1.2.2",
     "telegraf": "^4.16.3",
+    "uuid": "^13.0.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
