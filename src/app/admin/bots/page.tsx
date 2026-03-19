@@ -11,6 +11,7 @@ import {
     ShieldCheck,
     Power,
     PowerOff,
+    Trash,
 } from "lucide-react";
 import {
     Card,
@@ -58,6 +59,14 @@ export default async function AdminBotsPage() {
                 isActive: false,
             },
         });
+
+        revalidatePath("/admin/bots");
+    }
+
+    async function deleteBot(botId: string) {
+        "use server";
+
+        await prisma.botAccount.delete({ where: { id: botId } });
 
         revalidatePath("/admin/bots");
     }
@@ -289,6 +298,17 @@ export default async function AdminBotsPage() {
                                                     Ativar
                                                 </>
                                             )}
+                                        </Button>
+                                    </form>
+
+                                    <form action={deleteBot.bind(null, bot.id)}>
+                                        <Button
+                                            size="icon"
+                                            variant="outline"
+                                            className="text-destructive hover:bg-destructive/10"
+                                            type="submit"
+                                        >
+                                            <Trash className="size-3.5" />
                                         </Button>
                                     </form>
                                 </TableCell>
