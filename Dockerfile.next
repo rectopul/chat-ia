@@ -24,7 +24,7 @@ COPY . .
 RUN ./node_modules/.bin/prisma generate --schema=./prisma/schema.prisma
 
 # Build do Next.js
-ENV NEXT_PUBLIC_NEST_API_URL=http://localhost:3001
+ENV NEXT_PUBLIC_NEST_API_URL=http://109.205.183.50:3001
 
 RUN npm run build
 
