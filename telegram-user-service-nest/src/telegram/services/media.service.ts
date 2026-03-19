@@ -73,6 +73,18 @@ export class MediaService {
     }
 
     /**
+     * Divide um array em sub-arrays de tamanho específico.
+     * Útil para respeitar o limite de 10 mídias por álbum do Telegram.
+     */
+    chunkMedia<T>(items: T[], size: number = 10): T[][] {
+        const chunks: T[][] = [];
+        for (let i = 0; i < items.length; i += size) {
+            chunks.push(items.slice(i, i + size));
+        }
+        return chunks;
+    }
+
+    /**
      * Salva os dados de um upload bem sucedido para reuso futuro
      */
     async saveMediaCache(url: string, document: Api.Document) {
