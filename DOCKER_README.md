@@ -21,6 +21,67 @@ Coloque os arquivos na raiz do projeto assim:
     └── src/
 ```
 
+Com certeza! Adicionar um guia de instalação do Docker no próprio README é excelente para quando você (ou outra pessoa) precisar configurar uma VPS do zero sem ter que buscar tutoriais externos.
+
+Aqui está a seção que você pode copiar e colar no seu arquivo `.md`:
+
+---
+
+## 🚀 Instalação do Docker no Ubuntu (VPS)
+
+Para rodar este projeto em uma VPS Ubuntu limpa, execute os passos abaixo.
+
+### 1. Atualizar o sistema e instalar dependências
+
+```bash
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y ca-certificates curl gnupg lsb-release
+```
+
+### 2. Adicionar a chave GPG oficial do Docker
+
+```bash
+sudo mkdir -p /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+```
+
+### 3. Configurar o repositório
+
+```bash
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+  $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+```
+
+### 4. Instalar Docker e Docker Compose V2
+
+```bash
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+```
+
+### 5. Configurar permissões (Opcional, mas recomendado)
+
+Para rodar comandos `docker` sem precisar usar `sudo` toda vez:
+
+```bash
+sudo usermod -aG docker $USER
+# AGORA: Deslogue e logue novamente na VPS para aplicar a mudança
+```
+
+### 6. Verificar instalação
+
+```bash
+docker --version
+docker compose version
+```
+
+---
+
+### 💡 Dica de "Cidadão Digital"
+
+Como você está usando o Ubuntu, o **Docker Compose V2** (instalado via `docker-compose-plugin`) agora é chamado como `docker compose` (sem o hífen), que é exatamente o que você já está usando nos seus comandos acima.
+
 ## Configuração obrigatória do Next.js
 
 Para o build standalone funcionar, adicione em `next.config.js`:
