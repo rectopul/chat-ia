@@ -43,7 +43,8 @@ type BotStatusResponse = {
 // ─── Data fetching ────────────────────────────────────────────────────────────
 
 async function getBotStatus(): Promise<BotStatusResponse> {
-    const apiUrl = process.env.API_URL ?? process.env.NEXT_PUBLIC_API_URL;
+    const apiUrl =
+        process.env.NEXT_PUBLIC_NEST_API_URL ?? process.env.NEXT_PUBLIC_API_URL;
 
     if (!apiUrl) {
         console.error(
