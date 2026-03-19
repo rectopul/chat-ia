@@ -88,7 +88,7 @@ services:
       CRON_SECRET: efde69757d24768319e945157dc0f298181ed884f9af551013939f5352e79847
       APP_BASE_URL: https://migration-springer-klein-perl.trycloudflare.com
       BLOB_READ_WRITE_TOKEN: vercel_blob_rw_24EOt89DvmKbxT6P_3GZ44f7MD5p2rj11ZHA6L4zZcSI93S
-      NEXT_PUBLIC_NEST_API_URL: http://localhost:3001
+      NEXT_PUBLIC_NEST_API_URL: http://nest:3001
       NEST_API_URL: http://nest:3001
     ports:
       - "3000:3000"
