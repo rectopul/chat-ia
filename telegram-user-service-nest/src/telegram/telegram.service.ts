@@ -2087,7 +2087,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                     `https://api.telegram.org/bot${ctx.token}/sendMediaGroup`,
                     {
                         chat_id: chatId,
-                        media: JSON.stringify(mediaJson),
+                        media: mediaJson,
                         ...base,
                     },
                 );
