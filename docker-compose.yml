@@ -5,18 +5,21 @@ services:
     container_name: telebot-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: postgres          # Usuário mestre do banco de dados
-      POSTGRES_PASSWORD: postgres      # Senha do banco de dados (recomenda-se alterar em produção)
-      POSTGRES_DB: teletram-bot        # Nome do banco de dados inicial
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: teletram-bot
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+    networks:
+      - telebot-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 10s
+      test: ["CMD-SHELL", "pg_isready -U postgres -d teletram-bot"]
+      interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 10s
 
   # ─── Redis (Fila de Processamento BullMQ) ─────────────────────────────────
   redis:
@@ -27,7 +30,9 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
-    command: redis-server --appendonly yes  # Garante que as tarefas não se percam ao reiniciar
+    networks:
+      - telebot-network
+    command: redis-server --appendonly yes
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -47,19 +52,21 @@ services:
       redis:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/teletram-bot?schema=public # Link de conexão interna com o banco
-      REDIS_HOST: redis                # Endereço interno do serviço Redis
-      REDIS_PORT: 6379                 # Porta interna do Redis
-      CRON_SECRET: efde6975...         # Token de segurança para disparar tarefas agendadas
-      SYNCPAY_CLIENT_ID: 120555ca...   # ID do cliente na plataforma SyncPay (Pagamentos)
-      SYNCPAY_CLIENT_SECRET: 9e0885ac..# Chave secreta da SyncPay
-      SYNCPAY_DEFAULT_CPF: "2768845..."# CPF padrão usado em testes de checkout
-      SYNCPAY_DEFAULT_EMAIL: cli@...   # E-mail padrão para notificações de venda
-      SYNCPAY_DEFAULT_PHONE: "21995..."# Telefone padrão para notificações
-      SYNCPAY_WEBHOOK_URL: https://... # URL que recebe confirmação de pagamento da SyncPay
-      PORT: 3001                       # Porta onde o servidor Backend roda internamente
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/teletram-bot?schema=public
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      CRON_SECRET: efde69757d24768319e945157dc0f298181ed884f9af551013939f5352e79847
+      SYNCPAY_CLIENT_ID: 120555ca-053a-4cbb-bda5-fb27e372716f
+      SYNCPAY_CLIENT_SECRET: 9e0885ac-c04d-4cdb-8002-d37d189d49b8
+      SYNCPAY_DEFAULT_CPF: "27688457874"
+      SYNCPAY_DEFAULT_EMAIL: clientes@botelecontents.com
+      SYNCPAY_DEFAULT_PHONE: "21995812705"
+      SYNCPAY_WEBHOOK_URL: http://109.205.183.50:3001/webhook/syncpay
+      PORT: 3001
     ports:
       - "3001:3001"
+    networks:
+      - telebot-network
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:3001/health || exit 1"]
       interval: 15s
@@ -77,22 +84,28 @@ services:
       postgres:
         condition: service_healthy
       nest:
-        condition: service_started
+        condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://...   # Conexão direta do painel com o banco (para Auth e dados)
-      NEXTAUTH_SECRET: efde6975...     # Chave de criptografia para as sessões de login do painel
-      AUTH_TRUST_HOST: "true"          # Permite que o sistema de login funcione atrás de um Proxy/VPS
-      NEXTAUTH_URL: "http://localhost:3000" # URL base para o sistema de autenticação
-      TELEGRAM_BOT_TOKEN: 857187...    # Token oficial do bot principal (gerado no BotFather)
-      TELEGRAM_WEBHOOK_SECRET: efde69..# Senha de segurança para validar mensagens do Telegram
-      CRON_SECRET: efde6975...         # Deve ser igual à do Backend para autorizar tarefas
-      APP_BASE_URL: https://...        # URL pública onde o painel Next.js está acessível
-      BLOB_READ_WRITE_TOKEN: vercel_.. # Token para armazenamento de imagens/vídeos (Vercel Blob)
-      NEXT_PUBLIC_NEST_API_URL: http://109.205.183.50:3001 # URL do Backend para o Navegador do Cliente
-      SYNCPAY_API_URL: ""              # (Opcional) URL customizada da API SyncPay
-      NEST_API_URL: http://109.205.183.50:3001 # URL do Backend para comunicação interna do servidor
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/teletram-bot?schema=public
+      NEXTAUTH_SECRET: efde69757d24768319e945157dc0f298181ed884f9af551013939f5352e79847
+      AUTH_TRUST_HOST: "true"
+      NEXTAUTH_URL: http://109.205.183.50:3000
+      TELEGRAM_BOT_TOKEN: 8571873164:AAFRXaolzTRGxZRQ9icrZB5bFIcyfIrhhOk
+      TELEGRAM_WEBHOOK_SECRET: efde69757d24768319e945157dc0f298181ed884f9af551013939f5352e79847
+      CRON_SECRET: efde69757d24768319e945157dc0f298181ed884f9af551013939f5352e79847
+      APP_BASE_URL: http://109.205.183.50:3000
+      BLOB_READ_WRITE_TOKEN: vercel_blob_rw_24EOt89DvmKbxT6P_3GZ44f7MD5p2rj11ZHA6L4zZcSI93S
+      NEXT_PUBLIC_NEST_API_URL: http://109.205.183.50:3001
+      NEST_API_URL: http://nest:3001
+      SYNCPAY_API_URL: https://api.syncpay.com.br
     ports:
       - "3000:3000"
+    networks:
+      - telebot-network
+
+networks:
+  telebot-network:
+    driver: bridge
 
 volumes:
   postgres_data:
