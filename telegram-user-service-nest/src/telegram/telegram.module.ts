@@ -21,14 +21,22 @@ import { BullModule } from "@nestjs/bullmq";
 
 // Controller (mantém o mesmo)
 import { TelegramController } from "./telegram.controller";
-import { QUEUE_NAME } from "./constants";
+import { QUEUE_NAME, TRANSFER_QUEUE_NAME } from "./constants";
 import { MessageProcessor } from "./processors/message.processor";
+import { GroupScraperService } from "./services/group-scraper.service";
+import { TransferProcessor } from "./processors/transfer.processor";
+import { ScraperController } from "./controllers/scraper.controller";
 
 @Module({
     imports: [
         // Registro da fila de mensagens
         BullModule.registerQueue({
             name: QUEUE_NAME,
+        }),
+
+        // Fila de transferências (nova)
+        BullModule.registerQueue({
+            name: TRANSFER_QUEUE_NAME,
         }),
 
         PrismaModule,
@@ -45,14 +53,16 @@ import { MessageProcessor } from "./processors/message.processor";
         TemplateService,
         SchedulerService,
         BusinessBotService,
+        GroupScraperService,
 
         // Fachada principal
         TelegramService,
 
         // Worker da fila
         MessageProcessor,
+        TransferProcessor,
     ],
     exports: [TelegramService],
-    controllers: [TelegramController],
+    controllers: [TelegramController, ScraperController],
 })
 export class TelegramModule {}

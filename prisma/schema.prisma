@@ -321,3 +321,90 @@ model MediaCache {
   size          Int?
   createdAt     DateTime @default(now())
 }
+
+enum ScrapingJobStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+}
+
+enum TransferStatus {
+  PENDING
+  TRANSFERRED
+  FAILED
+  FLOOD_WAIT
+  USER_PRIVACY
+  NOT_MUTUAL
+  ALREADY_PARTICIPANT
+}
+
+model GroupScrapingJob {
+  id               String            @id @default(cuid())
+  botId            String
+  sourceGroupId    String // ID do grupo de origem
+  sourceGroupTitle String?
+  targetGroupId    String // ID do grupo destino
+  targetGroupTitle String?
+  status           ScrapingJobStatus @default(PENDING)
+  totalUsers       Int               @default(0)
+  scrapedUsers     Int               @default(0)
+  transferredUsers Int               @default(0)
+  failedUsers      Int               @default(0)
+  startedAt        DateTime?
+  completedAt      DateTime?
+  error            String?
+
+  scrapedMembers ScrapedUser[]
+  transfers      UserTransfer[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([botId])
+  @@index([status])
+}
+
+model ScrapedUser {
+  id        String  @id @default(cuid())
+  jobId     String
+  userId    String // Telegram user ID
+  username  String?
+  firstName String?
+  lastName  String?
+  phone     String?
+  isBot     Boolean @default(false)
+  isPremium Boolean @default(false)
+
+  job       GroupScrapingJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  transfers UserTransfer[]
+
+  createdAt DateTime @default(now())
+
+  @@unique([jobId, userId])
+  @@index([jobId])
+  @@index([userId])
+}
+
+model UserTransfer {
+  id             String         @id @default(cuid())
+  jobId          String
+  scrapedUserId  String
+  userId         String // Telegram user ID
+  status         TransferStatus @default(PENDING)
+  attempts       Int            @default(0)
+  lastAttemptAt  DateTime?
+  transferredAt  DateTime?
+  error          String?
+  floodWaitUntil DateTime? // Quando pode tentar novamente após flood
+
+  job         GroupScrapingJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  scrapedUser ScrapedUser      @relation(fields: [scrapedUserId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([jobId])
+  @@index([status])
+  @@index([floodWaitUntil])
+}

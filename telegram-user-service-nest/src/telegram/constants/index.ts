@@ -27,3 +27,12 @@ export const DONT_SELL_AUTO_RULE_NAME = "DONT_SELL Auto";
 export const SEND_COMBO_JOB = "send-combo";
 export const SEND_SINGLE_JOB = "send-single-media";
 export const QUEUE_NAME = "send-message";
+export const TRANSFER_QUEUE_NAME = "user-transfer";
+export const SCRAPE_GROUP_JOB = "scrape-group";
+export const TRANSFER_USER_JOB = "transfer-user";
+export const TRANSFER_DELAYS = {
+    MIN_SECONDS: 60,
+    MAX_SECONDS: 120,
+    DAILY_LIMIT: 100,
+    FLOOD_WAIT_BUFFER: 60,
+} as const;

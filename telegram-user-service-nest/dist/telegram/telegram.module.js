@@ -22,6 +22,9 @@ const bullmq_1 = require("@nestjs/bullmq");
 const telegram_controller_1 = require("./telegram.controller");
 const constants_1 = require("./constants");
 const message_processor_1 = require("./processors/message.processor");
+const group_scraper_service_1 = require("./services/group-scraper.service");
+const transfer_processor_1 = require("./processors/transfer.processor");
+const scraper_controller_1 = require("./controllers/scraper.controller");
 let TelegramModule = class TelegramModule {
 };
 exports.TelegramModule = TelegramModule;
@@ -30,6 +33,9 @@ exports.TelegramModule = TelegramModule = __decorate([
         imports: [
             bullmq_1.BullModule.registerQueue({
                 name: constants_1.QUEUE_NAME,
+            }),
+            bullmq_1.BullModule.registerQueue({
+                name: constants_1.TRANSFER_QUEUE_NAME,
             }),
             prisma_module_1.PrismaModule,
             syncpay_module_1.SyncPayModule,
@@ -42,11 +48,13 @@ exports.TelegramModule = TelegramModule = __decorate([
             template_service_1.TemplateService,
             scheduler_service_1.SchedulerService,
             business_bot_service_1.BusinessBotService,
+            group_scraper_service_1.GroupScraperService,
             telegram_service_1.TelegramService,
             message_processor_1.MessageProcessor,
+            transfer_processor_1.TransferProcessor,
         ],
         exports: [telegram_service_1.TelegramService],
-        controllers: [telegram_controller_1.TelegramController],
+        controllers: [telegram_controller_1.TelegramController, scraper_controller_1.ScraperController],
     })
 ], TelegramModule);
 //# sourceMappingURL=telegram.module.js.map

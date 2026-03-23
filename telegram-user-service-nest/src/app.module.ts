@@ -8,8 +8,8 @@ import { BullModule } from "@nestjs/bullmq";
 import { BullBoardModule } from "@bull-board/nestjs";
 import { ExpressAdapter } from "@bull-board/express";
 import { BullMQAdapter } from "@bull-board/api/bullMQAdapter";
-import { QUEUE_NAME } from "./telegram/constants";
-import { WhatsappModule } from './whatsapp/whatsapp.module';
+import { QUEUE_NAME, TRANSFER_QUEUE_NAME } from "./telegram/constants";
+import { WhatsappModule } from "./whatsapp/whatsapp.module";
 
 @Module({
     imports: [
@@ -30,6 +30,12 @@ import { WhatsappModule } from './whatsapp/whatsapp.module';
         // Registra a fila do Telegram no dashboard
         BullBoardModule.forFeature({
             name: QUEUE_NAME,
+            adapter: BullMQAdapter,
+        }),
+
+        // Registra a fila do Scrapper no dashboard
+        BullBoardModule.forFeature({
+            name: TRANSFER_QUEUE_NAME,
             adapter: BullMQAdapter,
         }),
 

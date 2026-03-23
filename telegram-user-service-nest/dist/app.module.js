@@ -39,6 +39,10 @@ exports.AppModule = AppModule = __decorate([
                 name: constants_1.QUEUE_NAME,
                 adapter: bullMQAdapter_1.BullMQAdapter,
             }),
+            nestjs_1.BullBoardModule.forFeature({
+                name: constants_1.TRANSFER_QUEUE_NAME,
+                adapter: bullMQAdapter_1.BullMQAdapter,
+            }),
             config_1.ConfigModule.forRoot({
                 envFilePath: [".env.local", ".env"],
                 isGlobal: true,
