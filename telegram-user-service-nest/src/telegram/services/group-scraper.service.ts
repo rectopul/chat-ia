@@ -26,6 +26,13 @@ import {
 export class GroupScraperService {
     private readonly logger = new Logger(GroupScraperService.name);
 
+    // ✅ CONFIGURAÇÃO DE DISTRIBUIÇÃO TEMPORAL
+    // Controla ao longo de quanto tempo os jobs serão distribuídos
+    // para evitar flood do Telegram e respeitar rate limits.
+    private readonly DISTRIBUTION_HOURS = 24; // Distribuir ao longo de 24h
+    private readonly RETRY_DISTRIBUTION_HOURS = 6; // Retries em 6h (mais agressivo)
+    private readonly MIN_SAFE_INTERVAL_MS = 3000; // Mínimo 3s entre jobs (rate limit)
+
     constructor(
         private readonly prisma: PrismaService,
         private readonly mtproto: MtprotoProvider,
@@ -195,9 +202,20 @@ export class GroupScraperService {
 
             // Salva usuários no banco e enfileira transferências
             let scrapedCount = 0;
+            const totalUsers = members.length;
+
+            // ✅ Calcula intervalo baseado no DAILY_LIMIT configurado
+            const intervalMs = this.calculateDistributionInterval(totalUsers);
+            const { DAILY_LIMIT } = TRANSFER_DELAYS;
+
+            this.logger.log(
+                `[executeScraping] Enfileirando ${totalUsers} usuários ` +
+                    `(DAILY_LIMIT: ${DAILY_LIMIT}, intervalo: ${(intervalMs / 1000).toFixed(1)}s)`,
+            );
+
             for (const member of members) {
                 try {
-                    // Salva usuário
+                    // Salva usuário no banco
                     const scrapedUser = await this.prisma.scrapedUser.create({
                         data: {
                             jobId,
@@ -221,10 +239,15 @@ export class GroupScraperService {
                         },
                     });
 
-                    // Enfileira transferência com delay calculado
-                    const delayMs = this.calculateTransferDelay(scrapedCount);
-                    await this.transferQueue.add(
-                        TRANSFER_USER_JOB,
+                    // ✅ Calcula delay progressivo com randomização
+                    const { delayMs, scheduledAt } =
+                        this.calculateProgressiveDelay(
+                            scrapedCount,
+                            intervalMs,
+                        );
+
+                    // ✅ Enfileira job de transferência
+                    await this.enqueueTransferJob(
                         {
                             botId,
                             jobId,
@@ -233,20 +256,26 @@ export class GroupScraperService {
                             username: member.username,
                             targetGroupId,
                             attemptNumber: 1,
+                            scheduledAt,
                         } as TransferUserJobData,
-                        {
-                            delay: delayMs,
-                            attempts: 5,
-                            backoff: {
-                                type: "exponential",
-                                delay: 10000,
-                            },
-                            removeOnComplete: { count: 1000 },
-                            removeOnFail: { count: 500 },
-                        },
+                        delayMs,
                     );
 
                     scrapedCount++;
+
+                    // Log detalhado a cada 50 usuários (ou primeiro e último)
+                    if (
+                        scrapedCount === 1 ||
+                        scrapedCount === totalUsers ||
+                        scrapedCount % 50 === 0
+                    ) {
+                        const hoursUntilExecution = delayMs / (1000 * 60 * 60);
+                        this.logger.log(
+                            `[executeScraping] Job ${scrapedCount}/${totalUsers} enfileirado ` +
+                                `(executa: ${scheduledAt.toLocaleString("pt-BR")}, ` +
+                                `em ${hoursUntilExecution.toFixed(2)}h)`,
+                        );
+                    }
                 } catch (err: any) {
                     this.logger.warn(
                         `[executeScraping] Erro ao processar usuário ${member.userId}: ${err?.message}`,
@@ -370,7 +399,11 @@ export class GroupScraperService {
     }
 
     // ── Calcula delay para transferência (anti-spam) ─────────────────────
+    // ⚠️ MÉTODO OBSOLETO - Substituído por delay progressivo inline
+    // Este método não garante intervalos progressivos entre jobs consecutivos.
+    // Mantido comentado para referência histórica.
 
+    /*
     private calculateTransferDelay(position: number): number {
         const { MIN_SECONDS, MAX_SECONDS, DAILY_LIMIT } = TRANSFER_DELAYS;
 
@@ -389,6 +422,81 @@ export class GroupScraperService {
         );
 
         return Math.floor(delayMs);
+    }
+    */
+
+    // ── Calcula intervalo de distribuição baseado no DAILY_LIMIT ────────
+
+    /**
+     * Calcula o intervalo entre jobs baseado no limite diário configurado.
+     *
+     * @param totalUsers Total de usuários a serem transferidos
+     * @returns Intervalo em ms entre cada job
+     */
+    private calculateDistributionInterval(totalUsers: number): number {
+        const { DAILY_LIMIT } = TRANSFER_DELAYS;
+        const distributionMs = this.DISTRIBUTION_HOURS * 60 * 60 * 1000;
+
+        // Se o total está dentro do limite diário, distribui uniformemente
+        if (totalUsers <= DAILY_LIMIT) {
+            const baseInterval = Math.floor(distributionMs / totalUsers);
+            return Math.max(baseInterval, this.MIN_SAFE_INTERVAL_MS);
+        }
+
+        // Se excede o limite diário, usa o intervalo mínimo seguro
+        // Isso vai ultrapassar 24h, mas respeita o rate limit do Telegram
+        this.logger.warn(
+            `[calculateDistributionInterval] Total (${totalUsers}) excede DAILY_LIMIT (${DAILY_LIMIT}). ` +
+                `Usando intervalo mínimo (${this.MIN_SAFE_INTERVAL_MS}ms). ` +
+                `Tempo estimado: ${((totalUsers * this.MIN_SAFE_INTERVAL_MS) / (1000 * 60 * 60)).toFixed(1)}h`,
+        );
+
+        return this.MIN_SAFE_INTERVAL_MS;
+    }
+
+    /**
+     * Calcula o delay progressivo para um job específico.
+     *
+     * @param position Posição do job na fila (0-indexed)
+     * @param intervalMs Intervalo base entre jobs
+     * @returns Delay final em ms com randomização aplicada
+     */
+    private calculateProgressiveDelay(
+        position: number,
+        intervalMs: number,
+    ): { delayMs: number; scheduledAt: Date } {
+        // Delay cumulativo: cada job espera mais que o anterior
+        const progressiveDelayMs = position * intervalMs;
+
+        // Randomização de ±5% para evitar detecção de padrão
+        const randomRangeMs = Math.floor(intervalMs * 0.05);
+        const randomOffsetMs =
+            Math.floor(Math.random() * randomRangeMs * 2) - randomRangeMs;
+
+        const finalDelayMs = Math.max(0, progressiveDelayMs + randomOffsetMs);
+        const scheduledAt = new Date(Date.now() + finalDelayMs);
+
+        return { delayMs: finalDelayMs, scheduledAt };
+    }
+
+    /**
+     * Enfileira um job de transferência com todas as configurações necessárias.
+     */
+    private async enqueueTransferJob(
+        data: TransferUserJobData,
+        delayMs: number,
+        attempts: number = 5,
+    ): Promise<void> {
+        await this.transferQueue.add(TRANSFER_USER_JOB, data, {
+            delay: delayMs,
+            attempts,
+            backoff: {
+                type: "exponential",
+                delay: 10000,
+            },
+            removeOnComplete: { count: 1000 },
+            removeOnFail: { count: 500 },
+        });
     }
 
     // ── Retenta transferências falhadas ──────────────────────────────────
@@ -411,15 +519,35 @@ export class GroupScraperService {
         }
 
         let retried = 0;
+        const totalRetries = failed.length;
+
+        // ✅ Calcula intervalo para retries (distribuição em RETRY_DISTRIBUTION_HOURS)
+        const { DAILY_LIMIT } = TRANSFER_DELAYS;
+        const distributionMs = this.RETRY_DISTRIBUTION_HOURS * 60 * 60 * 1000;
+        const baseInterval = Math.floor(
+            distributionMs / Math.min(totalRetries, DAILY_LIMIT),
+        );
+        const intervalMs = Math.max(baseInterval, this.MIN_SAFE_INTERVAL_MS);
+
+        this.logger.log(
+            `[retryFailed] Reenfileirando ${totalRetries} transferências falhadas ` +
+                `(intervalo: ${(intervalMs / 1000).toFixed(1)}s)`,
+        );
+
         for (const transfer of failed) {
             await this.prisma.userTransfer.update({
                 where: { id: transfer.id },
                 data: { status: "PENDING" },
             });
 
-            const delayMs = this.calculateTransferDelay(retried);
-            await this.transferQueue.add(
-                TRANSFER_USER_JOB,
+            // ✅ Calcula delay progressivo
+            const { delayMs, scheduledAt } = this.calculateProgressiveDelay(
+                retried,
+                intervalMs,
+            );
+
+            // ✅ Enfileira retry
+            await this.enqueueTransferJob(
                 {
                     botId: job.botId,
                     jobId,
@@ -427,15 +555,24 @@ export class GroupScraperService {
                     userId: transfer.userId,
                     targetGroupId: job.targetGroupId,
                     attemptNumber: transfer.attempts + 1,
+                    scheduledAt,
                 } as TransferUserJobData,
-                {
-                    delay: delayMs,
-                    attempts: 5 - transfer.attempts,
-                    backoff: { type: "exponential", delay: 10000 },
-                },
+                delayMs,
+                5 - transfer.attempts, // ✅ Attempts restantes (ex: se já tentou 2x, restam 3)
             );
 
             retried++;
+
+            if (
+                retried === 1 ||
+                retried === totalRetries ||
+                retried % 20 === 0
+            ) {
+                this.logger.debug(
+                    `[retryFailed] Retry ${retried}/${totalRetries} enfileirado ` +
+                        `(executa: ${scheduledAt.toLocaleString("pt-BR")})`,
+                );
+            }
         }
 
         this.logger.log(
