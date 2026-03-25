@@ -45,6 +45,11 @@ services:
       - "3001:3001"
     networks:
       - telebot-network
+    test: ["CMD-SHELL", "nc -z localhost 3001 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 40s # Dá tempo para o Prisma rodar migrações
 
   next:
     build:
