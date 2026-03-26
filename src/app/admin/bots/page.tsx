@@ -270,7 +270,7 @@ export default async function AdminBotsPage() {
                                 <TableCell>
                                     <BotConnectionManager bot={bot} />
                                 </TableCell>
-                                <TableCell className="text-right">
+                                <TableCell className="text-right flex items-center gap-2 justify-end">
                                     <form
                                         action={toggleBot.bind(
                                             null,

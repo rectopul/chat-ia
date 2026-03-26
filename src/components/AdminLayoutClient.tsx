@@ -17,6 +17,7 @@ import {
     UserCircle,
     Menu,
     Clock,
+    ArrowUpDown,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -42,6 +43,11 @@ const navItems = [
         href: "/admin/dont-sell-intervals",
         label: "Configurações Dont Sell",
         icon: Clock,
+    },
+    {
+        href: "/admin/scraping",
+        label: "Transferencia de grupos",
+        icon: ArrowUpDown,
     },
 ];
 

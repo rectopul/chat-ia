@@ -462,79 +462,112 @@ export class MediaService {
         });
 
         for (const item of items) {
-            // 1. TENTAR OBTER DO CACHE OU BAIXAR BUFFER
-            const { inputMedia, buffer, meta } = await this.getMediaForTelegram(
-                item.url,
-            );
+            try {
+                await this.processAndSendSingleVideo(client, peer, item);
+            } catch (error: any) {
+                // SE O ERRO FOR EXPIRAÇÃO DE REFERÊNCIA
+                if (error.message?.includes("FILE_REFERENCE_EXPIRED")) {
+                    this.logger.warn(
+                        `[MTProto] File Reference expirado para ${item.url}. Limpando cache e tentando novamente...`,
+                    );
 
-            let finalMedia: Api.TypeInputMedia;
-
-            if (inputMedia) {
-                // SE EXISTE NO CACHE, usamos a referência direta
-                this.logger.debug("[ENVIO DIRETO DE VIDEO EM CACHE]");
-                finalMedia = inputMedia;
-            } else if (buffer) {
-                // SE NÃO EXISTE, fazemos o processo de upload manual
-                const filename = `video_${Date.now()}.${meta.ext}`;
-                const uploadedFile = await this.uploadFromBuffer(
-                    client,
-                    filename,
-                    buffer,
-                );
-
-                const uploadedMedia = this.buildInputMedia(
-                    uploadedFile,
-                    meta,
-                    filename,
-                    true,
-                );
-
-                // Registra no Telegram para ganhar o ID e AccessHash
-                const serverMedia = await client.invoke(
-                    new Api.messages.UploadMedia({
-                        peer,
-                        media: uploadedMedia,
-                    }),
-                );
-
-                if (
-                    serverMedia instanceof Api.MessageMediaDocument &&
-                    serverMedia.document instanceof Api.Document
-                ) {
-                    const d = serverMedia.document;
-
-                    // SALVA NO CACHE PARA A PRÓXIMA VEZ
-                    await this.saveMediaCache(item.url, d);
-
-                    finalMedia = new Api.InputMediaDocument({
-                        id: new Api.InputDocument({
-                            id: d.id,
-                            accessHash: d.accessHash,
-                            fileReference: d.fileReference,
-                        }),
+                    // 1. Remove do banco de dados para forçar novo upload/registro
+                    await this.prisma.mediaCache.deleteMany({
+                        where: { url: item.url },
                     });
+
+                    // 2. Tenta enviar de novo (agora vai regenerar o cache)
+                    try {
+                        await this.processAndSendSingleVideo(
+                            client,
+                            peer,
+                            item,
+                        );
+                    } catch (retryError: any) {
+                        this.logger.error(
+                            `[MTProto] Falha na segunda tentativa após expiração: ${retryError.message}`,
+                        );
+                    }
                 } else {
                     this.logger.error(
-                        "Falha ao registrar vídeo no Telegram para cache",
+                        `[MTProto] Erro ao enviar vídeo: ${error.message}`,
                     );
-                    continue;
                 }
-            } else {
-                continue; // Evita erro se não houver buffer nem cache
             }
+            await new Promise((r) => setTimeout(r, 800)); // Delay um pouco maior para evitar flood
+        }
+    }
 
-            // 2. ENVIAR A MÍDIA (seja ela vinda do cache ou do upload novo)
-            await client.invoke(
-                new Api.messages.SendMedia({
+    /**
+     * Encapsulamento da lógica interna para facilitar a tentativa de reenvio
+     */
+    private async processAndSendSingleVideo(
+        client: any,
+        peer: any,
+        item: MediaItem,
+    ): Promise<void> {
+        const { inputMedia, buffer, meta } = await this.getMediaForTelegram(
+            item.url,
+        );
+
+        let finalMedia: Api.TypeInputMedia;
+
+        if (inputMedia) {
+            this.logger.debug("[ENVIO DIRETO DE VIDEO EM CACHE]");
+            finalMedia = inputMedia;
+        } else if (buffer) {
+            const filename = `video_${Date.now()}.${meta.ext}`;
+            const uploadedFile = await this.uploadFromBuffer(
+                client,
+                filename,
+                buffer,
+            );
+
+            const uploadedMedia = this.buildInputMedia(
+                uploadedFile,
+                meta,
+                filename,
+                true,
+            );
+
+            const serverMedia = await client.invoke(
+                new Api.messages.UploadMedia({
                     peer,
-                    media: finalMedia,
-                    message: "",
-                    randomId: this.mtproto.makeRandomId(),
+                    media: uploadedMedia,
                 }),
             );
 
-            await new Promise((r) => setTimeout(r, 500));
+            if (
+                serverMedia instanceof Api.MessageMediaDocument &&
+                serverMedia.document instanceof Api.Document
+            ) {
+                const d = serverMedia.document;
+                await this.saveMediaCache(item.url, d);
+                finalMedia = new Api.InputMediaDocument({
+                    id: new Api.InputDocument({
+                        id: d.id,
+                        accessHash: d.accessHash,
+                        fileReference: d.fileReference,
+                    }),
+                });
+            } else {
+                throw new Error(
+                    "Falha ao registrar vídeo no Telegram para cache",
+                );
+            }
+        } else {
+            return;
         }
+
+        // Envio final
+        await client.invoke(
+            new Api.messages.SendMedia({
+                peer,
+                media: finalMedia,
+                message: "",
+                randomId: this.mtproto.makeRandomId(),
+            }),
+        );
     }
 
     async sendVoiceBotApi(
