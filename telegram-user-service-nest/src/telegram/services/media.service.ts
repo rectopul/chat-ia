@@ -17,6 +17,7 @@ import { MediaMeta, ReadyItem, MediaItem } from "../interfaces";
 import { PrismaService } from "src/prisma/prisma.service";
 import { MtprotoProvider } from "../providers/mtproto.provider";
 import { ChatActionService } from "./chat-action.service";
+const FormData = require("form-data");
 
 @Injectable()
 export class MediaService {
@@ -147,8 +148,51 @@ export class MediaService {
     // ── Buffer helpers ────────────────────────────────────────────────────
 
     async fetchFileBuffer(url: string, forceOgg = false): Promise<Buffer> {
-        const response = await axios.get(url, { responseType: "arraybuffer" });
-        let buffer = Buffer.from(response.data);
+        let buffer: Buffer;
+        // 1. Verifica se a URL é local (se começa com seu domínio ou se é um caminho relativo)
+        const isLocal =
+            url.includes("localhost") ||
+            url.includes("seu-dominio.com") ||
+            !url.startsWith("http");
+
+        this.logger.debug(
+            `[fetchFileBuffer] Verificando se a URL é local: ${url}`,
+        );
+
+        if (isLocal) {
+            try {
+                // Extrai o caminho relativo (ex: templates/arquivo.mp4)
+                // Se a URL for http://dominio.com/templates/file.mp4, o split pega a partir de /templates/
+                const relativePath = url.includes("/templates/")
+                    ? `../../public/templates/${url.split("/templates/")[1]}`
+                    : url;
+
+                const filePath = path.join(
+                    process.cwd(),
+                    "public",
+                    relativePath,
+                );
+                this.logger.debug(
+                    `[fetchFileBuffer] Lendo arquivo local: ${filePath}`,
+                );
+                buffer = await fs.promises.readFile(filePath);
+            } catch (err: any) {
+                this.logger.error(
+                    `[fetchFileBuffer] Erro ao ler arquivo local: ${err.message}`,
+                );
+                // Se falhar localmente, tenta via axios como fallback
+                const response = await axios.get(url, {
+                    responseType: "arraybuffer",
+                });
+                buffer = Buffer.from(response.data);
+            }
+        } else {
+            // 2. Se for URL externa (Vercel, S3, etc), continua usando Axios
+            const response = await axios.get(url, {
+                responseType: "arraybuffer",
+            });
+            buffer = Buffer.from(response.data);
+        }
 
         const rawExt = (
             url.split(".").pop()?.split(/[#?]/)[0] ?? ""
@@ -407,41 +451,76 @@ export class MediaService {
 
         for (let i = 0; i < items.length; i += 10) {
             const chunk = items.slice(i, i + 10);
-            const mediaJson = chunk.map((item) => ({
-                type: "photo",
-                media: item.fileId ?? item.url,
-            }));
+            const form = new FormData();
 
-            const { data } = await axios.post(
-                `https://api.telegram.org/bot${token}/sendMediaGroup`,
-                { chat_id: chatId, media: JSON.stringify(mediaJson), ...base },
-            );
+            form.append("chat_id", chatId);
+            if (base.business_connection_id) {
+                form.append(
+                    "business_connection_id",
+                    base.business_connection_id,
+                );
+            }
 
-            if (!data.ok)
-                throw new Error(
-                    `sendPhotoGroup error: ${JSON.stringify(data)}`,
+            const mediaGroup: any[] = [];
+
+            for (let j = 0; j < chunk.length; j++) {
+                const item = chunk[j];
+
+                if (item.fileId) {
+                    // Se já temos o fileId (cache), usamos ele (mais rápido)
+                    mediaGroup.push({
+                        type: "photo",
+                        media: item.fileId,
+                    });
+                } else {
+                    // Se não tem fileId, precisamos enviar o arquivo físico
+                    // Usamos o fetchFileBuffer que já criamos para ler do disco local
+                    const buffer = await this.fetchFileBuffer(item.url);
+                    const attachmentName = `pic${j}`;
+
+                    form.append(attachmentName, buffer, {
+                        filename: `image_${j}.jpg`,
+                        contentType: "image/jpeg",
+                    });
+
+                    mediaGroup.push({
+                        type: "photo",
+                        media: `attach://${attachmentName}`,
+                    });
+                }
+            }
+
+            form.append("media", JSON.stringify(mediaGroup));
+
+            try {
+                const { data } = await axios.post(
+                    `https://api.telegram.org/bot${token}/sendMediaGroup`,
+                    form,
+                    {
+                        headers: form.getHeaders(),
+                        timeout: 30000, // Aumentado para uploads grandes
+                    },
                 );
 
-            // Salva file_id das fotos retornadas
-            if (Array.isArray(data.result)) {
-                for (let j = 0; j < data.result.length; j++) {
-                    const msg = data.result[j];
-                    const item = chunk[j];
-                    if (item?.itemId && !item.fileId) {
-                        const photos = msg?.photo;
-                        const best = Array.isArray(photos)
-                            ? photos[photos.length - 1]
-                            : null;
-                        if (best?.file_id) {
-                            item.fileId = best.file_id;
+                // Tenta salvar os novos file_ids para futuras repetições serem instantâneas
+                if (data.ok && data.result) {
+                    for (let k = 0; k < data.result.length; k++) {
+                        const msg = data.result[k];
+                        const photo = msg.photo?.pop(); // Pega a maior resolução
+                        if (photo && chunk[k].itemId) {
                             await this.saveFileId(
-                                item.itemId,
+                                String(chunk[k].itemId),
                                 true,
-                                best.file_id,
+                                photo.file_id,
                             );
                         }
                     }
                 }
+            } catch (err: any) {
+                this.logger.error(
+                    `[sendPhotoGroup] Erro ao enviar grupo: ${err.response?.data?.description || err.message}`,
+                );
+                throw err; // Lança para o BullMQ tentar novamente se necessário
             }
 
             if (items.length > 10) await new Promise((r) => setTimeout(r, 500));
@@ -594,84 +673,56 @@ export class MediaService {
         base: Record<string, any>,
         item: MediaItem,
     ): Promise<void> {
-        // ✅ AÇÃO: Simulando gravação de áudio antes de enviar
-        const businessConnectionId = base.business_connection_id;
-        if (businessConnectionId) {
-            await this.chatAction.sendActionBotApi(
-                token,
-                chatId,
-                "record_voice",
-                businessConnectionId,
-                2500, // 2.5 segundos gravando
-            );
-        }
-        // Usa file_id se disponível — instantâneo, sem upload
-        if (item.fileId) {
-            this.logger.debug(
-                `[sendAudio] Enviando via file_id (instantâneo): ${item.itemId}`,
-            );
-            const { data } = await axios.post(
-                `https://api.telegram.org/bot${token}/sendVoice`,
-                { chat_id: chatId, voice: item.fileId, ...base },
-            );
-            if (data.ok) return;
-            this.logger.warn(
-                `[sendAudio] file_id inválido, re-enviando via upload`,
-            );
-        }
+        this.logger.debug(
+            `[sendVoiceBotApi] Enviando áudio para ${chatId}: ${item.url}`,
+        );
 
-        const url = item.url;
-        const rawExt = (
-            url.split(".").pop()?.split(/[#?]/)[0] ?? "mp3"
-        ).toLowerCase();
         const FormData = require("form-data");
-
-        let audioBuffer: Buffer;
-        let filename: string;
-        let contentType: string;
-        let method: "sendVoice" | "sendAudio";
-
-        try {
-            const rawBuffer = await this.fetchFileBuffer(url);
-            audioBuffer = await this.convertToOggOpus(rawBuffer, rawExt);
-            filename = `voice_${Date.now()}.ogg`;
-            contentType = "audio/ogg";
-            method = "sendVoice";
-            this.logger.debug(
-                `[sendAudio] Convertido para OGG opus, enviando como voice note`,
-            );
-        } catch (convErr: any) {
-            this.logger.warn(
-                `[sendAudio] Conversão OGG falhou (${convErr?.message}), usando sendAudio`,
-            );
-            audioBuffer = await this.fetchFileBuffer(url);
-            filename = `audio_${Date.now()}.${rawExt}`;
-            contentType = rawExt === "mp3" ? "audio/mpeg" : `audio/${rawExt}`;
-            method = "sendAudio";
-        }
-
         const form = new FormData();
+
         form.append("chat_id", chatId);
         if (base.business_connection_id) {
             form.append("business_connection_id", base.business_connection_id);
         }
-        const fieldName = method === "sendVoice" ? "voice" : "audio";
-        form.append(fieldName, audioBuffer, { filename, contentType });
 
-        const { data } = await axios.post(
-            `https://api.telegram.org/bot${token}/${method}`,
-            form,
-            { headers: form.getHeaders() },
-        );
+        try {
+            if (item.fileId) {
+                // Se já tem o fileId, o envio é instantâneo
+                form.append("voice", item.fileId);
+            } else {
+                // Se é arquivo local/novo, lê o buffer do disco
+                const audioBuffer = await this.fetchFileBuffer(item.url);
 
-        if (!data.ok)
-            throw new Error(`${method} error: ${JSON.stringify(data)}`);
+                // O Telegram identifica como voz se o nome terminar em .ogg ou .mp3
+                form.append("voice", audioBuffer, {
+                    filename: "voice.ogg",
+                    contentType: "audio/ogg",
+                });
+            }
 
-        // Salva file_id para próximas chamadas
-        if (item.itemId) {
-            const fileId =
-                data.result?.voice?.file_id ?? data.result?.audio?.file_id;
-            if (fileId) await this.saveFileId(item.itemId, true, fileId);
+            const { data } = await axios.post(
+                `https://api.telegram.org/bot${token}/sendVoice`,
+                form,
+                {
+                    headers: form.getHeaders(),
+                    maxContentLength: Infinity,
+                    maxBodyLength: Infinity,
+                },
+            );
+
+            // Salva o file_id para não precisar fazer upload na próxima vez
+            if (data.ok && data.result?.voice?.file_id && item.itemId) {
+                await this.saveFileId(
+                    item.itemId,
+                    true,
+                    data.result.voice.file_id,
+                );
+            }
+        } catch (err: any) {
+            this.logger.error(
+                `[sendVoiceBotApi] Erro ao enviar voz: ${err.response?.data?.description || err.message}`,
+            );
+            throw err;
         }
     }
 
@@ -684,22 +735,26 @@ export class MediaService {
     ): Promise<void> {
         try {
             if (isTemplateMedia) {
-                await this.prisma.messageTemplateMedia.update({
+                // Usamos updateMany porque ele não lança erro se o ID não existir,
+                // apenas retorna count: 0
+                await this.prisma.messageTemplateMedia.updateMany({
                     where: { id: itemId },
                     data: { telegramFileId: fileId },
                 });
+
+                this.logger.debug(
+                    `[saveFileId] ID do Telegram salvo para a mídia: ${itemId}`,
+                );
             } else {
-                await this.prisma.messageTemplate.update({
+                // Se você tiver outra lógica para mídias que não são de template
+                await this.prisma.mediaCache.updateMany({
                     where: { id: itemId },
-                    data: { telegramFileId: fileId },
+                    data: { telegramDocId: fileId },
                 });
             }
-            this.logger.debug(
-                `[saveFileId] file_id salvo para ${itemId}: ${fileId.slice(0, 40)}...`,
-            );
         } catch (err: any) {
             this.logger.warn(
-                `[saveFileId] Falha ao salvar file_id para ${itemId}: ${err?.message}`,
+                `[saveFileId] Não foi possível atualizar o file_id para ${itemId}. O registro pode ter sido removido.`,
             );
         }
     }

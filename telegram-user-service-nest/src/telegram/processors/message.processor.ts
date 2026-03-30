@@ -4,7 +4,7 @@ import { Processor, WorkerHost } from "@nestjs/bullmq";
 import { Job } from "bullmq";
 import { MediaService } from "../services/media.service";
 import { MtprotoProvider } from "../providers/mtproto.provider";
-import { QUEUE_NAME } from "../constants";
+import { QUEUE_NAME, SEND_MENU_JOB } from "../constants";
 import { Logger } from "@nestjs/common";
 import {
     BusinessCtx,
@@ -15,6 +15,7 @@ import {
 } from "../interfaces";
 import { BotApiProvider } from "../providers/bot-api.provider";
 import { Api } from "telegram";
+import { PrismaService } from "src/prisma/prisma.service";
 
 export const SEND_COMBO_JOB = "send-combo";
 export const SEND_SINGLE_JOB = "send-single-media";
@@ -27,6 +28,7 @@ export class MessageProcessor extends WorkerHost {
         private readonly media: MediaService,
         private readonly mtproto: MtprotoProvider,
         private readonly botApi: BotApiProvider,
+        private readonly prisma: PrismaService,
     ) {
         super();
     }
@@ -45,6 +47,8 @@ export class MessageProcessor extends WorkerHost {
                 return this.processSendSingle(
                     job as Job<SendSingleMediaJobData>,
                 );
+            case SEND_MENU_JOB:
+                return this.processSendMenu(job);
             default:
                 throw new Error(`Job desconhecido: ${job.name}`);
         }
@@ -317,5 +321,34 @@ export class MessageProcessor extends WorkerHost {
         }
 
         await job.updateProgress(100);
+    }
+
+    private async processSendMenu(job: Job<any>): Promise<void> {
+        const { token, chatId, businessConnectionId } = job.data;
+
+        const products = await this.prisma.product.findMany({
+            where: { isActive: true },
+            orderBy: { priceCents: "asc" },
+        });
+
+        if (products.length > 0) {
+            await this.botApi.sendMessageHttp(
+                token,
+                chatId,
+                "🛍️ *Escolha o produto:*",
+                {
+                    business_connection_id: businessConnectionId,
+                    parse_mode: "Markdown",
+                    reply_markup: {
+                        inline_keyboard: products.map((p) => [
+                            {
+                                text: `${p.title} — R$ ${(p.priceCents / 100).toFixed(2).replace(".", ",")}`,
+                                callback_data: `buy:${p.id}`,
+                            },
+                        ]),
+                    },
+                },
+            );
+        }
     }
 }

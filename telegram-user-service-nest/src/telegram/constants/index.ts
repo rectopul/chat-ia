@@ -30,6 +30,7 @@ export const QUEUE_NAME = "send-message";
 export const TRANSFER_QUEUE_NAME = "user-transfer";
 export const SCRAPE_GROUP_JOB = "scrape-group";
 export const TRANSFER_USER_JOB = "transfer-user";
+export const SEND_MENU_JOB = "send-product-menu";
 export const TRANSFER_DELAYS = {
     MIN_SECONDS: 60,
     MAX_SECONDS: 120,

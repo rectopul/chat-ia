@@ -14,8 +14,16 @@ import { SchedulerService } from "./scheduler.service";
 import { MediaService } from "./media.service";
 import { MessageTemplateKey } from "@prisma/client";
 import { BusinessCtx } from "../interfaces";
-import { GREETING_TEXTS, DONT_SELL_AUTO_RULE_NAME } from "../constants";
+import { InjectQueue } from "@nestjs/bullmq";
+import { Queue } from "bullmq";
+import {
+    GREETING_TEXTS,
+    DONT_SELL_AUTO_RULE_NAME,
+    SEND_MENU_JOB,
+    QUEUE_NAME,
+} from "../constants";
 import { ChatActionService } from "./chat-action.service";
+import { MessageProcessor } from "../processors/message.processor";
 
 @Injectable()
 export class BusinessBotService {
@@ -30,6 +38,7 @@ export class BusinessBotService {
         private readonly scheduler: SchedulerService,
         private readonly media: MediaService,
         private readonly chatAction: ChatActionService,
+        @InjectQueue(QUEUE_NAME) private readonly messageQueue: Queue,
     ) {}
 
     // ── Bot initialization ────────────────────────────────────────────────
@@ -351,39 +360,27 @@ export class BusinessBotService {
             }
         }
 
-        // Envia menu de produtos
-        try {
-            const products = await this.prisma.product.findMany({
-                where: { isActive: true },
-                orderBy: { priceCents: "asc" },
-            });
+        // Calcula o delay para o menu ser o último (ex: maior delay dos templates + 2 segundos)
+        const maxTemplateDelay = timedTemplates.reduce(
+            (max, t) => Math.max(max, t.delaySeconds),
+            0,
+        );
+        const menuDelayMs = (maxTemplateDelay + 2) * 1000;
 
-            if (!products.length) {
-                await sendMenu("😔 Nenhum produto disponível no momento.", []);
-            } else {
-                await this.botApi.sendMessageHttp(
-                    token,
-                    chatId,
-                    "🛍️ *Escolha o produto:*",
-                    {
-                        business_connection_id: businessConnectionId,
-                        parse_mode: "Markdown",
-                        reply_markup: {
-                            inline_keyboard: products.map((p) => [
-                                {
-                                    text: `${p.title} — R$ ${(p.priceCents / 100).toFixed(2).replace(".", ",")}`,
-                                    callback_data: `buy:${p.id}`,
-                                },
-                            ]),
-                        },
-                    },
-                );
-            }
-        } catch (err: any) {
-            this.logger.error(
-                `[handleGreeting] Erro ao enviar menu para ${chatId}: ${err?.message ?? err}`,
-            );
-        }
+        await this.messageQueue.add(
+            SEND_MENU_JOB,
+            {
+                token,
+                chatId: chatId.toString(),
+                businessConnectionId,
+            },
+            {
+                delay: menuDelayMs, // O BullMQ segura o menu no Redis até esse tempo passar
+                attempts: 3,
+                backoff: { type: "exponential", delay: 5000 },
+                removeOnComplete: true,
+            },
+        );
 
         this.scheduler.scheduleDontSellJobs(
             botId,

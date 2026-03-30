@@ -109,9 +109,6 @@ export class TemplateService {
                     removeOnFail: { count: 50 },
                 },
             );
-            this.logger.debug(
-                `[sendTemplate] COMBO enfileirado para chatId=${chatId}`,
-            );
             return;
         }
 
@@ -140,6 +137,10 @@ export class TemplateService {
 
     /** Serializa apenas os campos necessários — evita objetos circulares no job */
     private serializeTemplate(template: any) {
+        this.logger.debug(
+            `[serializeTemplate] Serializando template id=${template.id} type=${template.type}`,
+        );
+
         return {
             id: template.id,
             type: template.type,
