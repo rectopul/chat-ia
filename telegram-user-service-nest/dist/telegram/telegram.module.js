@@ -25,6 +25,7 @@ const message_processor_1 = require("./processors/message.processor");
 const group_scraper_service_1 = require("./services/group-scraper.service");
 const transfer_processor_1 = require("./processors/transfer.processor");
 const scraper_controller_1 = require("./controllers/scraper.controller");
+const chat_action_service_1 = require("./services/chat-action.service");
 let TelegramModule = class TelegramModule {
 };
 exports.TelegramModule = TelegramModule;
@@ -43,6 +44,7 @@ exports.TelegramModule = TelegramModule = __decorate([
         providers: [
             mtproto_provider_1.MtprotoProvider,
             bot_api_provider_1.BotApiProvider,
+            chat_action_service_1.ChatActionService,
             media_service_1.MediaService,
             session_service_1.SessionService,
             template_service_1.TemplateService,

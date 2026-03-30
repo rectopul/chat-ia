@@ -16,6 +16,7 @@ import * as path from "path";
 import { MediaMeta, ReadyItem, MediaItem } from "../interfaces";
 import { PrismaService } from "src/prisma/prisma.service";
 import { MtprotoProvider } from "../providers/mtproto.provider";
+import { ChatActionService } from "./chat-action.service";
 
 @Injectable()
 export class MediaService {
@@ -24,6 +25,7 @@ export class MediaService {
     constructor(
         private readonly prisma: PrismaService,
         private readonly mtproto: MtprotoProvider,
+        private readonly chatAction: ChatActionService,
     ) {}
 
     /**
@@ -387,6 +389,22 @@ export class MediaService {
     ): Promise<void> {
         if (!items.length) return;
 
+        const businessConnectionId = base.business_connection_id;
+
+        if (businessConnectionId) {
+            const delay = this.chatAction.calculateMediaDelay(
+                "upload_photo",
+                items.length,
+            );
+            await this.chatAction.sendActionBotApi(
+                token,
+                chatId,
+                "upload_photo",
+                businessConnectionId,
+                delay,
+            );
+        }
+
         for (let i = 0; i < items.length; i += 10) {
             const chunk = items.slice(i, i + 10);
             const mediaJson = chunk.map((item) => ({
@@ -576,6 +594,17 @@ export class MediaService {
         base: Record<string, any>,
         item: MediaItem,
     ): Promise<void> {
+        // ✅ AÇÃO: Simulando gravação de áudio antes de enviar
+        const businessConnectionId = base.business_connection_id;
+        if (businessConnectionId) {
+            await this.chatAction.sendActionBotApi(
+                token,
+                chatId,
+                "record_voice",
+                businessConnectionId,
+                2500, // 2.5 segundos gravando
+            );
+        }
         // Usa file_id se disponível — instantâneo, sem upload
         if (item.fileId) {
             this.logger.debug(
@@ -687,6 +716,15 @@ export class MediaService {
         if (!client) return;
 
         const peer = await client.getInputEntity(String(chatId));
+
+        // ✅ AÇÃO: Gravando áudio via MTProto
+        await this.chatAction.sendActionMtproto(
+            client,
+            String(chatId),
+            "record_voice",
+            2500,
+        );
+
         const audioBuffer = await this.fetchFileBuffer(
             instructionsAudio.audioUrl,
             true,

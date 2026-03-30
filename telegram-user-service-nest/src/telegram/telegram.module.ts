@@ -26,6 +26,7 @@ import { MessageProcessor } from "./processors/message.processor";
 import { GroupScraperService } from "./services/group-scraper.service";
 import { TransferProcessor } from "./processors/transfer.processor";
 import { ScraperController } from "./controllers/scraper.controller";
+import { ChatActionService } from "./services/chat-action.service";
 
 @Module({
     imports: [
@@ -48,6 +49,7 @@ import { ScraperController } from "./controllers/scraper.controller";
         BotApiProvider,
 
         // Services (camada de negócio)
+        ChatActionService,
         MediaService,
         SessionService,
         TemplateService,

@@ -19,6 +19,7 @@ import {
     SEND_COMBO_JOB,
     SEND_SINGLE_JOB,
 } from "../constants/index";
+import { ChatActionService } from "./chat-action.service";
 
 @Injectable()
 export class TemplateService {
@@ -29,6 +30,7 @@ export class TemplateService {
         private readonly mtproto: MtprotoProvider,
         private readonly botApi: BotApiProvider,
         private readonly media: MediaService,
+        private readonly chatAction: ChatActionService,
         @InjectQueue(QUEUE_NAME) private readonly messageQueue: Queue,
     ) {}
 
@@ -54,7 +56,17 @@ export class TemplateService {
 
         // TEXT: envia direto — leve e sem risco de timeout
         if (template.type === "TEXT") {
+            const text = template.text || "";
             if (businessCtx) {
+                const typingDelay = this.chatAction.calculateTypingDelay(text);
+                await this.chatAction.sendActionBotApi(
+                    businessCtx.token,
+                    chatId,
+                    "typing",
+                    businessCtx.businessConnectionId,
+                    typingDelay,
+                );
+
                 await this.botApi.sendMessageHttp(
                     businessCtx.token,
                     chatId,
@@ -66,6 +78,13 @@ export class TemplateService {
                 );
             } else {
                 const client = await this.ensureClient(botId);
+                const typingDelay = this.chatAction.calculateTypingDelay(text);
+                await this.chatAction.sendActionMtproto(
+                    client,
+                    chatId,
+                    "typing",
+                    typingDelay,
+                );
                 await client.sendMessage(chatId, {
                     message: template.text || "",
                 });
@@ -207,6 +226,19 @@ export class TemplateService {
         const messageText = hasDiscount
             ? discountConfig.discountText
             : "🛍️ *Que tal aproveitar e garantir agora?* Escolha um produto:";
+
+        // ✅ AÇÃO: Digitando antes de mostrar menu
+        const typingDelay = this.chatAction.calculateTypingDelay(
+            String(messageText),
+        );
+
+        await this.chatAction.sendActionBotApi(
+            token,
+            chatId,
+            "typing",
+            businessConnectionId,
+            typingDelay,
+        );
 
         await this.botApi.sendMessageHttp(token, chatId, String(messageText), {
             business_connection_id: businessConnectionId,

@@ -15,6 +15,7 @@ import { MediaService } from "./media.service";
 import { MessageTemplateKey } from "@prisma/client";
 import { BusinessCtx } from "../interfaces";
 import { GREETING_TEXTS, DONT_SELL_AUTO_RULE_NAME } from "../constants";
+import { ChatActionService } from "./chat-action.service";
 
 @Injectable()
 export class BusinessBotService {
@@ -28,6 +29,7 @@ export class BusinessBotService {
         private readonly templateService: TemplateService,
         private readonly scheduler: SchedulerService,
         private readonly media: MediaService,
+        private readonly chatAction: ChatActionService,
     ) {}
 
     // ── Bot initialization ────────────────────────────────────────────────
@@ -509,14 +511,43 @@ export class BusinessBotService {
             where: { id: productId },
         });
         if (!product) {
+            const businessConnectionId =
+                await this.botApi.resolveConnectionForChat(botId, chatId);
+            await this.chatAction.sendActionBotApi(
+                token,
+                chatId,
+                "typing",
+                businessConnectionId,
+                800,
+            );
             await send("❌ Produto não encontrado.");
             return;
         }
         if (!userTelegram) {
+            const businessConnectionId =
+                await this.botApi.resolveConnectionForChat(botId, chatId);
+            await this.chatAction.sendActionBotApi(
+                token,
+                chatId,
+                "typing",
+                businessConnectionId,
+                800,
+            );
             await send("❌ Usuário não encontrado.");
             return;
         }
 
+        const businessConnectionId = await this.botApi.resolveConnectionForChat(
+            botId,
+            chatId,
+        );
+        await this.chatAction.sendActionBotApi(
+            token,
+            chatId,
+            "typing",
+            businessConnectionId,
+            1500, // 1.5 segundos
+        );
         await send(`Só um minutinho que já estou gerando seu pix tá`);
 
         const pixData = await this.syncPay.createCharge({
@@ -538,11 +569,35 @@ export class BusinessBotService {
             },
         });
 
+        // ✅ AÇÃO: Gravando áudio antes de enviar o áudio PIX
+        await this.chatAction.sendActionBotApi(
+            token,
+            chatId,
+            "record_voice",
+            businessConnectionId,
+            2500, // 2.5 segundos gravando
+        );
+
         await this.media
             .sendPixAudio(botId, chatId)
             .catch((err) =>
                 this.logger.error(`Erro ao enviar áudio PIX:`, err),
             );
+
+        // ✅ AÇÃO: Digitando antes de enviar mensagem do PIX
+        await this.chatAction.sendActionBotApi(
+            token,
+            chatId,
+            "typing",
+            businessConnectionId,
+            this.chatAction.calculateTypingDelay(
+                this.buildPixMessage(
+                    product,
+                    pixData.pix_code,
+                    product.priceCents,
+                ),
+            ),
+        );
 
         await send(
             this.buildPixMessage(product, pixData.pix_code, product.priceCents),
@@ -563,14 +618,46 @@ export class BusinessBotService {
         const product = await this.prisma.product.findUnique({
             where: { id: productId },
         });
+
         if (!product) {
+            const businessConnectionId =
+                await this.botApi.resolveConnectionForChat(botId, chatId);
+            await this.chatAction.sendActionBotApi(
+                token,
+                chatId,
+                "typing",
+                businessConnectionId,
+                800,
+            );
             await send("❌ Produto não encontrado.");
             return;
         }
         if (!userTelegram) {
+            const businessConnectionId =
+                await this.botApi.resolveConnectionForChat(botId, chatId);
+            await this.chatAction.sendActionBotApi(
+                token,
+                chatId,
+                "typing",
+                businessConnectionId,
+                800,
+            );
             await send("❌ Usuário não encontrado.");
             return;
         }
+
+        // ✅ AÇÃO: Digitando antes de avisar que está gerando
+        const businessConnectionId = await this.botApi.resolveConnectionForChat(
+            botId,
+            chatId,
+        );
+        await this.chatAction.sendActionBotApi(
+            token,
+            chatId,
+            "typing",
+            businessConnectionId,
+            1200,
+        );
 
         await send(`⏳ Gerando PIX para *${product.title}*...`);
 
@@ -597,11 +684,36 @@ export class BusinessBotService {
             },
         });
 
+        // ✅ AÇÃO: Gravando áudio antes de enviar
+        await this.chatAction.sendActionBotApi(
+            token,
+            chatId,
+            "record_voice",
+            businessConnectionId,
+            2500,
+        );
+
         await this.media
             .sendPixAudio(botId, chatId)
             .catch((err) =>
                 this.logger.error(`Erro ao enviar áudio PIX:`, err),
             );
+
+        // ✅ AÇÃO: Digitando antes da mensagem final
+        await this.chatAction.sendActionBotApi(
+            token,
+            chatId,
+            "typing",
+            businessConnectionId,
+            this.chatAction.calculateTypingDelay(
+                this.buildPixMessage(
+                    product,
+                    pixData.pix_code,
+                    finalAmountCents,
+                    discountPercent,
+                ),
+            ),
+        );
 
         await send(
             this.buildPixMessage(
