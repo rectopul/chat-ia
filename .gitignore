@@ -12,6 +12,7 @@
 projeto.zip
 projeto_telegram.zip
 sessions
+public/templates/
 
 # testing
 /coverage

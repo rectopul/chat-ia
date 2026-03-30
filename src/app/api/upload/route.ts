@@ -7,10 +7,12 @@
 
 import { put, del } from "@vercel/blob";
 import { NextRequest, NextResponse } from "next/server";
+import { writeFile, mkdir } from "fs/promises";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { randomUUID } from "crypto";
+import { unlink } from "fs/promises";
 
 // Limite de body para o App Router (substitui o config deprecated)
 export const maxDuration = 60; // segundos — necessário para vídeos grandes
@@ -171,6 +173,7 @@ export async function POST(req: NextRequest) {
     let finalExt: string;
     let processingNote: string;
 
+    // --- Lógica de processamento (mantida idêntica) ---
     if (isAudio && originalExt !== "ogg") {
         try {
             finalBuffer = await convertToOggOpus(rawBuffer, originalExt);
@@ -216,39 +219,59 @@ export async function POST(req: NextRequest) {
         processingNote = "arquivo salvo sem processamento";
     }
 
+    // --- Nova Lógica de salvamento local ---
+
     const baseName = file.name
         .replace(/\.[^.]+$/, "")
         .replace(/\s+/g, "_")
         .replace(/[^a-zA-Z0-9_-]/g, "");
 
-    const filename = `templates/${Date.now()}-${baseName}.${finalExt}`;
+    const relativePath = `templates/${Date.now()}-${baseName}.${finalExt}`;
 
-    const blob = await put(filename, finalBuffer, {
-        access: "public",
-        contentType: finalContentType,
-    });
+    // Caminho absoluto para a pasta public do seu projeto
+    const uploadDir = path.join(process.cwd(), "public", "templates");
+    const fullPath = path.join(process.cwd(), "public", relativePath);
 
-    console.log(`[upload] ${processingNote} → ${blob.url}`);
+    try {
+        // Garante que a subpasta templates existe dentro de public
+        await mkdir(uploadDir, { recursive: true });
 
-    return NextResponse.json({
-        url: blob.url,
-        contentType: finalContentType,
-        processingNote,
-        originalSize: rawBuffer.length,
-        finalSize: finalBuffer.length,
-    });
+        // Salva o buffer no disco do servidor
+        await writeFile(fullPath, finalBuffer);
+
+        // Gera a URL baseada no host atual da requisição
+        const host = req.headers.get("host");
+        const protocol =
+            process.env.NODE_ENV === "production" ? "https" : "http";
+        const fileUrl = `${protocol}://${host}/${relativePath}`;
+
+        console.log(`[upload] ${processingNote} → ${fileUrl}`);
+
+        return NextResponse.json({
+            url: fileUrl,
+            contentType: finalContentType,
+            processingNote,
+            originalSize: rawBuffer.length,
+            finalSize: finalBuffer.length,
+        });
+    } catch (saveErr: any) {
+        console.error("[upload] Erro ao salvar no disco:", saveErr.message);
+        return NextResponse.json(
+            { error: "Erro interno ao salvar arquivo no servidor." },
+            { status: 500 },
+        );
+    }
 }
 
 // ─── DELETE — remove arquivo do Vercel Blob ───────────────────────────────────
 
 export async function DELETE(req: NextRequest) {
-    // Lê o body como texto primeiro para evitar falha silenciosa no parse
-    let blobUrl: string | undefined;
+    let fileUrl: string | undefined;
 
     try {
         const text = await req.text();
         const body = JSON.parse(text) as { url?: string };
-        blobUrl = body.url;
+        fileUrl = body.url;
     } catch {
         return NextResponse.json(
             { error: "Body inválido. Envie JSON com { url }." },
@@ -256,29 +279,53 @@ export async function DELETE(req: NextRequest) {
         );
     }
 
-    if (!blobUrl) {
+    if (!fileUrl) {
         return NextResponse.json(
             { error: "Campo 'url' não informado." },
             { status: 400 },
         );
     }
 
-    // Proteção: só aceita URLs do próprio blob storage
-    if (!blobUrl.includes("vercel-storage.com")) {
-        return NextResponse.json(
-            { error: "URL não permitida." },
-            { status: 403 },
-        );
-    }
-
     try {
-        await del(blobUrl);
-        console.log(`[upload] deletado do blob: ${blobUrl}`);
-        return NextResponse.json({ deleted: true, url: blobUrl });
+        // 1. Extrair o nome do arquivo da URL (ex: https://dominio.com/templates/123-file.mp4)
+        // O split("/") pega a última parte da URL
+        const urlParts = fileUrl.split("/");
+        const fileName = urlParts[urlParts.length - 1];
+
+        // 2. Montar o caminho absoluto para o arquivo no servidor
+        // Importante: Deve bater com o caminho usado no POST (public/templates)
+        const filePath = path.join(
+            process.cwd(),
+            "public",
+            "templates",
+            fileName,
+        );
+
+        // 3. Deletar o arquivo do disco
+        await unlink(filePath);
+
+        console.log(`[upload] deletado do servidor: ${filePath}`);
+
+        return NextResponse.json({
+            deleted: true,
+            url: fileUrl,
+            message: "Arquivo removido com sucesso do servidor local.",
+        });
     } catch (err: any) {
-        console.error("[upload] Erro ao deletar blob:", err?.message);
+        // Caso o arquivo não exista, o Node lança um erro ENOENT
+        if (err.code === "ENOENT") {
+            console.warn(
+                `[upload] Tentativa de deletar arquivo inexistente: ${fileUrl}`,
+            );
+            return NextResponse.json(
+                { error: "Arquivo não encontrado no servidor." },
+                { status: 404 },
+            );
+        }
+
+        console.error("[upload] Erro ao deletar arquivo local:", err?.message);
         return NextResponse.json(
-            { error: err?.message ?? "Erro ao deletar arquivo." },
+            { error: "Erro interno ao deletar arquivo do servidor." },
             { status: 500 },
         );
     }
