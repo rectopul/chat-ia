@@ -1,159 +1,30 @@
 // schedule/schedule.service.ts
 import { Injectable, Logger } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
-import { JobStatus, SaleStatus } from "@prisma/client";
+import { RecurringSchedule, MessageTemplate } from "@prisma/client";
 import { TelegramService } from "src/telegram/services/telegram.service";
+import { SchedulerService } from "src/telegram/services/scheduler.service";
 
 @Injectable()
 export class ScheduleService {
     private readonly logger = new Logger(ScheduleService.name);
+    private readonly recurringBatchSize = this.getEnvNumber(
+        "RECURRING_SCHEDULE_BATCH_SIZE",
+        250,
+    );
+    private readonly recurringSendDelayMs = this.getEnvNumber(
+        "RECURRING_SCHEDULE_SEND_DELAY_MS",
+        50,
+    );
 
     constructor(
         private readonly prisma: PrismaService,
         private readonly telegramService: TelegramService,
+        private readonly schedulerService: SchedulerService,
     ) {}
 
     async processJobs(): Promise<{ processed: number; failed: number }> {
-        const jobs = await this.prisma.scheduledMessageJob.findMany({
-            where: {
-                status: JobStatus.PENDING,
-                runAt: { lte: new Date() },
-            },
-            include: {
-                template: { include: { mediaItems: true } },
-                rule: true,
-                user: true,
-            },
-            orderBy: { runAt: "asc" },
-            take: 50,
-        });
-
-        if (!jobs.length) return { processed: 0, failed: 0 };
-
-        this.logger.log(`[processJobs] Processando ${jobs.length} jobs...`);
-
-        let processed = 0;
-        let failed = 0;
-
-        for (const job of jobs) {
-            // Marca imediatamente para evitar processamento duplo
-            await this.prisma.scheduledMessageJob.update({
-                where: { id: job.id },
-                data: { attempts: { increment: 1 } },
-            });
-
-            try {
-                // ── 1. Verifica se já comprou ─────────────────────────────
-                const hasPurchased = await this.prisma.sale.findFirst({
-                    where: {
-                        telegramUserId: job.telegramUserId,
-                        status: SaleStatus.PAID,
-                    },
-                });
-
-                if (hasPurchased) {
-                    this.logger.debug(
-                        `[processJobs] Job ${job.id} cancelado — usuário ${job.telegramUserId} já comprou`,
-                    );
-                    await this.prisma.scheduledMessageJob.update({
-                        where: { id: job.id },
-                        data: { status: JobStatus.CANCELED },
-                    });
-                    processed++;
-                    continue;
-                }
-
-                // ── 2. Resolve token e connection ─────────────────────────
-                //
-                // O job.botId é sempre um BotAccount válido (FK garantida).
-                // O token está no mapa em memória pelo mesmo botId.
-                // A BusinessConnection é buscada pelo chatId do usuário — pois
-                // o chatId foi registrado em chatConnectionMap durante a conversa.
-
-                const token = this.telegramService.getBusinessBotToken(
-                    job.botId,
-                );
-
-                // Busca a connection pelo chatId (mais preciso) ou pelo botId
-                const connection =
-                    await this.prisma.businessConnection.findFirst({
-                        where: {
-                            isEnabled: true,
-                            OR: [
-                                { botId: job.botId },
-                                // Fallback: qualquer connection ativa
-                            ],
-                        },
-                        orderBy: { createdAt: "desc" },
-                    });
-
-                if (!token) {
-                    throw new Error(
-                        `Token não encontrado em memória para botId=${job.botId}. ` +
-                            `O servidor pode ter reiniciado — o bot precisa receber uma mensagem para recarregar o token.`,
-                    );
-                }
-
-                if (!connection) {
-                    throw new Error(
-                        `BusinessConnection não encontrada para botId=${job.botId}`,
-                    );
-                }
-
-                const businessCtx = {
-                    token,
-                    businessConnectionId: connection.connectionId,
-                    botId: job.botId,
-                };
-
-                // ── 3. Envia o template ───────────────────────────────────
-                await this.telegramService.sendTemplate(
-                    job.botId,
-                    job.chatId,
-                    job.template,
-                    businessCtx,
-                );
-
-                // ── 4. Envia o menu de desconto/produtos ──────────────────
-                await this.telegramService.sendDontSellMenu(
-                    job.botId,
-                    job.chatId,
-                    token,
-                    connection.connectionId,
-                );
-
-                // ── 5. Marca como enviado ─────────────────────────────────
-                await this.prisma.scheduledMessageJob.update({
-                    where: { id: job.id },
-                    data: { status: JobStatus.SENT, sentAt: new Date() },
-                });
-
-                processed++;
-                this.logger.log(
-                    `[processJobs] Job ${job.id} enviado para chatId=${job.chatId}`,
-                );
-            } catch (err: any) {
-                failed++;
-                this.logger.error(
-                    `[processJobs] Job ${job.id} falhou: ${err?.message}`,
-                );
-                await this.prisma.scheduledMessageJob.update({
-                    where: { id: job.id },
-                    data: {
-                        status: JobStatus.FAILED,
-                        lastError: err?.message ?? "Erro desconhecido",
-                    },
-                });
-            }
-
-            await new Promise((r) => setTimeout(r, 200));
-        }
-
-        this.logger.log(
-            `[processJobs] Concluído: ${processed} processados, ${failed} falhas`,
-        );
-
-        return { processed, failed };
+        return this.schedulerService.processJobs();
     }
 
     /**
@@ -204,7 +75,30 @@ export class ScheduleService {
             if (!schedule.bot.isActive) continue;
             if (!schedule.template.isActive) continue;
 
-            // Busca todos os usuários ativos do bot
+            const scheduleResult = await this.processRecurringSchedule(schedule);
+            fired += scheduleResult.fired;
+            errors += scheduleResult.errors;
+        }
+
+        return { fired, errors };
+    }
+
+    private async processRecurringSchedule(
+        schedule: RecurringSchedule & {
+            template: MessageTemplate & { mediaItems: any[] };
+            bot: { name: string; isActive: boolean };
+        },
+    ): Promise<{ fired: number; errors: number }> {
+        let fired = 0;
+        let errors = 0;
+        let offset = 0;
+        let batchNumber = 0;
+
+        this.logger.log(
+            `[processRecurringSchedules] scheduleId=${schedule.id} botId=${schedule.botId} template="${schedule.template.title}"`,
+        );
+
+        while (true) {
             const users = await this.prisma.telegramUser.findMany({
                 where: { botId: schedule.botId, isBlocked: false },
                 select: {
@@ -212,45 +106,75 @@ export class ScheduleService {
                     telegramUserId: true,
                     isSubscriber: true,
                 },
+                orderBy: { chatId: "asc" },
+                skip: offset,
+                take: this.recurringBatchSize,
             });
 
-            this.logger.log(
-                `Schedule "${schedule.template.title}" → ${users.length} usuário(s) no bot ${schedule.bot.name}`,
+            if (!users.length) break;
+
+            batchNumber++;
+            this.logger.debug(
+                `[processRecurringSchedules] scheduleId=${schedule.id} lote=${batchNumber} size=${users.length} offset=${offset}`,
             );
 
             for (const user of users) {
                 try {
-                    const templateKey = schedule.template.key;
-                    let shouldSend = false;
-
-                    // 1. Define quem deve receber o quê
-                    if (templateKey === "SUBSCRIBER_CONTENT") {
-                        shouldSend = user.isSubscriber;
-                    } else {
-                        shouldSend = true; // Templates gerais (ex: Manutenção, Aviso Geral)
+                    if (!this.shouldSendRecurringTemplate(schedule.template.key, user.isSubscriber)) {
+                        continue;
                     }
 
-                    // 2. Executa o envio
-                    if (shouldSend) {
-                        await this.telegramService.sendTemplate(
-                            schedule.botId,
-                            user.chatId,
-                            schedule.template,
-                        );
-                        fired++;
+                    await this.telegramService.sendTemplate(
+                        schedule.botId,
+                        user.chatId,
+                        schedule.template,
+                    );
+                    fired++;
 
-                        // Delay apenas se houver envio real para respeitar o rate limit
-                        await new Promise((r) => setTimeout(r, 50));
+                    if (this.recurringSendDelayMs > 0) {
+                        await this.sleep(this.recurringSendDelayMs);
                     }
                 } catch (err: any) {
-                    this.logger.error(
-                        `Erro ao enviar para user ${user.chatId}: ${err.message}`,
-                    );
                     errors++;
+                    this.logger.error(
+                        `[processRecurringSchedules] scheduleId=${schedule.id} chatId=${user.chatId} falhou: ${this.getErrorMessage(err)}`,
+                        err?.stack,
+                    );
                 }
             }
+
+            offset += users.length;
         }
 
+        this.logger.log(
+            `[processRecurringSchedules] scheduleId=${schedule.id} concluído: fired=${fired} errors=${errors}`,
+        );
+
         return { fired, errors };
+    }
+
+    private shouldSendRecurringTemplate(
+        templateKey: string | null,
+        isSubscriber: boolean,
+    ): boolean {
+        if (templateKey === "SUBSCRIBER_CONTENT") {
+            return isSubscriber;
+        }
+
+        return true;
+    }
+
+    private getEnvNumber(name: string, fallback: number): number {
+        const value = Number(process.env[name]);
+        return Number.isFinite(value) && value > 0 ? value : fallback;
+    }
+
+    private getErrorMessage(error: unknown): string {
+        if (error instanceof Error) return error.message;
+        return String(error);
+    }
+
+    private sleep(ms: number): Promise<void> {
+        return new Promise((resolve) => setTimeout(resolve, ms));
     }
 }

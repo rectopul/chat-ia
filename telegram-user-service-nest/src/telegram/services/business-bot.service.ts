@@ -53,7 +53,7 @@ export class BusinessBotService {
             this.botApi.deleteBot(botId);
         }
 
-        this.botApi.setToken(botId, token);
+        await this.botApi.setToken(botId, token);
         const bot = await this.botApi.createPollingBot(token);
 
         this.registerConnectionHandler(bot, botId);
@@ -66,7 +66,7 @@ export class BusinessBotService {
         const saved = await this.prisma.businessConnection.findMany({
             where: { botId, isEnabled: true },
         });
-        this.botApi.loadSavedConnections(
+        await this.botApi.loadSavedConnections(
             botId,
             saved.map((c) => ({
                 userTelegramId: c.userTelegramId,
@@ -89,7 +89,7 @@ export class BusinessBotService {
                 this.logger.warn(
                     `Business connection revogada: ${connectionId}`,
                 );
-                this.botApi.deleteOwnerConnection(botId, String(user.id));
+                await this.botApi.deleteOwnerConnection(botId, String(user.id));
                 await this.prisma.businessConnection.updateMany({
                     where: { connectionId },
                     data: { isEnabled: false },
@@ -97,7 +97,7 @@ export class BusinessBotService {
                 return;
             }
 
-            this.botApi.setOwnerConnection(
+            await this.botApi.setOwnerConnection(
                 botId,
                 String(user.id),
                 connectionId,
@@ -149,15 +149,17 @@ export class BusinessBotService {
             const ownerConn = await this.prisma.businessConnection.findFirst({
                 where: { connectionId: businessConnectionId, isEnabled: true },
             });
+
             if (ownerConn && String(userId) === ownerConn.userTelegramId) {
-                this.logger.debug(
-                    `[business_message] ignorando mensagem do dono (userId=${userId})`,
-                );
                 return;
             }
 
             // Registra chatId → connectionId para o callback_query resolver corretamente
-            this.botApi.setChatConnection(botId, chatId, businessConnectionId);
+            await this.botApi.setChatConnection(
+                botId,
+                chatId,
+                businessConnectionId,
+            );
             this.logger.debug(
                 `[business_message] chatId=${chatId} userId=${userId} connId=${businessConnectionId}`,
             );

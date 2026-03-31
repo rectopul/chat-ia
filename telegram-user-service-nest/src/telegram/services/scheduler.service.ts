@@ -12,6 +12,14 @@ import { TemplateService } from "./template.service";
 @Injectable()
 export class SchedulerService {
     private readonly logger = new Logger(SchedulerService.name);
+    private readonly jobBatchSize = this.getEnvNumber(
+        "SCHEDULED_JOB_BATCH_SIZE",
+        50,
+    );
+    private readonly jobDelayMs = this.getEnvNumber(
+        "SCHEDULED_JOB_SEND_DELAY_MS",
+        200,
+    );
 
     constructor(
         private readonly prisma: PrismaService,
@@ -127,6 +135,7 @@ export class SchedulerService {
     // ── Processamento (chamado pela cron) ─────────────────────────────────
 
     async processJobs(): Promise<{ processed: number; failed: number }> {
+        const startedAt = Date.now();
         const jobs = await this.prisma.scheduledMessageJob.findMany({
             where: { status: JobStatus.PENDING, runAt: { lte: new Date() } },
             include: {
@@ -135,16 +144,20 @@ export class SchedulerService {
                 user: true,
             },
             orderBy: { runAt: "asc" },
-            take: 50,
+            take: this.jobBatchSize,
         });
 
         if (!jobs.length) return { processed: 0, failed: 0 };
-        this.logger.log(`[processJobs] Processando ${jobs.length} jobs...`);
+        this.logger.log(
+            `[processJobs] Processando ${jobs.length} jobs vencidos (batchSize=${this.jobBatchSize})`,
+        );
 
         let processed = 0,
             failed = 0;
 
         for (const job of jobs) {
+            const context = `jobId=${job.id} botId=${job.botId} chatId=${job.chatId}`;
+
             await this.prisma.scheduledMessageJob.update({
                 where: { id: job.id },
                 data: { attempts: { increment: 1 } },
@@ -164,10 +177,13 @@ export class SchedulerService {
                         data: { status: JobStatus.CANCELED },
                     });
                     processed++;
+                    this.logger.debug(
+                        `[processJobs] ${context} cancelado: usuário já comprou`,
+                    );
                     continue;
                 }
 
-                const token = this.botApi.getToken(job.botId);
+                const token = await this.botApi.getToken(job.botId);
                 const connection =
                     await this.prisma.businessConnection.findFirst({
                         where: { botId: job.botId, isEnabled: true },
@@ -203,29 +219,45 @@ export class SchedulerService {
                 });
 
                 processed++;
-                this.logger.log(
-                    `[processJobs] Job ${job.id} enviado para chatId=${job.chatId}`,
-                );
+                this.logger.log(`[processJobs] ${context} enviado com sucesso`);
             } catch (err: any) {
                 failed++;
+                const errorMessage = this.getErrorMessage(err);
                 this.logger.error(
-                    `[processJobs] Job ${job.id} falhou: ${err?.message}`,
+                    `[processJobs] ${context} falhou: ${errorMessage}`,
+                    err?.stack,
                 );
                 await this.prisma.scheduledMessageJob.update({
                     where: { id: job.id },
                     data: {
                         status: JobStatus.FAILED,
-                        lastError: err?.message ?? "Erro desconhecido",
+                        lastError: errorMessage,
                     },
                 });
             }
 
-            await new Promise((r) => setTimeout(r, 200));
+            if (this.jobDelayMs > 0) {
+                await this.sleep(this.jobDelayMs);
+            }
         }
 
         this.logger.log(
-            `[processJobs] Concluído: ${processed} processados, ${failed} falhas`,
+            `[processJobs] Concluído em ${Date.now() - startedAt}ms: processed=${processed} failed=${failed}`,
         );
         return { processed, failed };
+    }
+
+    private getEnvNumber(name: string, fallback: number): number {
+        const value = Number(process.env[name]);
+        return Number.isFinite(value) && value >= 0 ? value : fallback;
+    }
+
+    private getErrorMessage(error: unknown): string {
+        if (error instanceof Error) return error.message;
+        return String(error);
+    }
+
+    private sleep(ms: number): Promise<void> {
+        return new Promise((resolve) => setTimeout(resolve, ms));
     }
 }

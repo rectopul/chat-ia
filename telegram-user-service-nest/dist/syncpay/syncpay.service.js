@@ -19,6 +19,7 @@ const axios_1 = __importDefault(require("axios"));
 const SYNCPAY_API_URL = "https://api.syncpayments.com.br";
 let cachedToken = null;
 let tokenExpiry = 0;
+let warnedAboutLegacyEnvNames = false;
 let SyncPayService = SyncPayService_1 = class SyncPayService {
     constructor() {
         this.logger = new common_1.Logger(SyncPayService_1.name);
@@ -28,14 +29,36 @@ let SyncPayService = SyncPayService_1 = class SyncPayService {
             headers: { "Content-Type": "application/json" },
         });
     }
+    getConfigStatus() {
+        const clientId = process.env.SYNCPAY_CLIENT_ID ?? process.env.SYNCPAY_API_KEY ?? null;
+        const clientSecret = process.env.SYNCPAY_CLIENT_SECRET ?? process.env.SYNCPAY_TOKEN ?? null;
+        const usingLegacyNames = (!process.env.SYNCPAY_CLIENT_ID && !!process.env.SYNCPAY_API_KEY) ||
+            (!process.env.SYNCPAY_CLIENT_SECRET && !!process.env.SYNCPAY_TOKEN);
+        const missing = [];
+        if (!clientId)
+            missing.push("SYNCPAY_CLIENT_ID");
+        if (!clientSecret)
+            missing.push("SYNCPAY_CLIENT_SECRET");
+        return {
+            isConfigured: !!clientId && !!clientSecret,
+            clientId,
+            clientSecret,
+            usingLegacyNames,
+            missing,
+        };
+    }
     async getToken() {
         if (cachedToken && Date.now() < tokenExpiry) {
             return cachedToken;
         }
-        const clientId = process.env.SYNCPAY_CLIENT_ID;
-        const clientSecret = process.env.SYNCPAY_CLIENT_SECRET;
+        const config = this.getConfigStatus();
+        const { clientId, clientSecret } = config;
+        if (config.usingLegacyNames && !warnedAboutLegacyEnvNames) {
+            warnedAboutLegacyEnvNames = true;
+            this.logger.warn("Usando nomes legados do SyncPay (SYNCPAY_API_KEY/SYNCPAY_TOKEN). Prefira SYNCPAY_CLIENT_ID/SYNCPAY_CLIENT_SECRET.");
+        }
         if (!clientId || !clientSecret) {
-            throw new Error("SYNCPAY_CLIENT_ID e SYNCPAY_CLIENT_SECRET são obrigatórios");
+            throw new Error(`SyncPay não configurado. Variáveis obrigatórias ausentes: ${config.missing.join(", ")}`);
         }
         try {
             const { data } = await this.http.post("/api/partner/v1/auth-token", {

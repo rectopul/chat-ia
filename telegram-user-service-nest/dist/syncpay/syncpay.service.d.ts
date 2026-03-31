@@ -17,6 +17,13 @@ export declare class SyncPayService {
     private readonly logger;
     private readonly http;
     constructor();
+    getConfigStatus(): {
+        isConfigured: boolean;
+        clientId: string | null;
+        clientSecret: string | null;
+        usingLegacyNames: boolean;
+        missing: string[];
+    };
     private getToken;
     createCharge(input: CreatePixChargeInput): Promise<PixChargeResult>;
     private static readonly SUCCESS_STATUSES;

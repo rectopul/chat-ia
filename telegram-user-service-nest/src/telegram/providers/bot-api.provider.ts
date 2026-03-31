@@ -7,6 +7,7 @@ import { Injectable, Logger, OnModuleDestroy } from "@nestjs/common";
 import TelegramBot from "node-telegram-bot-api";
 import axios from "axios";
 import { PrismaService } from "src/prisma/prisma.service";
+import { RuntimeRegistryProvider } from "./runtime-registry.provider";
 
 @Injectable()
 export class BotApiProvider implements OnModuleDestroy {
@@ -29,7 +30,10 @@ export class BotApiProvider implements OnModuleDestroy {
      */
     private readonly chatConnections = new Map<string, string>();
 
-    constructor(private readonly prisma: PrismaService) {}
+    constructor(
+        private readonly prisma: PrismaService,
+        private readonly registry: RuntimeRegistryProvider,
+    ) {}
 
     // ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -42,6 +46,9 @@ export class BotApiProvider implements OnModuleDestroy {
             }
         }
         this.bots.clear();
+        this.tokens.clear();
+        this.ownerConnections.clear();
+        this.chatConnections.clear();
     }
 
     // ── Bot instances ─────────────────────────────────────────────────────
@@ -64,41 +71,74 @@ export class BotApiProvider implements OnModuleDestroy {
 
     // ── Tokens ────────────────────────────────────────────────────────────
 
-    getToken(botId: string): string | undefined {
-        return this.tokens.get(botId);
+    async getToken(botId: string): Promise<string | undefined> {
+        const cached = this.tokens.get(botId);
+        if (cached) return cached;
+
+        const persisted = await this.registry.getBotToken(botId);
+        if (persisted) {
+            this.tokens.set(botId, persisted);
+            return persisted;
+        }
+
+        return undefined;
     }
 
-    setToken(botId: string, token: string): void {
+    async setToken(botId: string, token: string): Promise<void> {
         this.tokens.set(botId, token);
+        await this.registry.setBotToken(botId, token);
     }
 
     // ── Connection maps ───────────────────────────────────────────────────
 
-    setOwnerConnection(
+    async setOwnerConnection(
         botId: string,
         userTelegramId: string,
         connectionId: string,
-    ): void {
+    ): Promise<void> {
         this.ownerConnections.set(`${botId}:${userTelegramId}`, connectionId);
+        await this.registry.setOwnerConnection(
+            botId,
+            userTelegramId,
+            connectionId,
+        );
     }
 
-    deleteOwnerConnection(botId: string, userTelegramId: string): void {
+    async deleteOwnerConnection(
+        botId: string,
+        userTelegramId: string,
+    ): Promise<void> {
         this.ownerConnections.delete(`${botId}:${userTelegramId}`);
+        await this.registry.deleteOwnerConnection(botId, userTelegramId);
     }
 
-    setChatConnection(
+    async setChatConnection(
         botId: string,
         chatId: string | number,
         connectionId: string,
-    ): void {
+    ): Promise<void> {
         this.chatConnections.set(`${botId}:${chatId}`, connectionId);
+        await this.registry.setChatConnection(botId, chatId, connectionId);
     }
 
-    getOwnerConnectionId(
+    async getOwnerConnectionId(
         botId: string,
         userTelegramId: string,
-    ): string | undefined {
-        return this.ownerConnections.get(`${botId}:${userTelegramId}`);
+    ): Promise<string | undefined> {
+        const cacheKey = `${botId}:${userTelegramId}`;
+        const cached = this.ownerConnections.get(cacheKey);
+        if (cached) return cached;
+
+        const persisted = await this.registry.getOwnerConnection(
+            botId,
+            userTelegramId,
+        );
+        if (persisted) {
+            this.ownerConnections.set(cacheKey, persisted);
+            return persisted;
+        }
+
+        return undefined;
     }
 
     /**
@@ -109,10 +149,17 @@ export class BotApiProvider implements OnModuleDestroy {
         botId: string,
         chatId: string | number,
     ): Promise<string | undefined> {
-        const fromChat = this.chatConnections.get(`${botId}:${chatId}`);
+        const chatKey = `${botId}:${chatId}`;
+        const fromChat = this.chatConnections.get(chatKey);
         if (fromChat) return fromChat;
 
-        const fromOwner = this.ownerConnections.get(`${botId}:${chatId}`);
+        const persistedChat = await this.registry.getChatConnection(botId, chatId);
+        if (persistedChat) {
+            this.chatConnections.set(chatKey, persistedChat);
+            return persistedChat;
+        }
+
+        const fromOwner = await this.getOwnerConnectionId(botId, String(chatId));
         if (fromOwner) return fromOwner;
 
         const conn = await this.prisma.businessConnection.findFirst({
@@ -122,13 +169,18 @@ export class BotApiProvider implements OnModuleDestroy {
     }
 
     /** Carrega connections salvas no banco ao inicializar o bot. */
-    loadSavedConnections(
+    async loadSavedConnections(
         botId: string,
         conns: Array<{ userTelegramId: string; connectionId: string }>,
-    ): void {
+    ): Promise<void> {
         for (const c of conns) {
             this.ownerConnections.set(
                 `${botId}:${c.userTelegramId}`,
+                c.connectionId,
+            );
+            await this.registry.setOwnerConnection(
+                botId,
+                c.userTelegramId,
                 c.connectionId,
             );
         }
@@ -191,13 +243,25 @@ export class BotApiProvider implements OnModuleDestroy {
                     : JSON.stringify(reply_markup);
         }
 
-        this.logger.debug(`sendMessage payload: ${JSON.stringify(payload)}`);
-        const { data } = await axios.post(url, payload);
-        if (!data.ok)
-            throw new Error(
-                `Telegram sendMessage error: ${JSON.stringify(data)}`,
+        this.logger.debug(
+            `[sendMessageHttp] chatId=${chatId} textLength=${text.length} business=${Boolean(payload.business_connection_id)} markup=${Boolean(reply_markup)}`,
+        );
+
+        try {
+            const { data } = await axios.post(url, payload);
+            if (!data.ok) {
+                throw new Error(
+                    `Telegram sendMessage error: ${JSON.stringify(data)}`,
+                );
+            }
+            return data.result;
+        } catch (err: any) {
+            this.logger.error(
+                `[sendMessageHttp] chatId=${chatId} falhou: ${err?.response?.data ? JSON.stringify(err.response.data) : err?.message}`,
+                err?.stack,
             );
-        return data.result;
+            throw err;
+        }
     }
 
     async answerCallbackQuery(token: string, queryId: string): Promise<void> {
@@ -206,6 +270,10 @@ export class BotApiProvider implements OnModuleDestroy {
                 `https://api.telegram.org/bot${token}/answerCallbackQuery`,
                 { callback_query_id: queryId },
             );
-        } catch (_) {}
+        } catch (err: any) {
+            this.logger.debug(
+                `[answerCallbackQuery] queryId=${queryId} falhou: ${err?.message ?? err}`,
+            );
+        }
     }
 }

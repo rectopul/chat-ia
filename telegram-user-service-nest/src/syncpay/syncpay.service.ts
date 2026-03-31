@@ -6,6 +6,7 @@ const SYNCPAY_API_URL = "https://api.syncpayments.com.br";
 // Cache do token em memória
 let cachedToken: string | null = null;
 let tokenExpiry = 0;
+let warnedAboutLegacyEnvNames = false;
 
 export interface CreatePixChargeInput {
     /** Valor em centavos (ex: 4999 = R$ 49,99) */
@@ -44,6 +45,35 @@ export class SyncPayService {
         });
     }
 
+    getConfigStatus(): {
+        isConfigured: boolean;
+        clientId: string | null;
+        clientSecret: string | null;
+        usingLegacyNames: boolean;
+        missing: string[];
+    } {
+        const clientId =
+            process.env.SYNCPAY_CLIENT_ID ?? process.env.SYNCPAY_API_KEY ?? null;
+        const clientSecret =
+            process.env.SYNCPAY_CLIENT_SECRET ?? process.env.SYNCPAY_TOKEN ?? null;
+
+        const usingLegacyNames =
+            (!process.env.SYNCPAY_CLIENT_ID && !!process.env.SYNCPAY_API_KEY) ||
+            (!process.env.SYNCPAY_CLIENT_SECRET && !!process.env.SYNCPAY_TOKEN);
+
+        const missing: string[] = [];
+        if (!clientId) missing.push("SYNCPAY_CLIENT_ID");
+        if (!clientSecret) missing.push("SYNCPAY_CLIENT_SECRET");
+
+        return {
+            isConfigured: !!clientId && !!clientSecret,
+            clientId,
+            clientSecret,
+            usingLegacyNames,
+            missing,
+        };
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // Auth
     // ─────────────────────────────────────────────────────────────────────
@@ -57,12 +87,19 @@ export class SyncPayService {
             return cachedToken;
         }
 
-        const clientId = process.env.SYNCPAY_CLIENT_ID;
-        const clientSecret = process.env.SYNCPAY_CLIENT_SECRET;
+        const config = this.getConfigStatus();
+        const { clientId, clientSecret } = config;
+
+        if (config.usingLegacyNames && !warnedAboutLegacyEnvNames) {
+            warnedAboutLegacyEnvNames = true;
+            this.logger.warn(
+                "Usando nomes legados do SyncPay (SYNCPAY_API_KEY/SYNCPAY_TOKEN). Prefira SYNCPAY_CLIENT_ID/SYNCPAY_CLIENT_SECRET.",
+            );
+        }
 
         if (!clientId || !clientSecret) {
             throw new Error(
-                "SYNCPAY_CLIENT_ID e SYNCPAY_CLIENT_SECRET são obrigatórios",
+                `SyncPay não configurado. Variáveis obrigatórias ausentes: ${config.missing.join(", ")}`,
             );
         }
 

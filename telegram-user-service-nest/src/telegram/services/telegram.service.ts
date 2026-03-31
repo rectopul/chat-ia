@@ -20,6 +20,7 @@ import { MessageTemplateKey } from "@prisma/client";
 import { BusinessCtx, BotStatusResponse, BotStatusItem } from "../interfaces";
 import { InjectQueue } from "@nestjs/bullmq";
 import { Queue } from "bullmq";
+import { SyncPayService } from "../../syncpay/syncpay.service";
 
 @Injectable()
 export class TelegramService implements OnModuleInit, OnModuleDestroy {
@@ -33,6 +34,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         private readonly session: SessionService,
         private readonly templateService: TemplateService,
         private readonly scheduler: SchedulerService,
+        private readonly syncPayService: SyncPayService,
         @InjectQueue("send-message") private readonly messageQueue: Queue,
     ) {}
 
@@ -138,14 +140,14 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
 
     // ── Delegações ao BotApiProvider ──────────────────────────────────────
 
-    getBusinessBotToken(botId: string): string | undefined {
+    async getBusinessBotToken(botId: string): Promise<string | undefined> {
         return this.botApi.getToken(botId);
     }
 
-    getBusinessConnectionId(
+    async getBusinessConnectionId(
         botId: string,
         userTelegramId: string,
-    ): string | undefined {
+    ): Promise<string | undefined> {
         return this.botApi.getOwnerConnectionId(botId, userTelegramId);
     }
 
@@ -160,7 +162,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         text: string,
         keyboard: string[][],
     ): Promise<void> {
-        const token = this.botApi.getToken(botId);
+        const token = await this.botApi.getToken(botId);
         if (!token)
             throw new Error(`Token não encontrado para botId: ${botId}`);
 
@@ -183,7 +185,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         text: string,
         keyboard: string[][],
     ): Promise<void> {
-        const connectionId = this.botApi.getOwnerConnectionId(
+        const connectionId = await this.botApi.getOwnerConnectionId(
             botId,
             ownerTelegramId,
         );
@@ -216,7 +218,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
             );
         }
 
-        const token = this.botApi.getToken(sale.botId);
+        const token = await this.botApi.getToken(sale.botId);
         if (!token)
             throw new Error(`Token não encontrado para botId: ${sale.botId}`);
 
@@ -330,12 +332,14 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
             critical: true,
         });
 
+        const syncPayConfig = this.syncPayService.getConfigStatus();
+
         items.push({
             key: "syncpay",
             label: "Integração de pagamento (SyncPay) configurada",
             description:
-                "Defina SYNCPAY_API_KEY e SYNCPAY_TOKEN nas variáveis de ambiente.",
-            ok: !!process.env.SYNCPAY_API_KEY || !!process.env.SYNCPAY_TOKEN,
+                "Defina SYNCPAY_CLIENT_ID e SYNCPAY_CLIENT_SECRET nas variáveis de ambiente.",
+            ok: syncPayConfig.isConfigured,
             critical: true,
         });
 

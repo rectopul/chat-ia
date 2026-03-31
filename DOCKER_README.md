@@ -148,6 +148,6 @@ de iniciar a aplicação. Não é necessário rodar manualmente.
 
 ```bash
 # Rebuild apenas o serviço alterado
-docker compose up --build nest
+docker compose up -d --build nest
 docker compose up -d --build next
 ```

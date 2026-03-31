@@ -12,6 +12,7 @@ const prisma_module_1 = require("../prisma/prisma.module");
 const syncpay_module_1 = require("../syncpay/syncpay.module");
 const mtproto_provider_1 = require("./providers/mtproto.provider");
 const bot_api_provider_1 = require("./providers/bot-api.provider");
+const runtime_registry_provider_1 = require("./providers/runtime-registry.provider");
 const media_service_1 = require("./services/media.service");
 const session_service_1 = require("./services/session.service");
 const template_service_1 = require("./services/template.service");
@@ -44,6 +45,7 @@ exports.TelegramModule = TelegramModule = __decorate([
         providers: [
             mtproto_provider_1.MtprotoProvider,
             bot_api_provider_1.BotApiProvider,
+            runtime_registry_provider_1.RuntimeRegistryProvider,
             chat_action_service_1.ChatActionService,
             media_service_1.MediaService,
             session_service_1.SessionService,
@@ -55,7 +57,7 @@ exports.TelegramModule = TelegramModule = __decorate([
             message_processor_1.MessageProcessor,
             transfer_processor_1.TransferProcessor,
         ],
-        exports: [telegram_service_1.TelegramService],
+        exports: [telegram_service_1.TelegramService, scheduler_service_1.SchedulerService],
         controllers: [telegram_controller_1.TelegramController, scraper_controller_1.ScraperController],
     })
 ], TelegramModule);

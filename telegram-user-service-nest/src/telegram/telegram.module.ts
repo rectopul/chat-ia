@@ -7,6 +7,7 @@ import { SyncPayModule } from "../syncpay/syncpay.module";
 // Providers
 import { MtprotoProvider } from "./providers/mtproto.provider";
 import { BotApiProvider } from "./providers/bot-api.provider";
+import { RuntimeRegistryProvider } from "./providers/runtime-registry.provider";
 
 // Services
 import { MediaService } from "./services/media.service";
@@ -47,6 +48,7 @@ import { ChatActionService } from "./services/chat-action.service";
         // Providers (camada de infraestrutura)
         MtprotoProvider,
         BotApiProvider,
+        RuntimeRegistryProvider,
 
         // Services (camada de negócio)
         ChatActionService,
@@ -64,7 +66,7 @@ import { ChatActionService } from "./services/chat-action.service";
         MessageProcessor,
         TransferProcessor,
     ],
-    exports: [TelegramService],
+    exports: [TelegramService, SchedulerService],
     controllers: [TelegramController, ScraperController],
 })
 export class TelegramModule {}
