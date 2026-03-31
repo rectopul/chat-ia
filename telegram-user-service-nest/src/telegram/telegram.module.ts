@@ -66,7 +66,7 @@ import { ChatActionService } from "./services/chat-action.service";
         MessageProcessor,
         TransferProcessor,
     ],
-    exports: [TelegramService, SchedulerService],
+    exports: [TelegramService, SchedulerService, RuntimeRegistryProvider],
     controllers: [TelegramController, ScraperController],
 })
 export class TelegramModule {}

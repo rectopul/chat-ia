@@ -15,52 +15,68 @@ const common_1 = require("@nestjs/common");
 const prisma_service_1 = require("../prisma/prisma.service");
 const telegram_service_1 = require("../telegram/services/telegram.service");
 const scheduler_service_1 = require("../telegram/services/scheduler.service");
+const runtime_registry_provider_1 = require("../telegram/providers/runtime-registry.provider");
 let ScheduleService = ScheduleService_1 = class ScheduleService {
-    constructor(prisma, telegramService, schedulerService) {
+    constructor(prisma, telegramService, schedulerService, runtimeRegistry) {
         this.prisma = prisma;
         this.telegramService = telegramService;
         this.schedulerService = schedulerService;
+        this.runtimeRegistry = runtimeRegistry;
         this.logger = new common_1.Logger(ScheduleService_1.name);
+        this.scheduledJobsLockTtlSeconds = this.getEnvNumber("SCHEDULED_JOBS_LOCK_TTL_SECONDS", 55);
+        this.recurringSchedulesLockTtlSeconds = this.getEnvNumber("RECURRING_SCHEDULES_LOCK_TTL_SECONDS", 55);
         this.recurringBatchSize = this.getEnvNumber("RECURRING_SCHEDULE_BATCH_SIZE", 250);
         this.recurringSendDelayMs = this.getEnvNumber("RECURRING_SCHEDULE_SEND_DELAY_MS", 50);
     }
     async processJobs() {
-        return this.schedulerService.processJobs();
+        const locked = await this.runtimeRegistry.runWithLock("scheduled-jobs", this.scheduledJobsLockTtlSeconds, () => this.schedulerService.processJobs());
+        if (!locked.acquired) {
+            this.logger.warn(`[processJobs] execução ignorada: outra instância já está processando scheduled jobs`);
+            return { processed: 0, failed: 0 };
+        }
+        return locked.result ?? { processed: 0, failed: 0 };
     }
     async processRecurringSchedules() {
-        const now = new Date();
-        const currentHour = now.getHours();
-        const currentMinute = now.getMinutes();
-        const currentWeekDay = now.getDay();
-        const schedules = await this.prisma.recurringSchedule.findMany({
-            where: {
-                isActive: true,
-                hour: currentHour,
-                minute: currentMinute,
-            },
-            include: {
-                template: { include: { mediaItems: true } },
-                bot: true,
-            },
+        const locked = await this.runtimeRegistry.runWithLock("recurring-schedules", this.recurringSchedulesLockTtlSeconds, async () => {
+            const now = new Date();
+            const currentHour = now.getHours();
+            const currentMinute = now.getMinutes();
+            const currentWeekDay = now.getDay();
+            const schedules = await this.prisma.recurringSchedule.findMany({
+                where: {
+                    isActive: true,
+                    hour: currentHour,
+                    minute: currentMinute,
+                },
+                include: {
+                    template: { include: { mediaItems: true } },
+                    bot: true,
+                },
+            });
+            const due = schedules.filter((s) => s.weekDays.includes(currentWeekDay));
+            if (due.length === 0) {
+                this.logger.debug(`Nenhum schedule para ${currentHour}:${String(currentMinute).padStart(2, "0")} dia ${currentWeekDay}`);
+                return { fired: 0, errors: 0 };
+            }
+            this.logger.log(`${due.length} schedule(s) para disparar agora.`);
+            let fired = 0;
+            let errors = 0;
+            for (const schedule of due) {
+                if (!schedule.bot.isActive)
+                    continue;
+                if (!schedule.template.isActive)
+                    continue;
+                const scheduleResult = await this.processRecurringSchedule(schedule);
+                fired += scheduleResult.fired;
+                errors += scheduleResult.errors;
+            }
+            return { fired, errors };
         });
-        const due = schedules.filter((s) => s.weekDays.includes(currentWeekDay));
-        if (due.length === 0) {
-            this.logger.debug(`Nenhum schedule para ${currentHour}:${String(currentMinute).padStart(2, "0")} dia ${currentWeekDay}`);
+        if (!locked.acquired) {
+            this.logger.warn(`[processRecurringSchedules] execução ignorada: outra instância já está processando schedules recorrentes`);
             return { fired: 0, errors: 0 };
         }
-        this.logger.log(`${due.length} schedule(s) para disparar agora.`);
-        let fired = 0;
-        let errors = 0;
-        for (const schedule of due) {
-            if (!schedule.bot.isActive)
-                continue;
-            if (!schedule.template.isActive)
-                continue;
-            const scheduleResult = await this.processRecurringSchedule(schedule);
-            fired += scheduleResult.fired;
-            errors += scheduleResult.errors;
-        }
-        return { fired, errors };
+        return locked.result ?? { fired: 0, errors: 0 };
     }
     async processRecurringSchedule(schedule) {
         let fired = 0;
@@ -129,6 +145,7 @@ exports.ScheduleService = ScheduleService = ScheduleService_1 = __decorate([
     (0, common_1.Injectable)(),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         telegram_service_1.TelegramService,
-        scheduler_service_1.SchedulerService])
+        scheduler_service_1.SchedulerService,
+        runtime_registry_provider_1.RuntimeRegistryProvider])
 ], ScheduleService);
 //# sourceMappingURL=schedule.service.js.map

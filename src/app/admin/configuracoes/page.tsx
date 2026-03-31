@@ -1,4 +1,5 @@
 import { ConfigPage } from "@/components/ConfigPageComponent";
+import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { ProductType } from "@prisma/client";
 
@@ -42,6 +43,7 @@ export type SerializeProduct = {
 
 // ─────────────────────────────────────────────────────────────────────────────
 export default async function Page() {
+    const session = await auth();
     const products = await prisma.product.findMany();
     const botsAccounts = await prisma.botAccount.findMany();
 
@@ -53,6 +55,10 @@ export default async function Page() {
     });
 
     return (
-        <ConfigPage products={serializeProduct} botsAccounts={botsAccounts} />
+        <ConfigPage
+            products={serializeProduct}
+            botsAccounts={botsAccounts}
+            userEmail={session?.user?.email ?? ""}
+        />
     );
 }

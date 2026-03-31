@@ -1,4 +1,5 @@
 import { Injectable, Logger, OnModuleDestroy } from "@nestjs/common";
+import { randomUUID } from "crypto";
 
 const IORedis = require("ioredis");
 
@@ -6,6 +7,7 @@ const IORedis = require("ioredis");
 export class RuntimeRegistryProvider implements OnModuleDestroy {
     private readonly logger = new Logger(RuntimeRegistryProvider.name);
     private readonly redis: any;
+    private readonly lockPrefix = "telegram:runtime:lock";
     private readonly chatConnectionTtlSeconds = this.getEnvNumber(
         "TELEGRAM_CHAT_CONNECTION_TTL_SECONDS",
         60 * 60 * 24 * 7,
@@ -99,6 +101,118 @@ export class RuntimeRegistryProvider implements OnModuleDestroy {
         return this.redis.get(this.chatConnectionKey(botId, chatId));
     }
 
+    async acquireLock(
+        lockName: string,
+        ttlSeconds: number,
+    ): Promise<string | null> {
+        const token = randomUUID();
+        const result = await this.redis.set(
+            this.lockKey(lockName),
+            token,
+            "EX",
+            ttlSeconds,
+            "NX",
+        );
+
+        return result === "OK" ? token : null;
+    }
+
+    async releaseLock(lockName: string, token: string): Promise<boolean> {
+        const result = await this.redis.eval(
+            `
+                if redis.call("get", KEYS[1]) == ARGV[1] then
+                    return redis.call("del", KEYS[1])
+                end
+                return 0
+            `,
+            1,
+            this.lockKey(lockName),
+            token,
+        );
+
+        return result === 1;
+    }
+
+    async runWithLock<T>(
+        lockName: string,
+        ttlSeconds: number,
+        fn: () => Promise<T>,
+    ): Promise<{ acquired: boolean; result?: T }> {
+        const token = await this.acquireLock(lockName, ttlSeconds);
+        if (!token) {
+            return { acquired: false };
+        }
+
+        try {
+            return {
+                acquired: true,
+                result: await fn(),
+            };
+        } finally {
+            const released = await this.releaseLock(lockName, token);
+            if (!released) {
+                this.logger.warn(
+                    `[lock] lock "${lockName}" expirou ou mudou de owner antes do release`,
+                );
+            }
+        }
+    }
+
+    async getTransferRateState(botId: string): Promise<{
+        count: number;
+        resetAt: number;
+    }> {
+        const [countRaw, resetAtRaw] = await this.redis.hmget(
+            this.transferRateStateKey(botId),
+            "count",
+            "resetAt",
+        );
+
+        return {
+            count: Number(countRaw ?? 0),
+            resetAt: Number(resetAtRaw ?? 0),
+        };
+    }
+
+    async setTransferRateState(
+        botId: string,
+        state: { count: number; resetAt: number },
+    ): Promise<void> {
+        await this.redis.hmset(this.transferRateStateKey(botId), {
+            count: state.count,
+            resetAt: state.resetAt,
+        });
+        await this.redis.expire(this.transferRateStateKey(botId), 60 * 60 * 24 * 3);
+    }
+
+    async incrementTransferDailyCount(botId: string): Promise<number> {
+        const count = await this.redis.hincrby(
+            this.transferRateStateKey(botId),
+            "count",
+            1,
+        );
+        await this.redis.expire(this.transferRateStateKey(botId), 60 * 60 * 24 * 3);
+        return Number(count);
+    }
+
+    async getTransferFloodWait(botId: string): Promise<number | null> {
+        const raw = await this.redis.get(this.transferFloodWaitKey(botId));
+        return raw ? Number(raw) : null;
+    }
+
+    async setTransferFloodWait(
+        botId: string,
+        untilTimestampMs: number,
+    ): Promise<void> {
+        const ttlMs = Math.max(1, untilTimestampMs - Date.now());
+        await this.redis.set(
+            this.transferFloodWaitKey(botId),
+            String(untilTimestampMs),
+            "PX",
+            ttlMs,
+        );
+    }
+
     private botTokenKey(botId: string): string {
         return `telegram:runtime:bot-token:${botId}`;
     }
@@ -109,6 +223,18 @@ export class RuntimeRegistryProvider implements OnModuleDestroy {
 
     private chatConnectionKey(botId: string, chatId: string | number): string {
         return `telegram:runtime:chat-connection:${botId}:${chatId}`;
+    }
+
+    private lockKey(lockName: string): string {
+        return `${this.lockPrefix}:${lockName}`;
+    }
+
+    private transferRateStateKey(botId: string): string {
+        return `telegram:runtime:transfer-rate:${botId}`;
+    }
+
+    private transferFloodWaitKey(botId: string): string {
+        return `telegram:runtime:transfer-flood-wait:${botId}`;
     }
 
     private getEnvNumber(name: string, fallback: number): number {

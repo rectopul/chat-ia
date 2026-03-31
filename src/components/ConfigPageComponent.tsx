@@ -1,6 +1,7 @@
 "use client";
 import { DiscountTab } from "@/components/DiscountTab";
 import { PixAudioTab } from "@/components/PixAudioTab";
+import { SecurityTab } from "@/components/SecurityTab";
 import { BotAccount, ProductType } from "@prisma/client";
 import { useState } from "react";
 
@@ -48,11 +49,15 @@ const BOT_ID = "bot_default";
 export function ConfigPage({
     products,
     botsAccounts,
+    userEmail,
 }: {
     products: SerializeProduct[];
     botsAccounts: BotAccount[];
+    userEmail: string;
 }) {
-    const [tab, setTab] = useState<"audio" | "discount">("audio");
+    const [tab, setTab] = useState<"audio" | "discount" | "security">(
+        "audio",
+    );
 
     return (
         <div className="min-h-screen bg-[#0a0a0f] text-white font-sans">
@@ -67,14 +72,14 @@ export function ConfigPage({
                             Configurações do Bot
                         </h1>
                         <p className="text-xs text-white/40 mt-0.5">
-                            Áudio PIX · Desconto automático
+                            Áudio PIX · Desconto automático · Segurança
                         </p>
                     </div>
                 </div>
 
                 {/* Tabs */}
                 <div className="max-w-4xl mx-auto px-6 flex gap-1 pb-0">
-                    {(["audio", "discount"] as const).map((t) => (
+                    {(["audio", "discount", "security"] as const).map((t) => (
                         <button
                             key={t}
                             onClick={() => setTab(t)}
@@ -86,7 +91,9 @@ export function ConfigPage({
                         >
                             {t === "audio"
                                 ? "🎙 Áudio PIX"
-                                : "🏷 Desconto Automático"}
+                                : t === "discount"
+                                  ? "🏷 Desconto Automático"
+                                  : "🔐 Segurança"}
                         </button>
                     ))}
                 </div>
@@ -95,11 +102,13 @@ export function ConfigPage({
             <div className="max-w-4xl mx-auto px-6 py-8">
                 {tab === "audio" ? (
                     <PixAudioTab />
-                ) : (
+                ) : tab === "discount" ? (
                     <DiscountTab
                         products={products}
                         botsAccounts={botsAccounts}
                     />
+                ) : (
+                    <SecurityTab userEmail={userEmail} />
                 )}
             </div>
         </div>

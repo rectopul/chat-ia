@@ -22,6 +22,7 @@ import {
     TRANSFER_DELAYS,
 } from "../constants";
 import { TransferStatus } from "@prisma/client";
+import { RuntimeRegistryProvider } from "../providers/runtime-registry.provider";
 
 @Processor(TRANSFER_QUEUE_NAME, {
     concurrency: 1, // CRÍTICO: apenas 1 worker por vez para respeitar rate limits
@@ -29,15 +30,16 @@ import { TransferStatus } from "@prisma/client";
 export class TransferProcessor extends WorkerHost {
     private readonly logger = new Logger(TransferProcessor.name);
 
-    // Contador de transferências nas últimas 24h (por botId)
-    private dailyTransferCount = new Map<string, number>();
-    private lastResetTime = new Map<string, number>();
-    private floodWaitMap = new Map<string, number>();
+    // Cache quente local; Redis é a fonte compartilhada entre instâncias.
+    private readonly dailyTransferCount = new Map<string, number>();
+    private readonly lastResetTime = new Map<string, number>();
+    private readonly floodWaitMap = new Map<string, number>();
 
     constructor(
         private readonly prisma: PrismaService,
         private readonly mtproto: MtprotoProvider,
         private readonly scraperService: GroupScraperService,
+        private readonly runtimeRegistry: RuntimeRegistryProvider,
     ) {
         super();
     }
@@ -81,7 +83,7 @@ export class TransferProcessor extends WorkerHost {
         } = job.data;
 
         // Verifica limite diário
-        if (!this.canTransferToday(botId)) {
+        if (!(await this.canTransferToday(botId))) {
             this.logger.warn(
                 `[processTransfer] Limite diário atingido para bot ${botId}`,
             );
@@ -92,7 +94,7 @@ export class TransferProcessor extends WorkerHost {
             return;
         }
 
-        const floodUntil = this.floodWaitMap.get(botId);
+        const floodUntil = await this.getFloodWaitUntil(botId);
 
         if (floodUntil && floodUntil > Date.now()) {
             const delay = floodUntil - Date.now();
@@ -136,7 +138,7 @@ export class TransferProcessor extends WorkerHost {
                 data: { transferredUsers: { increment: 1 } },
             });
 
-            this.incrementDailyCount(botId);
+            await this.incrementDailyCount(botId);
 
             const delay =
                 (Math.random() *
@@ -254,7 +256,7 @@ export class TransferProcessor extends WorkerHost {
                 job.token,
             );
 
-            this.floodWaitMap.set(
+            await this.setFloodWaitUntil(
                 job.data.botId,
                 Date.now() + (waitSeconds + bufferSeconds) * 1000,
             );
@@ -291,6 +293,8 @@ export class TransferProcessor extends WorkerHost {
                 floodWaitUntil.getTime() - Date.now(),
                 job.token,
             );
+
+            await this.setFloodWaitUntil(job.data.botId, floodWaitUntil.getTime());
         }
 
         // Atualiza no banco
@@ -318,22 +322,69 @@ export class TransferProcessor extends WorkerHost {
 
     // ── Rate limiting helpers ─────────────────────────────────────────────
 
-    private canTransferToday(botId: string): boolean {
+    private async canTransferToday(botId: string): Promise<boolean> {
         const now = Date.now();
-        const lastReset = this.lastResetTime.get(botId) || 0;
+        const state = await this.runtimeRegistry.getTransferRateState(botId);
+        let lastReset = state.resetAt;
+        let count = state.count;
+
+        this.lastResetTime.set(botId, lastReset);
+        this.dailyTransferCount.set(botId, count);
 
         // Reset diário
         if (now - lastReset > 24 * 60 * 60 * 1000) {
             this.dailyTransferCount.set(botId, 0);
             this.lastResetTime.set(botId, now);
+            await this.runtimeRegistry.setTransferRateState(botId, {
+                count: 0,
+                resetAt: now,
+            });
+            count = 0;
         }
 
-        const count = this.dailyTransferCount.get(botId) || 0;
         return count < TRANSFER_DELAYS.DAILY_LIMIT;
     }
 
-    private incrementDailyCount(botId: string): void {
+    private async incrementDailyCount(botId: string): Promise<void> {
+        const now = Date.now();
+        const lastReset = this.lastResetTime.get(botId) || now;
+        this.lastResetTime.set(botId, lastReset);
+
         const current = this.dailyTransferCount.get(botId) || 0;
-        this.dailyTransferCount.set(botId, current + 1);
+        const nextLocal = current + 1;
+        this.dailyTransferCount.set(botId, nextLocal);
+
+        const nextPersisted =
+            await this.runtimeRegistry.incrementTransferDailyCount(botId);
+
+        if (nextPersisted === 1) {
+            await this.runtimeRegistry.setTransferRateState(botId, {
+                count: nextPersisted,
+                resetAt: lastReset,
+            });
+        }
+    }
+
+    private async getFloodWaitUntil(botId: string): Promise<number | undefined> {
+        const local = this.floodWaitMap.get(botId);
+        if (local && local > Date.now()) {
+            return local;
+        }
+
+        const persisted = await this.runtimeRegistry.getTransferFloodWait(botId);
+        if (persisted && persisted > Date.now()) {
+            this.floodWaitMap.set(botId, persisted);
+            return persisted;
+        }
+
+        return undefined;
+    }
+
+    private async setFloodWaitUntil(
+        botId: string,
+        untilTimestampMs: number,
+    ): Promise<void> {
+        this.floodWaitMap.set(botId, untilTimestampMs);
+        await this.runtimeRegistry.setTransferFloodWait(botId, untilTimestampMs);
     }
 }

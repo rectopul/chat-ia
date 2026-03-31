@@ -57,7 +57,7 @@ exports.TelegramModule = TelegramModule = __decorate([
             message_processor_1.MessageProcessor,
             transfer_processor_1.TransferProcessor,
         ],
-        exports: [telegram_service_1.TelegramService, scheduler_service_1.SchedulerService],
+        exports: [telegram_service_1.TelegramService, scheduler_service_1.SchedulerService, runtime_registry_provider_1.RuntimeRegistryProvider],
         controllers: [telegram_controller_1.TelegramController, scraper_controller_1.ScraperController],
     })
 ], TelegramModule);
