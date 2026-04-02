@@ -10,6 +10,7 @@ exports.TelegramModule = void 0;
 const common_1 = require("@nestjs/common");
 const prisma_module_1 = require("../prisma/prisma.module");
 const syncpay_module_1 = require("../syncpay/syncpay.module");
+const ai_agent_module_1 = require("../modules/ai-agent/ai-agent.module");
 const mtproto_provider_1 = require("./providers/mtproto.provider");
 const bot_api_provider_1 = require("./providers/bot-api.provider");
 const runtime_registry_provider_1 = require("./providers/runtime-registry.provider");
@@ -27,6 +28,7 @@ const group_scraper_service_1 = require("./services/group-scraper.service");
 const transfer_processor_1 = require("./processors/transfer.processor");
 const scraper_controller_1 = require("./controllers/scraper.controller");
 const chat_action_service_1 = require("./services/chat-action.service");
+const common_2 = require("@nestjs/common");
 let TelegramModule = class TelegramModule {
 };
 exports.TelegramModule = TelegramModule;
@@ -41,6 +43,7 @@ exports.TelegramModule = TelegramModule = __decorate([
             }),
             prisma_module_1.PrismaModule,
             syncpay_module_1.SyncPayModule,
+            (0, common_2.forwardRef)(() => ai_agent_module_1.AiAgentModule),
         ],
         providers: [
             mtproto_provider_1.MtprotoProvider,
@@ -57,7 +60,15 @@ exports.TelegramModule = TelegramModule = __decorate([
             message_processor_1.MessageProcessor,
             transfer_processor_1.TransferProcessor,
         ],
-        exports: [telegram_service_1.TelegramService, scheduler_service_1.SchedulerService, runtime_registry_provider_1.RuntimeRegistryProvider],
+        exports: [
+            telegram_service_1.TelegramService,
+            scheduler_service_1.SchedulerService,
+            runtime_registry_provider_1.RuntimeRegistryProvider,
+            bot_api_provider_1.BotApiProvider,
+            mtproto_provider_1.MtprotoProvider,
+            chat_action_service_1.ChatActionService,
+            template_service_1.TemplateService,
+        ],
         controllers: [telegram_controller_1.TelegramController, scraper_controller_1.ScraperController],
     })
 ], TelegramModule);

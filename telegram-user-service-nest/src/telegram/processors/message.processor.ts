@@ -138,9 +138,8 @@ export class MessageProcessor extends WorkerHost {
         template: SendComboJobData["template"],
         job: Job,
     ): Promise<void> {
-        const client = this.mtproto.getClient(botId);
-        if (!client)
-            throw new Error(`MTProto client não encontrado para bot ${botId}`);
+        const client = await this.mtproto.ensureClient(botId);
+        const peer = await this.mtproto.resolvePeer(botId, chatId);
 
         const sortedMedia = [...template.mediaItems].sort(
             (a, b) => a.order - b.order,
@@ -148,11 +147,10 @@ export class MessageProcessor extends WorkerHost {
         const total = sortedMedia.length;
 
         if (template.text) {
-            await client.sendMessage(chatId, { message: template.text });
+            await client.sendMessage(peer, { message: template.text });
             await new Promise((r) => setTimeout(r, 300));
         }
 
-        const peer = await client.getInputEntity(chatId);
         const readyItems: ReadyItem[] = [];
 
         for (let i = 0; i < sortedMedia.length; i++) {
@@ -286,9 +284,8 @@ export class MessageProcessor extends WorkerHost {
         }
 
         // MTProto path
-        const client = this.mtproto.getClient(botId);
-        if (!client)
-            throw new Error(`MTProto client não encontrado para bot ${botId}`);
+        const client = await this.mtproto.ensureClient(botId);
+        const peer = await this.mtproto.resolvePeer(botId, chatId);
 
         const fileBuffer = await this.media.fetchFileBuffer(url);
 
@@ -306,14 +303,14 @@ export class MessageProcessor extends WorkerHost {
             );
             await client.invoke(
                 new Api.messages.SendMedia({
-                    peer: await client.getInputEntity(chatId),
+                    peer,
                     media,
                     message: template.text || "",
                     randomId: this.mtproto.makeRandomId(),
                 }),
             );
         } else {
-            await client.sendFile(chatId, {
+            await client.sendFile(peer, {
                 file: fileBuffer,
                 caption: template.text || undefined,
                 forceDocument: false,

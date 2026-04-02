@@ -8,6 +8,9 @@ import { MessageTemplateKey, JobStatus, SaleStatus } from "@prisma/client";
 import { DONT_SELL_AUTO_RULE_NAME } from "../constants";
 import { BotApiProvider } from "../providers/bot-api.provider";
 import { TemplateService } from "./template.service";
+import { ChatActionService } from "./chat-action.service";
+import { Inject, forwardRef } from "@nestjs/common";
+import { AiAgentService } from "../../modules/ai-agent/ai-agent.service";
 
 @Injectable()
 export class SchedulerService {
@@ -25,6 +28,9 @@ export class SchedulerService {
         private readonly prisma: PrismaService,
         private readonly botApi: BotApiProvider,
         private readonly templateService: TemplateService,
+        private readonly chatAction: ChatActionService,
+        @Inject(forwardRef(() => AiAgentService))
+        private readonly aiAgentService: AiAgentService,
     ) {}
 
     // ── Agendamento ───────────────────────────────────────────────────────
@@ -184,34 +190,36 @@ export class SchedulerService {
                 }
 
                 const token = await this.botApi.getToken(job.botId);
-                const connection =
-                    await this.prisma.businessConnection.findFirst({
-                        where: { botId: job.botId, isEnabled: true },
-                    });
+                const businessConnectionId =
+                    await this.botApi.resolveConnectionForChat(
+                        job.botId,
+                        job.chatId,
+                    );
 
-                if (!token || !connection) {
+                if (!token || !businessConnectionId) {
                     throw new Error(
                         `Token ou connection não encontrado para botId=${job.botId}`,
                     );
                 }
 
-                await this.templateService.sendTemplate(
-                    job.botId,
-                    job.chatId,
-                    job.template,
-                    {
+                if (this.isDontSellJob(job)) {
+                    await this.processAiDontSellJob(
+                        job,
                         token,
-                        businessConnectionId: connection.connectionId,
-                        botId: job.botId,
-                    },
-                );
-
-                await this.templateService.sendDontSellMenu(
-                    job.botId,
-                    job.chatId,
-                    token,
-                    connection.connectionId,
-                );
+                        businessConnectionId,
+                    );
+                } else {
+                    await this.templateService.sendTemplate(
+                        job.botId,
+                        job.chatId,
+                        job.template,
+                        {
+                            token,
+                            businessConnectionId,
+                            botId: job.botId,
+                        },
+                    );
+                }
 
                 await this.prisma.scheduledMessageJob.update({
                     where: { id: job.id },
@@ -250,6 +258,113 @@ export class SchedulerService {
     private getEnvNumber(name: string, fallback: number): number {
         const value = Number(process.env[name]);
         return Number.isFinite(value) && value >= 0 ? value : fallback;
+    }
+
+    private isDontSellJob(job: {
+        template: { key: MessageTemplateKey };
+        rule?: { name?: string | null } | null;
+    }): boolean {
+        return (
+            job.template.key === MessageTemplateKey.DONT_SELL ||
+            job.rule?.name === DONT_SELL_AUTO_RULE_NAME
+        );
+    }
+
+    private async processAiDontSellJob(
+        job: {
+            botId: string;
+            chatId: string;
+            telegramUserId: string;
+            template: {
+                id: string;
+                key: MessageTemplateKey;
+                text: string | null;
+                mediaItems?: any[];
+            };
+            user: { firstName: string | null };
+        },
+        token: string,
+        businessConnectionId: string,
+    ): Promise<void> {
+        try {
+            const reply = await this.aiAgentService.generateDontSellResponse({
+                telegramId: job.chatId,
+                leadFirstName: job.user.firstName,
+                anchorTemplateText: job.template.text,
+            });
+
+            const typingDelay = this.chatAction.calculateTypingDelay(reply.text);
+
+            await this.chatAction.sendActionBotApi(
+                token,
+                job.chatId,
+                "typing",
+                businessConnectionId,
+                typingDelay,
+            );
+
+            await this.botApi.sendMessageHttp(token, job.chatId, reply.text, {
+                business_connection_id: businessConnectionId,
+            });
+
+            await this.aiAgentService.saveModelMessage(job.chatId, reply.text);
+
+            if (reply.previewTemplateIds.length > 0) {
+                const templates = await this.aiAgentService.getTemplatesByIds(
+                    reply.previewTemplateIds,
+                );
+
+                for (const template of templates) {
+                    try {
+                        await this.templateService.sendTemplate(
+                            job.botId,
+                            job.chatId,
+                            template,
+                            {
+                                token,
+                                businessConnectionId,
+                                botId: job.botId,
+                            },
+                        );
+                    } catch (previewError: any) {
+                        this.logger.error(
+                            `[processAiDontSellJob] preview falhou chatId=${job.chatId}: ${this.getErrorMessage(previewError)}`,
+                            previewError?.stack,
+                        );
+                    }
+                }
+            }
+        } catch (aiError: any) {
+            this.logger.error(
+                `[processAiDontSellJob] AI falhou chatId=${job.chatId}, usando fallback de template: ${this.getErrorMessage(aiError)}`,
+                aiError?.stack,
+            );
+
+            await this.templateService.sendTemplate(
+                job.botId,
+                job.chatId,
+                job.template,
+                {
+                    token,
+                    businessConnectionId,
+                    botId: job.botId,
+                },
+            );
+        }
+
+        try {
+            await this.templateService.sendDontSellMenu(
+                job.botId,
+                job.chatId,
+                token,
+                businessConnectionId,
+            );
+        } catch (menuError: any) {
+            this.logger.error(
+                `[processAiDontSellJob] menu falhou chatId=${job.chatId}: ${this.getErrorMessage(menuError)}`,
+                menuError?.stack,
+            );
+        }
     }
 
     private getErrorMessage(error: unknown): string {

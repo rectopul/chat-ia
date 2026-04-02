@@ -2,9 +2,9 @@ import "dotenv/config";
 import { defineConfig } from "prisma/config";
 
 export default defineConfig({
-    schema: "prisma/schema.prisma",
+    schema: "telegram-user-service-nest/prisma/schema.prisma",
     migrations: {
-        path: "prisma/migrations",
+        path: "telegram-user-service-nest/prisma/migrations",
         seed: "npx tsx prisma/seed.ts",
     },
     datasource: {

@@ -20,7 +20,7 @@ export class ChatActionService {
 
     // ── Delays base (em ms) para cada tipo de ação ───────────────────────
     private readonly BASE_DELAYS = {
-        typing: 1500, // 1.5s base para texto
+        typing: 2500, // base minima para texto curto
         record_voice: 2000, // 2s base para áudio
         upload_photo: 1000, // 1s base para foto
         upload_video: 2500, // 2.5s base para vídeo
@@ -74,12 +74,15 @@ export class ChatActionService {
      */
     async sendActionMtproto(
         client: TelegramClient,
-        chatId: string,
+        chatRef: string | any,
         action: ChatActionType,
         durationMs?: number,
     ): Promise<void> {
         try {
-            const peer = await client.getInputEntity(chatId);
+            const peer =
+                typeof chatRef === "string"
+                    ? await client.getInputEntity(chatRef)
+                    : chatRef;
             const mtprotoAction = this.mapToMtprotoAction(action);
 
             await client.invoke(
@@ -91,13 +94,13 @@ export class ChatActionService {
 
             const delay = durationMs ?? this.BASE_DELAYS[action];
             this.logger.debug(
-                `[ChatAction] ${action} enviado via MTProto para chatId=${chatId}, aguardando ${delay}ms`,
+                `[ChatAction] ${action} enviado via MTProto para ${typeof chatRef === "string" ? chatRef : "peer-cache"}, aguardando ${delay}ms`,
             );
 
             await this.sleep(delay);
         } catch (err: any) {
             this.logger.warn(
-                `[ChatAction] Falha ao enviar ${action} via MTProto para ${chatId}: ${err?.message}`,
+                `[ChatAction] Falha ao enviar ${action} via MTProto para ${typeof chatRef === "string" ? chatRef : "peer-cache"}: ${err?.message}`,
             );
         }
     }
@@ -130,11 +133,22 @@ export class ChatActionService {
     calculateTypingDelay(text: string): number {
         if (!text) return this.BASE_DELAYS.typing;
 
-        // ~40 palavras por minuto = ~150ms por palavra
-        const wordCount = text.split(/\s+/).length;
-        const calculatedDelay = Math.min(wordCount * 150, 5000); // máximo 5s
+        const normalizedText = text.trim();
+        const wordCount = normalizedText.split(/\s+/).filter(Boolean).length;
+        const charCount = normalizedText.length;
+        const sentenceCount = Math.max(
+            1,
+            (normalizedText.match(/[.!?]/g) ?? []).length,
+        );
 
-        return Math.max(calculatedDelay, this.BASE_DELAYS.typing);
+        const wordsEstimateMs = wordCount * 320;
+        const charsEstimateMs = charCount * 28;
+        const punctuationPauseMs = sentenceCount * 450;
+        const estimatedDelay =
+            Math.max(this.BASE_DELAYS.typing, wordsEstimateMs, charsEstimateMs) +
+            punctuationPauseMs;
+
+        return Math.min(estimatedDelay, 15000);
     }
 
     /**

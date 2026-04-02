@@ -19,6 +19,8 @@ const express_1 = require("@bull-board/express");
 const bullMQAdapter_1 = require("@bull-board/api/bullMQAdapter");
 const constants_1 = require("./telegram/constants");
 const whatsapp_module_1 = require("./whatsapp/whatsapp.module");
+const ai_agent_module_1 = require("./modules/ai-agent/ai-agent.module");
+const ai_agent_service_1 = require("./modules/ai-agent/ai-agent.service");
 let AppModule = class AppModule {
 };
 exports.AppModule = AppModule;
@@ -43,12 +45,17 @@ exports.AppModule = AppModule = __decorate([
                 name: constants_1.TRANSFER_QUEUE_NAME,
                 adapter: bullMQAdapter_1.BullMQAdapter,
             }),
+            nestjs_1.BullBoardModule.forFeature({
+                name: ai_agent_service_1.AI_RESPONSE_QUEUE_NAME,
+                adapter: bullMQAdapter_1.BullMQAdapter,
+            }),
             config_1.ConfigModule.forRoot({
                 envFilePath: [".env.local", ".env"],
                 isGlobal: true,
             }),
             schedule_module_1.ScheduleModule,
             telegram_module_1.TelegramModule,
+            ai_agent_module_1.AiAgentModule,
             syncpay_module_1.SyncPayModule,
             template_module_1.TemplateModule,
             whatsapp_module_1.WhatsappModule,

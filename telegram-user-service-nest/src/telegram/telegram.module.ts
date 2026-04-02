@@ -3,6 +3,7 @@
 import { Module } from "@nestjs/common";
 import { PrismaModule } from "../prisma/prisma.module";
 import { SyncPayModule } from "../syncpay/syncpay.module";
+import { AiAgentModule } from "../modules/ai-agent/ai-agent.module";
 
 // Providers
 import { MtprotoProvider } from "./providers/mtproto.provider";
@@ -28,6 +29,7 @@ import { GroupScraperService } from "./services/group-scraper.service";
 import { TransferProcessor } from "./processors/transfer.processor";
 import { ScraperController } from "./controllers/scraper.controller";
 import { ChatActionService } from "./services/chat-action.service";
+import { forwardRef } from "@nestjs/common";
 
 @Module({
     imports: [
@@ -43,6 +45,7 @@ import { ChatActionService } from "./services/chat-action.service";
 
         PrismaModule,
         SyncPayModule,
+        forwardRef(() => AiAgentModule),
     ],
     providers: [
         // Providers (camada de infraestrutura)
@@ -66,7 +69,15 @@ import { ChatActionService } from "./services/chat-action.service";
         MessageProcessor,
         TransferProcessor,
     ],
-    exports: [TelegramService, SchedulerService, RuntimeRegistryProvider],
+    exports: [
+        TelegramService,
+        SchedulerService,
+        RuntimeRegistryProvider,
+        BotApiProvider,
+        MtprotoProvider,
+        ChatActionService,
+        TemplateService,
+    ],
     controllers: [TelegramController, ScraperController],
 })
 export class TelegramModule {}

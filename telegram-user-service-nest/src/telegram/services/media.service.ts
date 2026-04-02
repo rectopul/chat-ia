@@ -767,15 +767,14 @@ export class MediaService {
         });
         if (!instructionsAudio) return;
 
-        const client = this.mtproto.getClient(botId);
-        if (!client) return;
-
-        const peer = await client.getInputEntity(String(chatId));
+        const chatIdValue = String(chatId);
+        const client = await this.mtproto.ensureClient(botId);
+        const peer = await this.mtproto.resolvePeer(botId, chatIdValue);
 
         // ✅ AÇÃO: Gravando áudio via MTProto
         await this.chatAction.sendActionMtproto(
             client,
-            String(chatId),
+            peer,
             "record_voice",
             2500,
         );

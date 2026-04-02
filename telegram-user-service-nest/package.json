@@ -10,6 +10,7 @@
     "@bull-board/api": "^6.20.5",
     "@bull-board/express": "^6.20.5",
     "@bull-board/nestjs": "^6.20.5",
+    "@google/generative-ai": "^0.21.0",
     "@nestjs/bullmq": "^11.0.4",
     "@nestjs/common": "^10.0.0",
     "@nestjs/config": "^4.0.3",

@@ -24,6 +24,7 @@ import {
 } from "../constants";
 import { ChatActionService } from "./chat-action.service";
 import { MessageProcessor } from "../processors/message.processor";
+import { AiAgentService } from "../../modules/ai-agent/ai-agent.service";
 
 @Injectable()
 export class BusinessBotService {
@@ -38,6 +39,7 @@ export class BusinessBotService {
         private readonly scheduler: SchedulerService,
         private readonly media: MediaService,
         private readonly chatAction: ChatActionService,
+        private readonly aiAgentService: AiAgentService,
         @InjectQueue(QUEUE_NAME) private readonly messageQueue: Queue,
     ) {}
 
@@ -137,13 +139,30 @@ export class BusinessBotService {
                 })}`,
             );
 
-            const text: string = (msg.text ?? "").toLowerCase().trim();
+            const rawText: string = String(
+                msg.text ?? msg.caption ?? "",
+            ).trim();
+            const text: string = rawText.toLowerCase();
             const chatId: number = msg.chat.id;
             const userId: number = msg.from?.id;
             const businessConnectionId: string | undefined =
                 msg.business_connection_id;
+            const chatType = String(msg.chat?.type ?? "");
 
-            if (msg.from?.is_bot || !businessConnectionId) return;
+            if (!businessConnectionId || !userId || !chatId) {
+                return;
+            }
+
+            const ignoreReason = this.getIgnoredBusinessMessageReason(
+                msg,
+                chatType,
+            );
+            if (ignoreReason) {
+                this.logger.debug(
+                    `[business_message] ignorando chatId=${chatId} motivo=${ignoreReason}`,
+                );
+                return;
+            }
 
             // Ignora mensagens do próprio dono da conta business
             const ownerConn = await this.prisma.businessConnection.findFirst({
@@ -279,8 +298,54 @@ export class BusinessBotService {
                     .catch((err) =>
                         this.logger.error(`Erro ao enviar suporte:`, err),
                     );
+                return;
             }
+
+            if (!rawText) {
+                return;
+            }
+
+            void this.aiAgentService
+                .enqueueIncomingMessage({
+                    transport: "business",
+                    botId,
+                    telegramId: chatId.toString(),
+                    chatId: chatId.toString(),
+                    token,
+                    businessConnectionId,
+                    messageText: rawText,
+                    telegramMessageId: String(msg.message_id ?? ""),
+                })
+                .catch((err) =>
+                    this.logger.error(
+                        `[business_message] Erro ao enfileirar IA para chatId=${chatId}:`,
+                        err,
+                    ),
+                );
         });
+    }
+
+    private getIgnoredBusinessMessageReason(
+        msg: any,
+        chatType: string,
+    ): string | undefined {
+        if (msg.from?.is_bot) {
+            return "sender-bot";
+        }
+
+        if (msg.chat?.is_bot) {
+            return "chat-bot";
+        }
+
+        if (chatType && chatType !== "private") {
+            return `chat-type-${chatType}`;
+        }
+
+        if (msg.sender_chat) {
+            return "sender-chat";
+        }
+
+        return undefined;
     }
 
     // ── Greeting flow ─────────────────────────────────────────────────────

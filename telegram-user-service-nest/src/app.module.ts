@@ -10,6 +10,8 @@ import { ExpressAdapter } from "@bull-board/express";
 import { BullMQAdapter } from "@bull-board/api/bullMQAdapter";
 import { QUEUE_NAME, TRANSFER_QUEUE_NAME } from "./telegram/constants";
 import { WhatsappModule } from "./whatsapp/whatsapp.module";
+import { AiAgentModule } from "./modules/ai-agent/ai-agent.module";
+import { AI_RESPONSE_QUEUE_NAME } from "./modules/ai-agent/ai-agent.service";
 
 @Module({
     imports: [
@@ -39,6 +41,11 @@ import { WhatsappModule } from "./whatsapp/whatsapp.module";
             adapter: BullMQAdapter,
         }),
 
+        BullBoardModule.forFeature({
+            name: AI_RESPONSE_QUEUE_NAME,
+            adapter: BullMQAdapter,
+        }),
+
         ConfigModule.forRoot({
             // Ele tentará carregar o .env.local primeiro; se não achar, carrega o .env
             envFilePath: [".env.local", ".env"],
@@ -46,6 +53,7 @@ import { WhatsappModule } from "./whatsapp/whatsapp.module";
         }),
         ScheduleModule,
         TelegramModule,
+        AiAgentModule,
         SyncPayModule,
         TemplateModule,
         WhatsappModule,

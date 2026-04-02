@@ -33,6 +33,7 @@ interface ComboItem {
     localId: string;
     type: string;
     url: string;
+    tagsInput: string;
     uploading: boolean;
 }
 
@@ -43,7 +44,8 @@ interface Props {
         type: string;
         text?: string;
         mediaUrl?: string;
-        comboItems?: { type: string; url: string }[];
+        tags?: string[];
+        comboItems?: { type: string; url: string; tags?: string[] }[];
     }) => Promise<void>;
 }
 
@@ -63,6 +65,7 @@ export function TemplateForm({ onSubmit }: Props) {
     const [type, setType] = useState("TEXT");
     const [text, setText] = useState("");
     const [mediaUrl, setMediaUrl] = useState("");
+    const [tagsInput, setTagsInput] = useState("");
     const [mainUploading, setMainUploading] = useState(false);
     const [comboItems, setComboItems] = useState<ComboItem[]>([]);
     const [saving, setSaving] = useState(false);
@@ -81,6 +84,7 @@ export function TemplateForm({ onSubmit }: Props) {
                 localId: generateId(),
                 type: detectedType,
                 url,
+                tagsInput: "",
                 uploading: false,
             },
         ]);
@@ -94,6 +98,16 @@ export function TemplateForm({ onSubmit }: Props) {
         setComboItems((prev) =>
             prev.map((i) =>
                 i.localId === localId ? { ...i, type: newType } : i,
+            ),
+        );
+    };
+
+    const updateComboTags = (localId: string, nextTagsInput: string) => {
+        setComboItems((prev) =>
+            prev.map((i) =>
+                i.localId === localId
+                    ? { ...i, tagsInput: nextTagsInput }
+                    : i,
             ),
         );
     };
@@ -117,15 +131,21 @@ export function TemplateForm({ onSubmit }: Props) {
                 type,
                 text: text || undefined,
                 mediaUrl: mediaUrl || undefined,
+                tags: parseTags(tagsInput),
                 comboItems:
                     type === "COMBO"
-                        ? comboItems.map(({ type, url }) => ({ type, url }))
+                        ? comboItems.map(({ type, url, tagsInput }) => ({
+                              type,
+                              url,
+                              tags: parseTags(tagsInput),
+                          }))
                         : undefined,
             });
             // Reset
             setTitle("");
             setText("");
             setMediaUrl("");
+            setTagsInput("");
             setComboItems([]);
             setType("TEXT");
             setSuccess(true);
@@ -240,6 +260,22 @@ export function TemplateForm({ onSubmit }: Props) {
                     />
                 </div>
 
+                <div className="space-y-2">
+                    <Label className="font-semibold">
+                        Tags do Template
+                    </Label>
+                    <Input
+                        value={tagsInput}
+                        onChange={(e) => setTagsInput(e.target.value)}
+                        placeholder="Ex: previa, foto, video, vip, audio"
+                        className="bg-slate-50/50 border-slate-200"
+                    />
+                    <p className="text-[11px] text-slate-400">
+                        Separe por virgula. A Clara usa essas tags para escolher
+                        o preview mais certo.
+                    </p>
+                </div>
+
                 {/* Mídia única (IMAGE / VIDEO / AUDIO) */}
                 {(type === "IMAGE" || type === "VIDEO" || type === "AUDIO") && (
                     <div className="space-y-3 p-4 bg-slate-50 border border-dashed border-slate-200 rounded-lg">
@@ -314,50 +350,68 @@ export function TemplateForm({ onSubmit }: Props) {
                                 {comboItems.map((item, idx) => (
                                     <div
                                         key={item.localId}
-                                        className="flex items-center gap-3 bg-white border border-slate-100 rounded-lg px-3 py-2"
+                                        className="space-y-2 bg-white border border-slate-100 rounded-lg px-3 py-2"
                                     >
-                                        <GripVertical className="w-3.5 h-3.5 text-slate-300 shrink-0" />
-                                        <Badge
-                                            variant="secondary"
-                                            className="bg-slate-100 text-slate-500 font-mono text-[10px] h-5 w-5 flex items-center justify-center rounded-full shrink-0 p-0"
-                                        >
-                                            {idx + 1}
-                                        </Badge>
-                                        <span className="text-xs text-slate-600 truncate flex-1 font-mono">
-                                            {
-                                                item.url
-                                                    .split("/")
-                                                    .pop()
-                                                    ?.split("?")[0]
-                                            }
-                                        </span>
-                                        <select
-                                            value={item.type}
+                                        <div className="flex items-center gap-3">
+                                            <GripVertical className="w-3.5 h-3.5 text-slate-300 shrink-0" />
+                                            <Badge
+                                                variant="secondary"
+                                                className="bg-slate-100 text-slate-500 font-mono text-[10px] h-5 w-5 flex items-center justify-center rounded-full shrink-0 p-0"
+                                            >
+                                                {idx + 1}
+                                            </Badge>
+                                            <span className="text-xs text-slate-600 truncate flex-1 font-mono">
+                                                {
+                                                    item.url
+                                                        .split("/")
+                                                        .pop()
+                                                        ?.split("?")[0]
+                                                }
+                                            </span>
+                                            <select
+                                                value={item.type}
+                                                onChange={(e) =>
+                                                    updateComboType(
+                                                        item.localId,
+                                                        e.target.value,
+                                                    )
+                                                }
+                                                className="h-7 px-2 bg-slate-50 border border-slate-200 rounded text-[11px] focus:outline-none shrink-0"
+                                            >
+                                                {["IMAGE", "VIDEO", "AUDIO"].map(
+                                                    (t) => (
+                                                        <option
+                                                            key={t}
+                                                            value={t}
+                                                        >
+                                                            {t}
+                                                        </option>
+                                                    ),
+                                                )}
+                                            </select>
+                                            <button
+                                                type="button"
+                                                onClick={() =>
+                                                    removeComboItem(
+                                                        item.localId,
+                                                    )
+                                                }
+                                                className="text-slate-300 hover:text-red-500 transition-colors shrink-0"
+                                            >
+                                                <Trash2 className="w-3.5 h-3.5" />
+                                            </button>
+                                        </div>
+                                        <Input
+                                            value={item.tagsInput}
                                             onChange={(e) =>
-                                                updateComboType(
+                                                updateComboTags(
                                                     item.localId,
                                                     e.target.value,
                                                 )
                                             }
-                                            className="h-7 px-2 bg-slate-50 border border-slate-200 rounded text-[11px] focus:outline-none shrink-0"
-                                        >
-                                            {["IMAGE", "VIDEO", "AUDIO"].map(
-                                                (t) => (
-                                                    <option key={t} value={t}>
-                                                        {t}
-                                                    </option>
-                                                ),
-                                            )}
-                                        </select>
-                                        <button
-                                            type="button"
-                                            onClick={() =>
-                                                removeComboItem(item.localId)
-                                            }
-                                            className="text-slate-300 hover:text-red-500 transition-colors shrink-0"
-                                        >
-                                            <Trash2 className="w-3.5 h-3.5" />
-                                        </button>
+                                            placeholder="Tags da midia: previa, foto, close, audio, teaser"
+                                            className="bg-slate-50/70 border-slate-200 text-xs"
+                                        />
                                     </div>
                                 ))}
                             </div>
@@ -405,4 +459,20 @@ export function TemplateForm({ onSubmit }: Props) {
             </CardContent>
         </Card>
     );
+}
+
+function parseTags(value: string): string[] {
+    const seen = new Set<string>();
+
+    return value
+        .split(",")
+        .map((tag) => tag.trim().toLowerCase())
+        .filter((tag) => {
+            if (!tag || seen.has(tag)) {
+                return false;
+            }
+
+            seen.add(tag);
+            return true;
+        });
 }

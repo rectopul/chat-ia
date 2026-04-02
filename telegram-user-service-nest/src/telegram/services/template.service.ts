@@ -78,14 +78,15 @@ export class TemplateService {
                 );
             } else {
                 const client = await this.ensureClient(botId);
+                const peer = await this.mtproto.resolvePeer(botId, chatId);
                 const typingDelay = this.chatAction.calculateTypingDelay(text);
                 await this.chatAction.sendActionMtproto(
                     client,
-                    chatId,
+                    peer,
                     "typing",
                     typingDelay,
                 );
-                await client.sendMessage(chatId, {
+                await client.sendMessage(peer, {
                     message: template.text || "",
                 });
             }
