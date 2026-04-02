@@ -288,6 +288,7 @@ export class SchedulerService {
     ): Promise<void> {
         try {
             const reply = await this.aiAgentService.generateDontSellResponse({
+                botId: job.botId,
                 telegramId: job.chatId,
                 leadFirstName: job.user.firstName,
                 anchorTemplateText: job.template.text,
@@ -325,6 +326,12 @@ export class SchedulerService {
                                 businessConnectionId,
                                 botId: job.botId,
                             },
+                        );
+
+                        await this.aiAgentService.savePreviewDeliveryLog(
+                            job.botId,
+                            job.chatId,
+                            template,
                         );
                     } catch (previewError: any) {
                         this.logger.error(

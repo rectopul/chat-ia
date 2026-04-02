@@ -2,8 +2,10 @@ import { InjectQueue } from "@nestjs/bullmq";
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
+    BotAccount,
     ChatMessageRole,
     MediaType,
+    MessageDirection,
     MessageTemplate,
     MessageTemplateMedia,
     Product,
@@ -63,6 +65,7 @@ export interface AiAgentReply {
 }
 
 export interface AiDontSellRequest {
+    botId: string;
     telegramId: string;
     leadFirstName?: string | null;
     anchorTemplateText?: string | null;
@@ -131,9 +134,17 @@ export class AiAgentService {
 
     async generateResponse(data: AiResponseJobData): Promise<AiAgentReply> {
         const telegramId = data.telegramId;
-        const history = await this.repository.getRecentMessages(telegramId, 10);
-        const products = await this.repository.getActiveProducts();
-        const previewTemplates = await this.repository.getActivePreviewTemplates();
+        const [history, products, previewTemplates, botAccount, recentPreviewMediaUrls] =
+            await Promise.all([
+                this.repository.getRecentMessages(telegramId, 10),
+                this.repository.getActiveProducts(),
+                this.repository.getActivePreviewTemplates(),
+                this.repository.getBotAccount(data.botId),
+                this.repository.getRecentlySentPreviewMediaUrls(
+                    data.botId,
+                    data.chatId,
+                ),
+            ]);
 
         if (!history.length) {
             throw new Error(
@@ -141,7 +152,8 @@ export class AiAgentService {
             );
         }
 
-        const model = this.getModel();
+        const personaName = this.getPersonaName(botAccount);
+        const model = this.getModel(personaName);
         const result = await model.generateContent({
             contents: [
                 {
@@ -149,6 +161,7 @@ export class AiAgentService {
                     parts: [
                         {
                             text: this.buildRuntimeContext(
+                                personaName,
                                 products,
                                 previewTemplates,
                             ),
@@ -177,6 +190,7 @@ export class AiAgentService {
             previewTemplateIds: this.selectPreviewTemplateIds(
                 data.messageText,
                 previewTemplates,
+                recentPreviewMediaUrls,
             ),
             productIdToCharge: this.selectProductIdForCharge(
                 data.messageText,
@@ -188,11 +202,20 @@ export class AiAgentService {
     async generateDontSellResponse(
         data: AiDontSellRequest,
     ): Promise<AiAgentReply> {
-        const history = await this.repository.getRecentMessages(data.telegramId, 10);
-        const products = await this.repository.getActiveProducts();
-        const previewTemplates = await this.repository.getActivePreviewTemplates();
+        const [history, products, previewTemplates, botAccount, recentPreviewMediaUrls] =
+            await Promise.all([
+                this.repository.getRecentMessages(data.telegramId, 10),
+                this.repository.getActiveProducts(),
+                this.repository.getActivePreviewTemplates(),
+                this.repository.getBotAccount(data.botId),
+                this.repository.getRecentlySentPreviewMediaUrls(
+                    data.botId,
+                    data.telegramId,
+                ),
+            ]);
 
-        const model = this.getModel();
+        const personaName = this.getPersonaName(botAccount);
+        const model = this.getModel(personaName);
         const result = await model.generateContent({
             contents: [
                 {
@@ -200,6 +223,7 @@ export class AiAgentService {
                     parts: [
                         {
                             text: this.buildRuntimeContext(
+                                personaName,
                                 products,
                                 previewTemplates,
                             ),
@@ -236,6 +260,7 @@ export class AiAgentService {
             previewTemplateIds: this.selectPreviewTemplateIds(
                 signalText,
                 previewTemplates,
+                recentPreviewMediaUrls,
             ),
         };
     }
@@ -258,7 +283,25 @@ export class AiAgentService {
         return this.repository.getTemplatesByIds(ids);
     }
 
-    private getModel() {
+    async savePreviewDeliveryLog(
+        botId: string,
+        chatId: string,
+        template: PreviewTemplate,
+    ): Promise<void> {
+        const user = await this.repository.getTelegramUserByChatId(chatId);
+        if (!user) {
+            return;
+        }
+
+        const logs = this.buildPreviewMessageLogs(
+            botId,
+            user.telegramUserId,
+            template,
+        );
+        await this.repository.createMessageLogs(logs);
+    }
+
+    private getModel(personaName: string) {
         const apiKey = this.configService.get<string>("GEMINI_API_KEY")?.trim();
 
         if (!apiKey) {
@@ -271,8 +314,12 @@ export class AiAgentService {
 
         return this.genAI.getGenerativeModel({
             model: this.getModelName(),
-            systemInstruction: AI_SYSTEM_PROMPT,
+            systemInstruction: this.buildSystemPrompt(personaName),
         });
+    }
+
+    private buildSystemPrompt(personaName: string): string {
+        return AI_SYSTEM_PROMPT.replace("Your name is Clara.", `Your name is ${personaName}.`);
     }
 
     private getModelName(): string {
@@ -283,6 +330,7 @@ export class AiAgentService {
     }
 
     private buildRuntimeContext(
+        personaName: string,
         products: Product[],
         previewTemplates: PreviewTemplate[],
     ): string {
@@ -317,6 +365,7 @@ export class AiAgentService {
 
         return [
             "CATALOGO_ATUAL",
+            `Nome da persona: ${personaName}`,
             "Planos ativos:",
             productLines,
             "",
@@ -369,6 +418,7 @@ export class AiAgentService {
     private selectPreviewTemplateIds(
         messageText: string,
         previewTemplates: PreviewTemplate[],
+        recentPreviewMediaUrls: string[] = [],
     ): string[] {
         const normalized = this.normalizeText(messageText);
 
@@ -377,26 +427,49 @@ export class AiAgentService {
         }
 
         const requestedKinds = this.extractRequestedPreviewKinds(normalized);
+        const excludedTerms = this.extractExcludedPreviewTerms(normalized);
+        const requestingAnotherPreview =
+            this.isAnotherPreviewRequest(normalized);
         const rankedTemplates = previewTemplates
             .map((template) => ({
                 template,
                 score: this.scorePreviewTemplate(
                     normalized,
                     requestedKinds,
+                    excludedTerms,
+                    recentPreviewMediaUrls,
+                    requestingAnotherPreview,
                     template,
                 ),
             }))
             .filter(({ score }) => score > 0)
             .sort((a, b) => b.score - a.score);
 
+        const nonRepeatedTemplates = rankedTemplates.filter(
+            ({ template }) =>
+                !this.hasRecentPreviewMatch(template, recentPreviewMediaUrls),
+        );
+
         const templates =
-            rankedTemplates.length > 0
-                ? rankedTemplates.map(({ template }) => template)
+            requestingAnotherPreview && nonRepeatedTemplates.length > 0
+                ? nonRepeatedTemplates.map(({ template }) => template)
+                : rankedTemplates.length > 0
+                  ? rankedTemplates.map(({ template }) => template)
                 : requestedKinds.length
-                  ? previewTemplates.filter((template) =>
-                        requestedKinds.some((kind) =>
-                            this.getTemplateKinds(template).includes(kind),
-                        ),
+                  ? previewTemplates.filter(
+                        (template) =>
+                            requestedKinds.some((kind) =>
+                                this.getTemplateKinds(template).includes(kind),
+                            ) &&
+                            !this.matchesExcludedPreviewTerms(
+                                template,
+                                excludedTerms,
+                            ) &&
+                            (!requestingAnotherPreview ||
+                                !this.hasRecentPreviewMatch(
+                                    template,
+                                    recentPreviewMediaUrls,
+                                )),
                     )
                   : previewTemplates;
 
@@ -417,6 +490,19 @@ export class AiAgentService {
             "mostrar",
             "ver",
             "ouvir",
+        ].some((keyword) => normalized.includes(keyword));
+    }
+
+    private isAnotherPreviewRequest(normalized: string): boolean {
+        return [
+            "outro",
+            "outra",
+            "mais um",
+            "mais uma",
+            "diferente",
+            "novo",
+            "nova",
+            "sem repetir",
         ].some((keyword) => normalized.includes(keyword));
     }
 
@@ -497,9 +583,24 @@ export class AiAgentService {
         return [...tags];
     }
 
+    private getTemplateSemanticTerms(template: PreviewTemplate): Set<string> {
+        const terms = new Set<string>();
+
+        for (const tag of this.getTemplateTags(template)) {
+            for (const term of this.buildSemanticTermSet(tag)) {
+                terms.add(term);
+            }
+        }
+
+        return terms;
+    }
+
     private scorePreviewTemplate(
         normalizedMessage: string,
         requestedKinds: string[],
+        excludedTerms: Set<string>,
+        recentPreviewMediaUrls: string[],
+        requestingAnotherPreview: boolean,
         template: PreviewTemplate,
     ): number {
         const messageTerms = this.buildSemanticTermSet(normalizedMessage);
@@ -514,6 +615,10 @@ export class AiAgentService {
             return 0;
         }
 
+        if (this.matchesExcludedPreviewTerms(template, excludedTerms)) {
+            return 0;
+        }
+
         for (const tag of tags) {
             score += this.scoreTagMatch(normalizedMessage, messageTerms, tag);
         }
@@ -524,7 +629,69 @@ export class AiAgentService {
             }
         }
 
+        if (this.hasRecentPreviewMatch(template, recentPreviewMediaUrls)) {
+            score -= requestingAnotherPreview ? 100 : 18;
+        }
+
         return score;
+    }
+
+    private extractExcludedPreviewTerms(normalizedMessage: string): Set<string> {
+        const excludedTerms = new Set<string>();
+        const patterns = [
+            /sem ser de ([a-z0-9\s]+)/g,
+            /sem ser do ([a-z0-9\s]+)/g,
+            /sem ser da ([a-z0-9\s]+)/g,
+            /sem ([a-z0-9\s]+)/g,
+            /nao de ([a-z0-9\s]+)/g,
+            /nao do ([a-z0-9\s]+)/g,
+            /nao da ([a-z0-9\s]+)/g,
+            /tirando ([a-z0-9\s]+)/g,
+            /menos ([a-z0-9\s]+)/g,
+        ];
+
+        for (const pattern of patterns) {
+            for (const match of normalizedMessage.matchAll(pattern)) {
+                const segment = match[1]?.trim();
+                if (!segment) {
+                    continue;
+                }
+
+                for (const term of this.buildSemanticTermSet(segment)) {
+                    excludedTerms.add(term);
+                }
+            }
+        }
+
+        return excludedTerms;
+    }
+
+    private matchesExcludedPreviewTerms(
+        template: PreviewTemplate,
+        excludedTerms: Set<string>,
+    ): boolean {
+        if (!excludedTerms.size) {
+            return false;
+        }
+
+        const templateTerms = this.getTemplateSemanticTerms(template);
+        return [...excludedTerms].some((term) => templateTerms.has(term));
+    }
+
+    private hasRecentPreviewMatch(
+        template: PreviewTemplate,
+        recentPreviewMediaUrls: string[],
+    ): boolean {
+        if (!recentPreviewMediaUrls.length) {
+            return false;
+        }
+
+        const recentSet = new Set(recentPreviewMediaUrls);
+        if (template.mediaUrl && recentSet.has(template.mediaUrl)) {
+            return true;
+        }
+
+        return template.mediaItems.some((item) => recentSet.has(item.url));
     }
 
     private scoreTagMatch(
@@ -592,6 +759,9 @@ export class AiAgentService {
             "dela",
             "com",
             "sem",
+            "ser",
+            "nao",
+            "não",
             "para",
             "pra",
             "uma",
@@ -603,6 +773,11 @@ export class AiAgentService {
             "manda",
             "mostrar",
             "mostra",
+            "outro",
+            "outra",
+            "mais",
+            "novo",
+            "nova",
             "previa",
             "amostra",
             "video",
@@ -744,5 +919,60 @@ export class AiAgentService {
         }
 
         return `${trimmed.slice(0, maxLength - 3)}...`;
+    }
+
+    private getPersonaName(botAccount: BotAccount | null): string {
+        const rawName = botAccount?.name?.trim();
+        return rawName || "Clara";
+    }
+
+    private buildPreviewMessageLogs(
+        botId: string,
+        telegramUserId: string,
+        template: PreviewTemplate,
+    ): Array<{
+        botId: string;
+        telegramUserId: string;
+        direction: MessageDirection;
+        type: MediaType;
+        text?: string | null;
+        mediaUrl?: string | null;
+        providerMessageId?: string | null;
+    }> {
+        const logs: Array<{
+            botId: string;
+            telegramUserId: string;
+            direction: MessageDirection;
+            type: MediaType;
+            text?: string | null;
+            mediaUrl?: string | null;
+            providerMessageId?: string | null;
+        }> = [];
+
+        if (template.mediaUrl) {
+            logs.push({
+                botId,
+                telegramUserId,
+                direction: MessageDirection.OUT,
+                type: template.type,
+                text: template.text ?? null,
+                mediaUrl: template.mediaUrl,
+                providerMessageId: null,
+            });
+        }
+
+        for (const item of template.mediaItems) {
+            logs.push({
+                botId,
+                telegramUserId,
+                direction: MessageDirection.OUT,
+                type: item.type,
+                text: template.text ?? null,
+                mediaUrl: item.url,
+                providerMessageId: null,
+            });
+        }
+
+        return logs;
     }
 }

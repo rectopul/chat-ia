@@ -3,8 +3,11 @@ import {
     ChatMessage,
     ChatMessageRole,
     MediaType,
+    MessageDirection,
+    MessageLog,
     MessageTemplate,
     MessageTemplateMedia,
+    BotAccount,
     Product,
     Sale,
     TelegramUser,
@@ -44,6 +47,12 @@ export class AiAgentRepository {
         return this.prisma.product.findMany({
             where: { isActive: true },
             orderBy: { priceCents: "asc" },
+        });
+    }
+
+    async getBotAccount(botId: string): Promise<BotAccount | null> {
+        return this.prisma.botAccount.findUnique({
+            where: { id: botId },
         });
     }
 
@@ -103,6 +112,54 @@ export class AiAgentRepository {
     ): Promise<TelegramUser | null> {
         return this.prisma.telegramUser.findUnique({
             where: { chatId },
+        });
+    }
+
+    async getRecentlySentPreviewMediaUrls(
+        botId: string,
+        chatId: string,
+        limit: number = 20,
+    ): Promise<string[]> {
+        const user = await this.getTelegramUserByChatId(chatId);
+        if (!user) {
+            return [];
+        }
+
+        const logs = await this.prisma.messageLog.findMany({
+            where: {
+                botId,
+                telegramUserId: user.telegramUserId,
+                direction: MessageDirection.OUT,
+                mediaUrl: { not: null },
+                type: { in: [MediaType.IMAGE, MediaType.VIDEO, MediaType.AUDIO] },
+            },
+            select: { mediaUrl: true },
+            orderBy: { createdAt: "desc" },
+            take: limit,
+        });
+
+        return logs
+            .map((log) => log.mediaUrl)
+            .filter((mediaUrl): mediaUrl is string => Boolean(mediaUrl));
+    }
+
+    async createMessageLogs(
+        data: Array<{
+            botId: string;
+            telegramUserId: string;
+            direction: MessageDirection;
+            type: MediaType;
+            text?: string | null;
+            mediaUrl?: string | null;
+            providerMessageId?: string | null;
+        }>,
+    ): Promise<void> {
+        if (!data.length) {
+            return;
+        }
+
+        await this.prisma.messageLog.createMany({
+            data,
         });
     }
 

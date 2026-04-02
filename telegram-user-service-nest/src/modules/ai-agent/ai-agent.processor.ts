@@ -169,6 +169,12 @@ export class AiAgentProcessor extends WorkerHost {
                 template,
                 businessCtx,
             );
+
+            await this.aiAgentService.savePreviewDeliveryLog(
+                data.botId,
+                data.chatId,
+                template,
+            );
         }
     }
 
