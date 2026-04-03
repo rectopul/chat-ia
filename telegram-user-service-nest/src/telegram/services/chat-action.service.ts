@@ -59,6 +59,13 @@ export class ChatActionService {
 
             await this.sleep(delay);
         } catch (err: any) {
+            if (this.isBusinessPeerInvalidError(err)) {
+                this.logger.debug(
+                    `[ChatAction] ${action} ignorado para ${chatId} enquanto a business connection e renovada`,
+                );
+                return;
+            }
+
             // Não crítico — se falhar, continua sem a ação
             this.logger.warn(
                 `[ChatAction] Falha ao enviar ${action} para ${chatId}: ${err?.message}`,
@@ -162,5 +169,18 @@ export class ChatActionService {
 
     private sleep(ms: number): Promise<void> {
         return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    private isBusinessPeerInvalidError(error: any): boolean {
+        const description =
+            error?.response?.data?.description ??
+            error?.response?.data?.message ??
+            error?.message;
+        const normalized =
+            typeof description === "string"
+                ? description.toUpperCase()
+                : JSON.stringify(description ?? error).toUpperCase();
+
+        return normalized.includes("BUSINESS_PEER_INVALID");
     }
 }

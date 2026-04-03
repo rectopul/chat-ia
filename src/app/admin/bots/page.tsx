@@ -1,5 +1,4 @@
 import { prisma } from "@/lib/prisma";
-import { revalidatePath } from "next/cache";
 import { BotConnectionManager } from "@/components/BotConnectionManager";
 import { BotTokenEditor } from "@/components/BotTokenEditor";
 import {
@@ -36,8 +35,26 @@ import {
     TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Badge } from "@/components/ui/badge";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+    createAdminBotAction,
+    deleteAdminBotAction,
+    saveAdminBotTokenAction,
+    toggleAdminBotAction,
+} from "./actions";
 
-export default async function AdminBotsPage() {
+type SearchParams = Promise<{
+    error?: string;
+    success?: string;
+    phoneNumber?: string;
+}>;
+
+export default async function AdminBotsPage({
+    searchParams,
+}: {
+    searchParams: SearchParams;
+}) {
+    const params = await searchParams;
     const [bots, customers] = await Promise.all([
         prisma.botAccount.findMany({
             include: {
@@ -62,56 +79,6 @@ export default async function AdminBotsPage() {
         }),
     ]);
 
-    async function createBot(formData: FormData) {
-        "use server";
-        const name = formData.get("name") as string;
-        const phoneNumber = formData.get("phoneNumber") as string;
-        const apiId = parseInt(formData.get("apiId") as string);
-        const apiHash = formData.get("apiHash") as string;
-        const ownerUserId =
-            String(formData.get("ownerUserId") ?? "").trim() || null;
-
-        await prisma.botAccount.create({
-            data: {
-                name,
-                phoneNumber,
-                apiId,
-                apiHash,
-                ownerUserId,
-                isUserAccount: true,
-                isActive: false,
-            },
-        });
-
-        revalidatePath("/admin/bots");
-    }
-
-    async function deleteBot(botId: string) {
-        "use server";
-
-        await prisma.botAccount.delete({ where: { id: botId } });
-
-        revalidatePath("/admin/bots");
-    }
-
-    async function saveToken(botId: string, token: string) {
-        "use server";
-        await prisma.botAccount.update({
-            where: { id: botId },
-            data: { businessBotToken: token || null },
-        });
-        revalidatePath("/admin/bots");
-    }
-
-    async function toggleBot(botId: string, currentStatus: boolean) {
-        "use server";
-        await prisma.botAccount.update({
-            where: { id: botId },
-            data: { isActive: !currentStatus },
-        });
-        revalidatePath("/admin/bots");
-    }
-
     return (
         <div className="max-w-7xl mx-auto space-y-8">
             <div className="flex flex-col gap-2">
@@ -123,6 +90,26 @@ export default async function AdminBotsPage() {
                     business.
                 </p>
             </div>
+
+            {params.error === "phone_number_unavailable" && (
+                <Alert variant="destructive">
+                    <AlertTitle>Numero indisponivel</AlertTitle>
+                    <AlertDescription>
+                        O numero {params.phoneNumber || "informado"} ja esta em
+                        uso por outra conta cadastrada.
+                    </AlertDescription>
+                </Alert>
+            )}
+
+            {params.success === "bot_created" && (
+                <Alert className="border-emerald-200 bg-emerald-50 text-emerald-800">
+                    <AlertTitle>Conta criada</AlertTitle>
+                    <AlertDescription>
+                        A nova instancia {params.phoneNumber || "do Telegram"} foi
+                        salva com sucesso.
+                    </AlertDescription>
+                </Alert>
+            )}
 
             <Card className="border-none shadow-sm">
                 <CardHeader>
@@ -137,7 +124,7 @@ export default async function AdminBotsPage() {
                 </CardHeader>
                 <CardContent>
                     <form
-                        action={createBot}
+                        action={createAdminBotAction}
                         className="grid grid-cols-1 md:grid-cols-5 gap-6"
                     >
                         <div className="space-y-2">
@@ -308,7 +295,7 @@ export default async function AdminBotsPage() {
                                         currentToken={
                                             bot.businessBotToken ?? ""
                                         }
-                                        onSave={saveToken}
+                                        onSave={saveAdminBotTokenAction}
                                     />
                                 </TableCell>
                                 <TableCell>
@@ -323,7 +310,7 @@ export default async function AdminBotsPage() {
                                 </TableCell>
                                 <TableCell className="text-right flex items-center gap-2 justify-end">
                                     <form
-                                        action={toggleBot.bind(
+                                        action={toggleAdminBotAction.bind(
                                             null,
                                             bot.id,
                                             bot.isActive,
@@ -352,7 +339,7 @@ export default async function AdminBotsPage() {
                                         </Button>
                                     </form>
 
-                                    <form action={deleteBot.bind(null, bot.id)}>
+                                    <form action={deleteAdminBotAction.bind(null, bot.id)}>
                                         <Button
                                             size="icon"
                                             variant="outline"

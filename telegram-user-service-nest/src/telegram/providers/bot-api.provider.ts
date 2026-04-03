@@ -121,6 +121,14 @@ export class BotApiProvider implements OnModuleDestroy {
         await this.registry.setChatConnection(botId, chatId, connectionId);
     }
 
+    async deleteChatConnection(
+        botId: string,
+        chatId: string | number,
+    ): Promise<void> {
+        this.chatConnections.delete(`${botId}:${chatId}`);
+        await this.registry.deleteChatConnection(botId, chatId);
+    }
+
     async getOwnerConnectionId(
         botId: string,
         userTelegramId: string,
@@ -166,6 +174,14 @@ export class BotApiProvider implements OnModuleDestroy {
             where: { botId, isEnabled: true },
         });
         return conn?.connectionId;
+    }
+
+    async refreshConnectionForChat(
+        botId: string,
+        chatId: string | number,
+    ): Promise<string | undefined> {
+        await this.deleteChatConnection(botId, chatId);
+        return this.resolveConnectionForChat(botId, chatId);
     }
 
     /** Carrega connections salvas no banco ao inicializar o bot. */
@@ -256,6 +272,10 @@ export class BotApiProvider implements OnModuleDestroy {
             }
             return data.result;
         } catch (err: any) {
+            if (this.isBusinessPeerInvalidError(err)) {
+                throw err;
+            }
+
             this.logger.error(
                 `[sendMessageHttp] chatId=${chatId} falhou: ${err?.response?.data ? JSON.stringify(err.response.data) : err?.message}`,
                 err?.stack,
@@ -275,5 +295,18 @@ export class BotApiProvider implements OnModuleDestroy {
                 `[answerCallbackQuery] queryId=${queryId} falhou: ${err?.message ?? err}`,
             );
         }
+    }
+
+    private isBusinessPeerInvalidError(error: any): boolean {
+        const description =
+            error?.response?.data?.description ??
+            error?.response?.data?.message ??
+            error?.message;
+        const normalized =
+            typeof description === "string"
+                ? description.toUpperCase()
+                : JSON.stringify(description ?? error).toUpperCase();
+
+        return normalized.includes("BUSINESS_PEER_INVALID");
     }
 }

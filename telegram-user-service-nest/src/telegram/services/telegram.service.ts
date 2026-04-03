@@ -6,6 +6,7 @@
 import {
     Injectable,
     Logger,
+    NotFoundException,
     OnModuleInit,
     OnModuleDestroy,
 } from "@nestjs/common";
@@ -250,6 +251,99 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         this.logger.log(
             `[confirmPayment] Enviado para chatId=${sale.user.chatId} (saleId=${saleId})`,
         );
+    }
+
+    async createSaleCheckout(input: {
+        botId: string;
+        telegramUserId: string;
+        productId: string;
+        discountPercent?: number;
+    }): Promise<{
+        saleId: string;
+        pixCode: string;
+        amountCents: number;
+        productTitle: string;
+        gatewayReference: string;
+    }> {
+        const bot = await this.prisma.botAccount.findUnique({
+            where: { id: input.botId },
+            select: { ownerUserId: true },
+        });
+
+        if (!bot) {
+            throw new NotFoundException("Bot not found");
+        }
+
+        const user = await this.prisma.telegramUser.findUnique({
+            where: {
+                telegramUserId_botId: {
+                    telegramUserId: input.telegramUserId,
+                    botId: input.botId,
+                },
+            },
+        });
+
+        if (!user) {
+            throw new NotFoundException("Telegram user not found");
+        }
+
+        const product = await this.prisma.product.findFirst({
+            where: {
+                id: input.productId,
+                isActive: true,
+                ...(bot.ownerUserId
+                    ? {
+                          OR: [
+                              { ownerUserId: bot.ownerUserId },
+                              { ownerUserId: null },
+                          ],
+                      }
+                    : {}),
+            },
+        });
+
+        if (!product) {
+            throw new NotFoundException("Product not found");
+        }
+
+        const discountPercent =
+            typeof input.discountPercent === "number" &&
+            Number.isFinite(input.discountPercent) &&
+            input.discountPercent > 0
+                ? Math.min(Math.round(input.discountPercent), 99)
+                : 0;
+
+        const amountCents =
+            discountPercent > 0
+                ? Math.round(product.priceCents * (1 - discountPercent / 100))
+                : product.priceCents;
+
+        const pixData = await this.syncPayService.createCharge({
+            amountCents,
+            productTitle: product.title,
+            referenceId: String(user.chatId),
+        });
+
+        const sale = await this.prisma.sale.create({
+            data: {
+                botId: input.botId,
+                telegramUserId: input.telegramUserId,
+                productId: product.id,
+                amountCents,
+                referenceId: pixData.identifier,
+                status: "PENDING",
+                provider: "SYNCPAY",
+                rawPayload: pixData as any,
+            },
+        });
+
+        return {
+            saleId: sale.id,
+            pixCode: pixData.pix_code,
+            amountCents,
+            productTitle: product.title,
+            gatewayReference: pixData.identifier,
+        };
     }
 
     // ── Bot Status Checklist ──────────────────────────────────────────────

@@ -1,10 +1,6 @@
 import { auth } from "@/auth";
 import { redirect } from "next/navigation";
-import {
-    activateFreePlan,
-    createPaidPlanCheckout,
-    getUserWithSaasContext,
-} from "@/lib/saas/server";
+import { getUserWithSaasContext } from "@/lib/saas/server";
 import { getPlanCatalog } from "@/lib/saas/plans";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -16,7 +12,8 @@ import {
     CardTitle,
 } from "@/components/ui/card";
 import { PlanType, TransactionStatus } from "@prisma/client";
-import { Copy, CreditCard, ShieldCheck } from "lucide-react";
+import { CreditCard, ShieldCheck } from "lucide-react";
+import { activateFreePlanAction, checkoutPlanAction } from "./actions";
 
 type SearchParams = Promise<{ checkout?: string }>;
 
@@ -45,34 +42,6 @@ export default async function BillingPage({
 
     if (!user) {
         redirect("/login");
-    }
-
-    async function activateFreeAction() {
-        "use server";
-        const session = await auth();
-        if (!session?.user?.id) redirect("/login");
-        await activateFreePlan(session.user.id);
-        redirect("/dashboard");
-    }
-
-    async function checkoutAction(formData: FormData) {
-        "use server";
-        const session = await auth();
-        if (!session?.user?.id) redirect("/login");
-
-        const planType = String(formData.get("planType") ?? "") as PlanType;
-
-        if (!Object.values(PlanType).includes(planType)) {
-            redirect("/billing");
-        }
-
-        if (planType === PlanType.FREE) {
-            await activateFreePlan(session.user.id);
-            redirect("/dashboard");
-        }
-
-        const result = await createPaidPlanCheckout(session.user.id, planType);
-        redirect(`/billing?checkout=${result.transaction.id}`);
     }
 
     const params = await searchParams;
@@ -195,8 +164,8 @@ export default async function BillingPage({
                                     <form
                                         action={
                                             plan.planType === PlanType.FREE
-                                                ? activateFreeAction
-                                                : checkoutAction
+                                                ? activateFreePlanAction
+                                                : checkoutPlanAction
                                         }
                                     >
                                         {plan.planType !== PlanType.FREE && (

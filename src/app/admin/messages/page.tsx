@@ -1,7 +1,5 @@
 // app/admin/messages/page.tsx
 import { prisma } from "@/lib/prisma";
-import { MessageTemplateKey, MediaType } from "@prisma/client";
-import { revalidatePath } from "next/cache";
 import { TemplateForm } from "@/components/TemplateForm";
 import {
     MessageSquare,
@@ -23,68 +21,17 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+    createAdminTemplateAction,
+    deleteAdminTemplateAction,
+    toggleAdminTemplateAction,
+} from "./actions";
 
 export default async function AdminMessagesPage() {
     const templates = await prisma.messageTemplate.findMany({
         orderBy: { createdAt: "desc" },
         include: { mediaItems: true },
     });
-
-    async function createTemplate(data: {
-        key: string;
-        title: string;
-        type: string;
-        text?: string;
-        mediaUrl?: string;
-        tags?: string[];
-        comboItems?: { type: string; url: string; tags?: string[] }[];
-    }) {
-        "use server";
-
-        const template = await prisma.messageTemplate.create({
-            data: {
-                key: data.key as MessageTemplateKey,
-                title: data.title,
-                type: data.type as MediaType,
-                text: data.text || null,
-                mediaUrl: data.mediaUrl || null,
-                tags: data.tags ?? [],
-            },
-        });
-
-        if (
-            data.type === "COMBO" &&
-            data.comboItems &&
-            data.comboItems.length > 0
-        ) {
-            await prisma.messageTemplateMedia.createMany({
-                data: data.comboItems.map((item, index) => ({
-                    templateId: template.id,
-                    type: item.type as MediaType,
-                    url: item.url,
-                    order: index,
-                    tags: item.tags ?? [],
-                })),
-            });
-        }
-
-        revalidatePath("/admin/messages");
-    }
-
-    async function deleteTemplate(templateId: string) {
-        "use server";
-        await prisma.messageTemplate.delete({ where: { id: templateId } });
-        revalidatePath("/admin/messages");
-    }
-
-    async function toggleTemplate(templateId: string, current: boolean) {
-        "use server";
-        await prisma.messageTemplate.update({
-            where: { id: templateId },
-            data: { isActive: !current },
-        });
-        revalidatePath("/admin/messages");
-    }
 
     return (
         <div className="max-w-7xl mx-auto space-y-8">
@@ -98,7 +45,7 @@ export default async function AdminMessagesPage() {
                 </p>
             </div>
 
-            <TemplateForm onSubmit={createTemplate} />
+            <TemplateForm onSubmit={createAdminTemplateAction} />
 
             <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
                 <Table>
@@ -218,7 +165,7 @@ export default async function AdminMessagesPage() {
                                     </TableCell>
                                     <TableCell>
                                         <form
-                                            action={toggleTemplate.bind(
+                                            action={toggleAdminTemplateAction.bind(
                                                 null,
                                                 t.id,
                                                 t.isActive,
@@ -247,7 +194,7 @@ export default async function AdminMessagesPage() {
                                     </TableCell>
                                     <TableCell className="text-right">
                                         <form
-                                            action={deleteTemplate.bind(
+                                            action={deleteAdminTemplateAction.bind(
                                                 null,
                                                 t.id,
                                             )}

@@ -1,10 +1,9 @@
 import { auth } from "@/auth";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
-import { revalidatePath } from "next/cache";
 import { BotConnectionManager } from "@/components/BotConnectionManager";
 import { BotTokenEditor } from "@/components/BotTokenEditor";
-import { Badge } from "@/components/ui/badge";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -15,96 +14,46 @@ import {
     TableHeader,
     TableRow,
 } from "@/components/ui/table";
-import { Bot, Phone, Plus, Power, PowerOff, Trash } from "lucide-react";
+import {
+    Bot,
+    CheckCircle2,
+    CircleAlert,
+    Phone,
+    Plus,
+    Power,
+    PowerOff,
+    Trash,
+} from "lucide-react";
+import {
+    createUserBotAction,
+    deleteUserBotAction,
+    saveUserBotTokenAction,
+    toggleUserBotAction,
+} from "./actions";
 
-export default async function UserBotsPage() {
+type SearchParams = Promise<{
+    error?: string;
+    success?: string;
+    phoneNumber?: string;
+}>;
+
+export default async function UserBotsPage({
+    searchParams,
+}: {
+    searchParams: SearchParams;
+}) {
     const session = await auth();
 
     if (!session?.user?.id) {
         redirect("/login");
     }
 
+    const params = await searchParams;
     const userId = session.user.id;
     const bots = await prisma.botAccount.findMany({
         where: { ownerUserId: userId },
         orderBy: { createdAt: "desc" },
     });
-
-    async function createBot(formData: FormData) {
-        "use server";
-        const session = await auth();
-        if (!session?.user?.id) redirect("/login");
-
-        const name = String(formData.get("name") ?? "");
-        const phoneNumber = String(formData.get("phoneNumber") ?? "");
-        const apiId = Number(formData.get("apiId") ?? 0);
-        const apiHash = String(formData.get("apiHash") ?? "");
-
-        // Check if number aready exist
-        const existingBot = await prisma.botAccount.findFirst({
-            where: {
-                phoneNumber,
-            },
-        });
-
-        if (existingBot) {
-            console.log(`Bot com número ${phoneNumber} indisponível.`);
-            return;
-        }
-
-        await prisma.botAccount.create({
-            data: {
-                ownerUserId: session.user.id,
-                name,
-                phoneNumber,
-                apiId,
-                apiHash,
-                isUserAccount: true,
-                isActive: false,
-            },
-        });
-
-        revalidatePath("/dashboard/bots");
-    }
-
-    async function deleteBot(botId: string) {
-        "use server";
-        const session = await auth();
-        if (!session?.user?.id) redirect("/login");
-
-        await prisma.botAccount.deleteMany({
-            where: {
-                id: botId,
-                ownerUserId: session.user.id,
-            },
-        });
-
-        revalidatePath("/dashboard/bots");
-    }
-
-    async function saveToken(botId: string, token: string) {
-        "use server";
-        const session = await auth();
-        if (!session?.user?.id) redirect("/login");
-
-        await prisma.botAccount.updateMany({
-            where: { id: botId, ownerUserId: session.user.id },
-            data: { businessBotToken: token || null },
-        });
-        revalidatePath("/dashboard/bots");
-    }
-
-    async function toggleBot(botId: string, currentStatus: boolean) {
-        "use server";
-        const session = await auth();
-        if (!session?.user?.id) redirect("/login");
-
-        await prisma.botAccount.updateMany({
-            where: { id: botId, ownerUserId: session.user.id },
-            data: { isActive: !currentStatus },
-        });
-        revalidatePath("/dashboard/bots");
-    }
 
     return (
         <div className="space-y-8">
@@ -118,6 +67,39 @@ export default async function UserBotsPage() {
                 </p>
             </div>
 
+            {params.error === "phone_number_unavailable" && (
+                <Alert variant="destructive">
+                    <CircleAlert className="h-4 w-4" />
+                    <AlertTitle>Numero indisponivel</AlertTitle>
+                    <AlertDescription>
+                        O numero {params.phoneNumber || "informado"} ja esta em
+                        uso por outra conta. Cadastre outro telefone para seguir.
+                    </AlertDescription>
+                </Alert>
+            )}
+
+            {params.error === "invalid_bot_form" && (
+                <Alert variant="destructive">
+                    <CircleAlert className="h-4 w-4" />
+                    <AlertTitle>Dados invalidos</AlertTitle>
+                    <AlertDescription>
+                        Preencha nome, telefone, API ID e API Hash para criar a
+                        conta.
+                    </AlertDescription>
+                </Alert>
+            )}
+
+            {params.success === "bot_created" && (
+                <Alert className="border-emerald-200 bg-emerald-50 text-emerald-800">
+                    <CheckCircle2 className="h-4 w-4" />
+                    <AlertTitle>Conta cadastrada</AlertTitle>
+                    <AlertDescription>
+                        A conta {params.phoneNumber || "do Telegram"} foi criada
+                        e ja esta pronta para a conexao via MTProto.
+                    </AlertDescription>
+                </Alert>
+            )}
+
             <Card className="border-none shadow-sm">
                 <CardHeader>
                     <CardTitle className="flex items-center gap-2">
@@ -127,7 +109,7 @@ export default async function UserBotsPage() {
                 </CardHeader>
                 <CardContent>
                     <form
-                        action={createBot}
+                        action={createUserBotAction}
                         className="grid grid-cols-1 gap-4 md:grid-cols-4"
                     >
                         <input
@@ -199,7 +181,7 @@ export default async function UserBotsPage() {
                                         currentToken={
                                             bot.businessBotToken ?? ""
                                         }
-                                        onSave={saveToken}
+                                        onSave={saveUserBotTokenAction}
                                     />
                                 </TableCell>
                                 <TableCell>
@@ -208,7 +190,7 @@ export default async function UserBotsPage() {
                                 <TableCell className="text-right">
                                     <div className="inline-flex gap-2">
                                         <form
-                                            action={toggleBot.bind(
+                                            action={toggleUserBotAction.bind(
                                                 null,
                                                 bot.id,
                                                 bot.isActive,
@@ -229,7 +211,7 @@ export default async function UserBotsPage() {
                                             </Button>
                                         </form>
                                         <form
-                                            action={deleteBot.bind(
+                                            action={deleteUserBotAction.bind(
                                                 null,
                                                 bot.id,
                                             )}

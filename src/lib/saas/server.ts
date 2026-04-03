@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { SyncPayService } from "@/lib/syncpay";
+import { fetchNestApiJson } from "@/lib/nest-api";
 import { getAccessSummary, hasActiveSubscriptionAccess } from "./access";
 import { getPlanDefinition, getPlanCatalog } from "./plans";
 import {
@@ -13,6 +13,13 @@ import {
     User,
     UserRole,
 } from "@prisma/client";
+
+type BillingCheckoutResponse = {
+    subscription: Subscription;
+    transaction: Transaction;
+    pixCode: string;
+    gatewayReference: string;
+};
 
 export async function getUserWithSaasContext(userId: string) {
     return prisma.user.findUnique({
@@ -46,25 +53,11 @@ export async function getUserAiUsageToday(userId: string): Promise<number> {
 }
 
 export async function activateFreePlan(userId: string) {
-    return prisma.subscription.upsert({
-        where: { userId },
-        create: {
-            userId,
-            planType: PlanType.FREE,
-            status: SubscriptionStatus.ACTIVE,
-            startDate: new Date(),
-            planPriceCents: 0,
-            endDate: null,
-            graceUntil: null,
-        },
-        update: {
-            planType: PlanType.FREE,
-            status: SubscriptionStatus.ACTIVE,
-            startDate: new Date(),
-            planPriceCents: 0,
-            endDate: null,
-            graceUntil: null,
-            gatewaySubscriptionId: null,
+    return fetchNestApiJson<Subscription>("/billing/activate-free", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            "x-user-id": userId,
         },
     });
 }
@@ -77,76 +70,14 @@ export async function createPaidPlanCheckout(
         throw new Error("FREE plan must be activated directly");
     }
 
-    const user = await prisma.user.findUnique({
-        where: { id: userId },
-        include: { subscription: true },
-    });
-
-    if (!user) {
-        throw new Error("User not found");
-    }
-
-    const plan = getPlanDefinition(planType);
-    const externalReference = buildExternalReference(userId, planType);
-    const charge = await SyncPayService.createCharge({
-        amountCents: plan.priceCents,
-        referenceId: externalReference,
-        productTitle: `Assinatura ${plan.name}`,
-        client: {
-            name: user.name || user.email || "Cliente SaaS",
-            cpf: process.env.SYNCPAY_DEFAULT_CPF || "00000000000",
-            email:
-                user.email ||
-                process.env.SYNCPAY_DEFAULT_EMAIL ||
-                "cliente@exemplo.com",
-            phone: process.env.SYNCPAY_DEFAULT_PHONE || "11999999999",
+    return fetchNestApiJson<BillingCheckoutResponse>("/billing/checkout", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            "x-user-id": userId,
         },
+        body: JSON.stringify({ planType }),
     });
-
-    const subscription = user.subscription
-        ? await prisma.subscription.update({
-              where: { userId },
-              data: {
-                  planType,
-                  status: SubscriptionStatus.PAST_DUE,
-                  startDate: new Date(),
-                  planPriceCents: plan.priceCents,
-                  graceUntil: addDays(new Date(), 3),
-              },
-          })
-        : await prisma.subscription.create({
-              data: {
-                  userId,
-                  planType,
-                  status: SubscriptionStatus.PAST_DUE,
-                  startDate: new Date(),
-                  planPriceCents: plan.priceCents,
-                  graceUntil: addDays(new Date(), 3),
-              },
-          });
-
-    const transaction = await prisma.transaction.create({
-        data: {
-            userId,
-            subscriptionId: subscription.id,
-            amountCents: plan.priceCents,
-            status: TransactionStatus.PENDING,
-            gatewayReference: externalReference,
-            referenceDate: new Date(),
-            rawPayload: {
-                ...charge,
-                externalReference,
-                planType,
-            } as Prisma.InputJsonValue,
-        },
-    });
-
-    return {
-        subscription,
-        transaction,
-        pixCode: charge.pix_code,
-        gatewayReference: externalReference,
-    };
 }
 
 export async function handleSaasWebhook(payload: unknown) {

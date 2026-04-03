@@ -1,6 +1,5 @@
 import { prisma } from "@/lib/prisma";
 import { ProductType } from "@prisma/client";
-import { revalidatePath } from "next/cache";
 import { ShoppingBag, Plus, Info, Tag, Calendar, Trash2 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -19,42 +18,15 @@ import {
     TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Badge } from "@/components/ui/badge";
+import {
+    createAdminProductAction,
+    deleteAdminProductAction,
+} from "./actions";
 
 export default async function AdminProductsPage() {
     const products = await prisma.product.findMany({
         orderBy: { createdAt: "desc" },
     });
-
-    async function createProduct(formData: FormData) {
-        "use server";
-        const title = formData.get("title") as string;
-        const description = formData.get("description") as string;
-        const priceCents = Math.round(
-            parseFloat(formData.get("price") as string) * 100,
-        );
-        const productType = formData.get("productType") as ProductType;
-        const subscriberDays = formData.get("subscriberDays")
-            ? parseInt(formData.get("subscriberDays") as string)
-            : null;
-
-        await prisma.product.create({
-            data: {
-                title,
-                description,
-                priceCents,
-                productType,
-                subscriberDays,
-            },
-        });
-        revalidatePath("/admin/products");
-    }
-
-    async function deleteProduct(formData: FormData) {
-        "use server";
-        const id = formData.get("id") as string;
-        await prisma.product.delete({ where: { id } });
-        revalidatePath("/admin/products");
-    }
 
     const typeLabels: Record<ProductType, string> = {
         ONE_TIME: "Compra Única",
@@ -83,7 +55,7 @@ export default async function AdminProductsPage() {
                 </CardHeader>
                 <CardContent>
                     <form
-                        action={createProduct}
+                        action={createAdminProductAction}
                         className="grid grid-cols-1 md:grid-cols-3 gap-6"
                     >
                         <div className="space-y-2">
@@ -254,7 +226,7 @@ export default async function AdminProductsPage() {
 
                                 {/* ✅ Botão de excluir */}
                                 <TableCell>
-                                    <form action={deleteProduct}>
+                                    <form action={deleteAdminProductAction}>
                                         <input
                                             type="hidden"
                                             name="id"
