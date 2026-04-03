@@ -38,9 +38,29 @@ import {
 import { Badge } from "@/components/ui/badge";
 
 export default async function AdminBotsPage() {
-    const bots = await prisma.botAccount.findMany({
-        orderBy: { createdAt: "desc" },
-    });
+    const [bots, customers] = await Promise.all([
+        prisma.botAccount.findMany({
+            include: {
+                ownerUser: {
+                    select: {
+                        id: true,
+                        name: true,
+                        email: true,
+                    },
+                },
+            },
+            orderBy: { createdAt: "desc" },
+        }),
+        prisma.user.findMany({
+            where: { role: "CUSTOMER" },
+            orderBy: { createdAt: "desc" },
+            select: {
+                id: true,
+                name: true,
+                email: true,
+            },
+        }),
+    ]);
 
     async function createBot(formData: FormData) {
         "use server";
@@ -48,6 +68,8 @@ export default async function AdminBotsPage() {
         const phoneNumber = formData.get("phoneNumber") as string;
         const apiId = parseInt(formData.get("apiId") as string);
         const apiHash = formData.get("apiHash") as string;
+        const ownerUserId =
+            String(formData.get("ownerUserId") ?? "").trim() || null;
 
         await prisma.botAccount.create({
             data: {
@@ -55,6 +77,7 @@ export default async function AdminBotsPage() {
                 phoneNumber,
                 apiId,
                 apiHash,
+                ownerUserId,
                 isUserAccount: true,
                 isActive: false,
             },
@@ -115,7 +138,7 @@ export default async function AdminBotsPage() {
                 <CardContent>
                     <form
                         action={createBot}
-                        className="grid grid-cols-1 md:grid-cols-4 gap-6"
+                        className="grid grid-cols-1 md:grid-cols-5 gap-6"
                     >
                         <div className="space-y-2">
                             <label className="text-sm font-semibold flex items-center gap-2">
@@ -195,9 +218,27 @@ export default async function AdminBotsPage() {
                                 className="bg-slate-50/50 border-slate-200"
                             />
                         </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-semibold">
+                                Dono do Tenant
+                            </label>
+                            <select
+                                name="ownerUserId"
+                                className="w-full h-10 px-3 py-2 bg-slate-50/50 border border-slate-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+                            >
+                                <option value="">Sem dono definido</option>
+                                {customers.map((customer) => (
+                                    <option key={customer.id} value={customer.id}>
+                                        {customer.name ||
+                                            customer.email ||
+                                            customer.id}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
                         <Button
                             type="submit"
-                            className="md:col-span-4 w-full bg-primary hover:bg-primary/90"
+                            className="md:col-span-5 w-full bg-primary hover:bg-primary/90"
                         >
                             Criar Conta
                         </Button>
@@ -228,6 +269,9 @@ export default async function AdminBotsPage() {
                             </TableHead>
                             <TableHead className="font-bold text-slate-700">
                                 MTProto
+                            </TableHead>
+                            <TableHead className="font-bold text-slate-700">
+                                Tenant
                             </TableHead>
                             <TableHead className="text-right font-bold text-slate-700">
                                 Ações
@@ -269,6 +313,13 @@ export default async function AdminBotsPage() {
                                 </TableCell>
                                 <TableCell>
                                     <BotConnectionManager bot={bot} />
+                                </TableCell>
+                                <TableCell>
+                                    <div className="text-sm font-medium text-slate-700">
+                                        {bot.ownerUser?.name ||
+                                            bot.ownerUser?.email ||
+                                            "Sem dono"}
+                                    </div>
                                 </TableCell>
                                 <TableCell className="text-right flex items-center gap-2 justify-end">
                                     <form
@@ -317,7 +368,7 @@ export default async function AdminBotsPage() {
                         {bots.length === 0 && (
                             <TableRow>
                                 <TableCell
-                                    colSpan={4}
+                                    colSpan={5}
                                     className="h-24 text-center text-slate-400 italic"
                                 >
                                     Nenhuma conta cadastrada.

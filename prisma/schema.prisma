@@ -6,17 +6,96 @@ datasource db {
   provider = "postgresql"
 }
 
+enum UserRole {
+  SUPER_ADMIN
+  CUSTOMER
+}
+
+enum UserAccessStatus {
+  ACTIVE
+  BANNED
+}
+
+enum PlanType {
+  FREE
+  BASIC
+  PRO
+  ENTERPRISE
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  CANCELED
+  PAST_DUE
+}
+
+enum TransactionStatus {
+  PENDING
+  PAID
+  FAILED
+  CANCELED
+  REFUNDED
+}
+
 model User {
-  id        String   @id @default(cuid())
-  name      String?
-  email     String?  @unique
-  password  String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id           String            @id @default(cuid())
+  name         String?
+  email        String?           @unique
+  password     String?
+  role         UserRole          @default(CUSTOMER)
+  accessStatus UserAccessStatus  @default(ACTIVE)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  bots         BotAccount[]
+  products     Product[]
+  templates    MessageTemplate[]
+  subscription Subscription?
+  transactions Transaction[]
+}
+
+model Subscription {
+  id                    String             @id @default(cuid())
+  userId                String             @unique
+  planType              PlanType           @default(FREE)
+  status                SubscriptionStatus @default(ACTIVE)
+  startDate             DateTime           @default(now())
+  endDate               DateTime?
+  graceUntil            DateTime?
+  gatewaySubscriptionId String?            @unique
+  planPriceCents        Int                @default(0)
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+}
+
+model Transaction {
+  id                    String            @id @default(cuid())
+  userId                String
+  subscriptionId        String?
+  amountCents           Int
+  currency              String            @default("BRL")
+  status                TransactionStatus @default(PENDING)
+  referenceDate         DateTime          @default(now())
+  paidAt                DateTime?
+  gatewayReference      String?           @unique
+  gatewaySubscriptionId String?
+  rawPayload            Json?
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subscription Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+
+  @@index([status, referenceDate])
+  @@index([userId, createdAt])
 }
 
 model BotAccount {
   id               String   @id @default(cuid())
+  ownerUserId      String?
   name             String
   token            String?  @unique
   webhookSecret    String?
@@ -30,15 +109,19 @@ model BotAccount {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
+  ownerUser         User?               @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
   users             TelegramUser[]
   sales             Sale[]
   messageLogs       MessageLog[]
+  chatMessages      ChatMessage[]
   scheduledJobs     ScheduledMessageJob[]
   rules             TimedMessageRule[]
   recurring         RecurringSchedule[]
   pixAudioConfig    PixAudioConfig?
   discountConfig    DiscountConfig?
   dontSellIntervals DontSellInterval[]
+
+  @@index([ownerUserId])
 }
 
 model RecurringSchedule {
@@ -95,6 +178,7 @@ enum MediaType {
 
 model MessageTemplate {
   id             String             @id @default(cuid())
+  ownerUserId    String?
   key            MessageTemplateKey
   title          String
   type           MediaType
@@ -106,10 +190,13 @@ model MessageTemplate {
   createdAt      DateTime           @default(now())
   updatedAt      DateTime           @updatedAt
 
+  ownerUser     User?                 @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
   mediaItems    MessageTemplateMedia[]
   rules         TimedMessageRule[]
   scheduledJobs ScheduledMessageJob[]
   recurring     RecurringSchedule[]
+
+  @@index([ownerUserId])
 }
 
 model MessageTemplateMedia {
@@ -193,6 +280,7 @@ enum ProductType {
 
 model Product {
   id             String      @id @default(cuid())
+  ownerUserId    String?
   title          String
   description    String?
   priceCents     Int
@@ -203,8 +291,11 @@ model Product {
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
 
+  ownerUser       User?       @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
   sales           Sale[]
   discountConfigs DiscountConfig[]
+
+  @@index([ownerUserId])
 }
 
 enum SaleStatus {
@@ -410,11 +501,15 @@ enum ChatMessageRole {
 }
 
 model ChatMessage {
+  botId       String?
   id         String          @id @default(uuid())
   telegramId String
   role       ChatMessageRole
   content    String          @db.Text
   createdAt  DateTime        @default(now())
 
+  bot BotAccount? @relation(fields: [botId], references: [id], onDelete: Cascade)
+
   @@index([telegramId, createdAt])
+  @@index([botId, telegramId, createdAt])
 }

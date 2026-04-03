@@ -62,6 +62,7 @@ export class AiAgentProcessor extends WorkerHost {
             }
 
             await this.aiAgentService.saveModelMessage(
+                job.data.botId,
                 job.data.telegramId,
                 reply.text,
             );
@@ -198,6 +199,7 @@ export class AiAgentProcessor extends WorkerHost {
         }
 
         await this.aiAgentService.saveModelMessage(
+            data.botId,
             data.telegramId,
             charge.pixMessage,
         );

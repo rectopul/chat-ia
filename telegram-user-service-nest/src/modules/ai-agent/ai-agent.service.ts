@@ -13,6 +13,7 @@ import {
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { Queue } from "bullmq";
 import { AiAgentRepository } from "./ai-agent.repository";
+import { SubscriptionService } from "../subscription/subscription.service";
 
 export const AI_RESPONSE_QUEUE_NAME = "ai-response";
 export const AI_RESPONSE_JOB_NAME = "generate-ai-response";
@@ -83,6 +84,7 @@ export class AiAgentService {
     constructor(
         private readonly configService: ConfigService,
         private readonly repository: AiAgentRepository,
+        private readonly subscriptionService: SubscriptionService,
         @InjectQueue(AI_RESPONSE_QUEUE_NAME)
         private readonly aiResponseQueue: Queue<AiResponseJobData>,
     ) {}
@@ -94,7 +96,10 @@ export class AiAgentService {
             return;
         }
 
+        await this.subscriptionService.assertAiAccess(data.botId);
+
         await this.repository.createMessage({
+            botId: data.botId,
             telegramId: data.telegramId,
             role: ChatMessageRole.user,
             content: messageText,
@@ -136,9 +141,9 @@ export class AiAgentService {
         const telegramId = data.telegramId;
         const [history, products, previewTemplates, botAccount, recentPreviewMediaUrls] =
             await Promise.all([
-                this.repository.getRecentMessages(telegramId, 10),
-                this.repository.getActiveProducts(),
-                this.repository.getActivePreviewTemplates(),
+                this.repository.getRecentMessages(data.botId, telegramId, 10),
+                this.repository.getActiveProductsForBot(data.botId),
+                this.repository.getActivePreviewTemplatesForBot(data.botId),
                 this.repository.getBotAccount(data.botId),
                 this.repository.getRecentlySentPreviewMediaUrls(
                     data.botId,
@@ -204,9 +209,13 @@ export class AiAgentService {
     ): Promise<AiAgentReply> {
         const [history, products, previewTemplates, botAccount, recentPreviewMediaUrls] =
             await Promise.all([
-                this.repository.getRecentMessages(data.telegramId, 10),
-                this.repository.getActiveProducts(),
-                this.repository.getActivePreviewTemplates(),
+                this.repository.getRecentMessages(
+                    data.botId,
+                    data.telegramId,
+                    10,
+                ),
+                this.repository.getActiveProductsForBot(data.botId),
+                this.repository.getActivePreviewTemplatesForBot(data.botId),
                 this.repository.getBotAccount(data.botId),
                 this.repository.getRecentlySentPreviewMediaUrls(
                     data.botId,
@@ -265,7 +274,11 @@ export class AiAgentService {
         };
     }
 
-    async saveModelMessage(telegramId: string, content: string): Promise<void> {
+    async saveModelMessage(
+        botId: string,
+        telegramId: string,
+        content: string,
+    ): Promise<void> {
         const trimmedContent = content.trim();
 
         if (!trimmedContent) {
@@ -273,6 +286,7 @@ export class AiAgentService {
         }
 
         await this.repository.createMessage({
+            botId,
             telegramId,
             role: ChatMessageRole.model,
             content: trimmedContent,

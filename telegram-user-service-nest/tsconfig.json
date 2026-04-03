@@ -1,9 +1,9 @@
 {
     "compilerOptions": {
         "module": "commonjs",
-        "target": "ES2021",
+        "target": "ES2022",
         "lib": [
-            "ES2021"
+            "ES2022"
         ],
         "declaration": true,
         "removeComments": true,
@@ -19,13 +19,23 @@
         "moduleResolution": "node",
         "resolveJsonModule": true,
         "outDir": "./dist",
+        "rootDir": "./src",
+        "ignoreDeprecations": "6.0",
         "baseUrl": "./",
-        "sourceMap": true, // <--- Adicione isso para debug (opcional, mas recomendado)
-        "incremental": true
+        "paths": {
+            "@/*": [
+                "src/*"
+            ]
+        },
+        "sourceMap": true,
+        "incremental": true,
+        "moduleDetection": "force",
+        "verbatimModuleSyntax": false,
+        "useDefineForClassFields": false
     },
     "include": [
         "src/**/*"
-    ], // <--- ESSENCIAL: Diz ao TS para olhar só a pasta src
+    ],
     "exclude": [
         "node_modules",
         "dist",

@@ -39,10 +39,10 @@
     "@nestjs/cli": "^10.0.0",
     "@nestjs/schematics": "^10.0.0",
     "@types/fluent-ffmpeg": "^2.1.28",
-    "@types/node": "^20.0.0",
+    "@types/node": "^20.19.39",
     "@types/node-telegram-bot-api": "^0.64.0",
     "@types/sharp": "^0.31.1",
     "ts-node": "^10.9.0",
-    "typescript": "^5.0.0"
+    "typescript": "^6.0.2"
   }
 }

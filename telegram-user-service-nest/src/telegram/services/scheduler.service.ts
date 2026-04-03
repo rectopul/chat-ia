@@ -42,7 +42,10 @@ export class SchedulerService {
         businessConnectionId: string,
     ): Promise<void> {
         const dontSellTemplate = await this.prisma.messageTemplate.findFirst({
-            where: { key: MessageTemplateKey.DONT_SELL, isActive: true },
+            where: await this.buildTemplateScopeWhere(
+                botId,
+                MessageTemplateKey.DONT_SELL,
+            ),
         });
 
         if (!dontSellTemplate) {
@@ -308,7 +311,11 @@ export class SchedulerService {
                 business_connection_id: businessConnectionId,
             });
 
-            await this.aiAgentService.saveModelMessage(job.chatId, reply.text);
+            await this.aiAgentService.saveModelMessage(
+                job.botId,
+                job.chatId,
+                reply.text,
+            );
 
             if (reply.previewTemplateIds.length > 0) {
                 const templates = await this.aiAgentService.getTemplatesByIds(
@@ -377,6 +384,26 @@ export class SchedulerService {
     private getErrorMessage(error: unknown): string {
         if (error instanceof Error) return error.message;
         return String(error);
+    }
+
+    private async buildTemplateScopeWhere(
+        botId: string,
+        key: MessageTemplateKey,
+    ): Promise<{
+        key: MessageTemplateKey;
+        isActive: true;
+        ownerUserId: string | null;
+    }> {
+        const bot = await this.prisma.botAccount.findUnique({
+            where: { id: botId },
+            select: { ownerUserId: true },
+        });
+
+        return {
+            key,
+            isActive: true,
+            ownerUserId: bot?.ownerUserId ?? null,
+        };
     }
 
     private sleep(ms: number): Promise<void> {

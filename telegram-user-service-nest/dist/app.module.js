@@ -21,6 +21,9 @@ const constants_1 = require("./telegram/constants");
 const whatsapp_module_1 = require("./whatsapp/whatsapp.module");
 const ai_agent_module_1 = require("./modules/ai-agent/ai-agent.module");
 const ai_agent_service_1 = require("./modules/ai-agent/ai-agent.service");
+const subscription_module_1 = require("./modules/subscription/subscription.module");
+const billing_module_1 = require("./modules/billing/billing.module");
+const admin_module_1 = require("./modules/admin/admin.module");
 let AppModule = class AppModule {
 };
 exports.AppModule = AppModule;
@@ -56,6 +59,9 @@ exports.AppModule = AppModule = __decorate([
             schedule_module_1.ScheduleModule,
             telegram_module_1.TelegramModule,
             ai_agent_module_1.AiAgentModule,
+            subscription_module_1.SubscriptionModule,
+            billing_module_1.BillingModule,
+            admin_module_1.AdminModule,
             syncpay_module_1.SyncPayModule,
             template_module_1.TemplateModule,
             whatsapp_module_1.WhatsappModule,

@@ -23,7 +23,7 @@ export function LoginForm() {
 
     useEffect(() => {
         if (state?.message === "success") {
-            router.push("/admin");
+            router.push("/dashboard");
         }
     }, [state, router]);
 

@@ -4,6 +4,7 @@ import { SyncPayService } from "@/lib/syncpay";
 import { TelegramService } from "@/lib/telegram";
 import { SaleStatus } from "@prisma/client";
 import axios from "axios";
+import { handleSaasWebhook } from "@/lib/saas/server";
 
 const NESTAPI_URL = process.env.API_URL;
 
@@ -35,40 +36,42 @@ export async function POST(req: NextRequest) {
             },
         });
 
-        if (
-            data.status === "paid" ||
-            data.status === "completed" ||
-            data.status === "succeeded"
-        ) {
-            const referenceId = data.id; // Or mapping if you use a different internal ref
+        const normalizedStatus = String(data.status ?? "")
+            .trim()
+            .toLowerCase();
 
-            // SyncPay doc shows "id" in data as the identifier.
-            // We should check if this matches our identifier or if we need to search by pix_code
+        if (
+            normalizedStatus === "paid" ||
+            normalizedStatus === "completed" ||
+            normalizedStatus === "succeeded" ||
+            normalizedStatus === "pago" ||
+            normalizedStatus === "aprovado"
+        ) {
             const sale = await prisma.sale.findFirst({
                 where: {
                     OR: [
-                        { referenceId: referenceId },
+                        { referenceId: String(data.external_reference ?? "") },
+                        { referenceId: String(data.id ?? "") },
+                        {
+                            rawPayload: {
+                                path: ["identifier"],
+                                equals: String(data.id ?? ""),
+                            },
+                        },
                         {
                             rawPayload: {
                                 path: ["pix_code"],
                                 equals: data.pix_code,
                             },
-                        }, // Advanced query if needed
+                        },
                     ],
                 },
-                include: { user: true, product: true },
-            });
-
-            // Simpler approach if we store the 'identifier' from cash-in as referenceId
-            const targetSale = await prisma.sale.findFirst({
-                where: { referenceId: data.id },
                 include: { user: true, product: true, bot: true },
             });
 
-            if (targetSale && targetSale.status !== SaleStatus.PAID) {
-                // Update Sale
+            if (sale && sale.status !== SaleStatus.PAID) {
                 await prisma.sale.update({
-                    where: { id: targetSale.id },
+                    where: { id: sale.id },
                     data: {
                         status: SaleStatus.PAID,
                         paidAt: new Date(),
@@ -76,31 +79,25 @@ export async function POST(req: NextRequest) {
                     },
                 });
 
-                // Grant access / Subscription
                 let newUntil: Date | null = null;
                 if (
-                    targetSale.product.productType === "SUBSCRIPTION" &&
-                    targetSale.product.subscriberDays
+                    sale.product.productType === "SUBSCRIPTION" &&
+                    sale.product.subscriberDays
                 ) {
-                    const currentUntil =
-                        targetSale.user.subscriberUntil || new Date();
+                    const currentUntil = sale.user.subscriberUntil || new Date();
                     const baseDate =
                         currentUntil > new Date() ? currentUntil : new Date();
                     newUntil = new Date(
                         baseDate.getTime() +
-                            targetSale.product.subscriberDays *
-                                24 *
-                                60 *
-                                60 *
-                                1000,
+                            sale.product.subscriberDays * 24 * 60 * 60 * 1000,
                     );
                 }
 
                 await prisma.telegramUser.update({
                     where: {
                         telegramUserId_botId: {
-                            telegramUserId: targetSale.telegramUserId,
-                            botId: targetSale.botId,
+                            telegramUserId: sale.telegramUserId,
+                            botId: sale.botId,
                         },
                     },
                     data: {
@@ -108,12 +105,16 @@ export async function POST(req: NextRequest) {
                         subscriberUntil: newUntil,
                     },
                 });
-            }
 
-            await axios.post(`${NESTAPI_URL}/telegram/confirm-payment`, {
-                saleId: sale?.id,
-            });
+                if (sale.id && NESTAPI_URL) {
+                    await axios.post(`${NESTAPI_URL}/telegram/confirm-payment`, {
+                        saleId: sale.id,
+                    });
+                }
+            }
         }
+
+        await handleSaasWebhook(payload);
 
         return NextResponse.json({ ok: true });
     } catch (error) {

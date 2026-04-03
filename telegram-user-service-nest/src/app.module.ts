@@ -12,6 +12,9 @@ import { QUEUE_NAME, TRANSFER_QUEUE_NAME } from "./telegram/constants";
 import { WhatsappModule } from "./whatsapp/whatsapp.module";
 import { AiAgentModule } from "./modules/ai-agent/ai-agent.module";
 import { AI_RESPONSE_QUEUE_NAME } from "./modules/ai-agent/ai-agent.service";
+import { SubscriptionModule } from "./modules/subscription/subscription.module";
+import { BillingModule } from "./modules/billing/billing.module";
+import { AdminModule } from "./modules/admin/admin.module";
 
 @Module({
     imports: [
@@ -54,6 +57,9 @@ import { AI_RESPONSE_QUEUE_NAME } from "./modules/ai-agent/ai-agent.service";
         ScheduleModule,
         TelegramModule,
         AiAgentModule,
+        SubscriptionModule,
+        BillingModule,
+        AdminModule,
         SyncPayModule,
         TemplateModule,
         WhatsappModule,

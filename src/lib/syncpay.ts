@@ -1,7 +1,7 @@
 import axios from "axios";
 import crypto from "crypto";
 
-const SYNCPAY_API_URL = "https://api.syncpay.com.br"; // Use correct base URL from docs if available, assuming .com.br or provided
+const SYNCPAY_API_URL = "https://api.syncpayments.com.br"; // Use correct base URL from docs if available, assuming .com.br or provided
 const CLIENT_ID = process.env.SYNCPAY_CLIENT_ID;
 const CLIENT_SECRET = process.env.SYNCPAY_CLIENT_SECRET;
 const STATIC_KEY =

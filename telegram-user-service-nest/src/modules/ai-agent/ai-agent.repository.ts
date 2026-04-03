@@ -15,6 +15,7 @@ import {
 import { PrismaService } from "../../prisma/prisma.service";
 
 type CreateChatMessageInput = {
+    botId?: string | null;
     telegramId: string;
     role: ChatMessageRole;
     content: string;
@@ -31,21 +32,47 @@ export class AiAgentRepository {
     }
 
     async getRecentMessages(
+        botId: string,
         telegramId: string,
         limit: number = 10,
     ): Promise<ChatMessage[]> {
-        const messages = await this.prisma.chatMessage.findMany({
-            where: { telegramId },
+        const scopedMessages = await this.prisma.chatMessage.findMany({
+            where: { botId, telegramId },
             orderBy: { createdAt: "desc" },
             take: limit,
         });
 
-        return messages.reverse();
+        if (scopedMessages.length) {
+            return scopedMessages.reverse();
+        }
+
+        const legacyMessages = await this.prisma.chatMessage.findMany({
+            where: {
+                telegramId,
+                botId: null,
+            },
+            orderBy: { createdAt: "desc" },
+            take: limit,
+        });
+
+        return legacyMessages.reverse();
     }
 
     async getActiveProducts(): Promise<Product[]> {
         return this.prisma.product.findMany({
-            where: { isActive: true },
+            where: { isActive: true, ownerUserId: null },
+            orderBy: { priceCents: "asc" },
+        });
+    }
+
+    async getActiveProductsForBot(botId: string): Promise<Product[]> {
+        const ownerUserId = await this.getBotOwnerUserId(botId);
+
+        return this.prisma.product.findMany({
+            where: {
+                isActive: true,
+                ownerUserId,
+            },
             orderBy: { priceCents: "asc" },
         });
     }
@@ -66,8 +93,43 @@ export class AiAgentRepository {
         return this.prisma.messageTemplate.findMany({
             where: {
                 isActive: true,
+                ownerUserId: null,
                 OR: [
                     { type: { in: [MediaType.IMAGE, MediaType.VIDEO, MediaType.AUDIO] } },
+                    { mediaUrl: { not: null } },
+                    { mediaItems: { some: {} } },
+                ],
+            },
+            include: {
+                mediaItems: {
+                    orderBy: { order: "asc" },
+                },
+            },
+            orderBy: { createdAt: "desc" },
+        });
+    }
+
+    async getActivePreviewTemplatesForBot(
+        botId: string,
+    ): Promise<
+        Array<
+            MessageTemplate & {
+                mediaItems: MessageTemplateMedia[];
+            }
+        >
+    > {
+        const ownerUserId = await this.getBotOwnerUserId(botId);
+
+        return this.prisma.messageTemplate.findMany({
+            where: {
+                isActive: true,
+                ownerUserId,
+                OR: [
+                    {
+                        type: {
+                            in: [MediaType.IMAGE, MediaType.VIDEO, MediaType.AUDIO],
+                        },
+                    },
                     { mediaUrl: { not: null } },
                     { mediaItems: { some: {} } },
                 ],
@@ -169,6 +231,20 @@ export class AiAgentRepository {
         });
     }
 
+    async getProductByIdForBot(
+        productId: string,
+        botId: string,
+    ): Promise<Product | null> {
+        const ownerUserId = await this.getBotOwnerUserId(botId);
+
+        return this.prisma.product.findFirst({
+            where: {
+                id: productId,
+                ownerUserId,
+            },
+        });
+    }
+
     async createPendingSale(data: {
         botId: string;
         telegramUserId: string;
@@ -189,5 +265,14 @@ export class AiAgentRepository {
                 rawPayload: data.rawPayload as any,
             },
         });
+    }
+
+    private async getBotOwnerUserId(botId: string): Promise<string | null> {
+        const bot = await this.prisma.botAccount.findUnique({
+            where: { id: botId },
+            select: { ownerUserId: true },
+        });
+
+        return bot?.ownerUserId ?? null;
     }
 }

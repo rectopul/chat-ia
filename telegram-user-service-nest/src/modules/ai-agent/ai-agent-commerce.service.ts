@@ -21,7 +21,7 @@ export class AiAgentCommerceService {
         productId: string,
     ): Promise<AiAgentPixCharge> {
         const [product, user] = await Promise.all([
-            this.repository.getProductById(productId),
+            this.repository.getProductByIdForBot(productId, botId),
             this.repository.getTelegramUserByChatId(chatId),
         ]);
 

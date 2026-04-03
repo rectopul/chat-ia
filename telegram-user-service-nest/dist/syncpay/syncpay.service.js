@@ -20,7 +20,8 @@ const SYNCPAY_API_URL = "https://api.syncpayments.com.br";
 let cachedToken = null;
 let tokenExpiry = 0;
 let warnedAboutLegacyEnvNames = false;
-let SyncPayService = SyncPayService_1 = class SyncPayService {
+let SyncPayService = class SyncPayService {
+    static { SyncPayService_1 = this; }
     constructor() {
         this.logger = new common_1.Logger(SyncPayService_1.name);
         this.http = axios_1.default.create({
@@ -120,6 +121,14 @@ let SyncPayService = SyncPayService_1 = class SyncPayService {
             throw err;
         }
     }
+    static { this.SUCCESS_STATUSES = [
+        "PAGO",
+        "APROVADO",
+        "PAGAMENTO_APROVADO",
+        "COMPLETED",
+        "PAID_OUT",
+        "completed",
+    ]; }
     processCashInWebhook(payload) {
         const data = payload?.data;
         if (!data?.status || !data?.id || !data?.amount) {
@@ -147,14 +156,6 @@ let SyncPayService = SyncPayService_1 = class SyncPayService {
     }
 };
 exports.SyncPayService = SyncPayService;
-SyncPayService.SUCCESS_STATUSES = [
-    "PAGO",
-    "APROVADO",
-    "PAGAMENTO_APROVADO",
-    "COMPLETED",
-    "PAID_OUT",
-    "completed",
-];
 exports.SyncPayService = SyncPayService = SyncPayService_1 = __decorate([
     (0, common_1.Injectable)(),
     __metadata("design:paramtypes", [])

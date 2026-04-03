@@ -175,6 +175,21 @@ export class TemplateService {
         return client;
     }
 
+    private async buildProductScopeWhere(botId: string): Promise<{
+        isActive: true;
+        ownerUserId: string | null;
+    }> {
+        const bot = await this.prisma.botAccount.findUnique({
+            where: { id: botId },
+            select: { ownerUserId: true },
+        });
+
+        return {
+            isActive: true,
+            ownerUserId: bot?.ownerUserId ?? null,
+        };
+    }
+
     // ── DONT_SELL menu ────────────────────────────────────────────────────
 
     async sendDontSellMenu(
@@ -191,7 +206,7 @@ export class TemplateService {
         const products = discountConfig?.isActive
             ? [discountConfig.product]
             : await this.prisma.product.findMany({
-                  where: { isActive: true },
+                  where: await this.buildProductScopeWhere(botId),
                   orderBy: { priceCents: "asc" },
               });
 

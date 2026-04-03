@@ -30,10 +30,11 @@ import {
 import { motion } from "framer-motion";
 
 const navItems = [
-    { href: "/admin", label: "Dashboard", icon: LayoutDashboard },
+    { href: "/admin/dashboard", label: "Dashboard SaaS", icon: LayoutDashboard },
+    { href: "/admin/tenants", label: "Clientes SaaS", icon: UserCircle },
     { href: "/admin/bots", label: "Bots (Contas)", icon: Bot },
     { href: "/admin/schedules", label: "Agendamentos", icon: Calendar },
-    { href: "/admin/users", label: "Usuários", icon: Users },
+    { href: "/admin/users", label: "Leads Telegram", icon: Users },
     { href: "/admin/messages", label: "Conteúdos", icon: MessageSquare },
     { href: "/admin/campaigns", label: "Campanhas Timed", icon: Zap },
     { href: "/admin/products", label: "Produtos", icon: ShoppingBag },

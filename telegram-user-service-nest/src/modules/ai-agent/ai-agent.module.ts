@@ -3,6 +3,7 @@ import { Module, forwardRef } from "@nestjs/common";
 import { PrismaModule } from "../../prisma/prisma.module";
 import { SyncPayModule } from "../../syncpay/syncpay.module";
 import { TelegramModule } from "../../telegram/telegram.module";
+import { SubscriptionModule } from "../subscription/subscription.module";
 import {
     AI_RESPONSE_QUEUE_NAME,
     AiAgentService,
@@ -18,6 +19,7 @@ import { AiAgentCommerceService } from "./ai-agent-commerce.service";
         }),
         PrismaModule,
         SyncPayModule,
+        SubscriptionModule,
         forwardRef(() => TelegramModule),
     ],
     providers: [

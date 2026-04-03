@@ -363,7 +363,10 @@ export class BusinessBotService {
         const businessCtx: BusinessCtx = { token, businessConnectionId, botId };
 
         const welcomeTemplate = await this.prisma.messageTemplate.findFirst({
-            where: { key: MessageTemplateKey.WELCOME },
+            where: await this.buildTemplateScopeWhere(
+                botId,
+                MessageTemplateKey.WELCOME,
+            ),
             include: { mediaItems: true },
         });
         if (welcomeTemplate) {
@@ -494,7 +497,7 @@ export class BusinessBotService {
 
             try {
                 if (data === "list_products") {
-                    await this.handleListProducts(send);
+                    await this.handleListProducts(botId, send);
                     return;
                 }
                 if (data.startsWith("buy:")) {
@@ -538,10 +541,11 @@ export class BusinessBotService {
     // ── Callback sub-handlers ─────────────────────────────────────────────
 
     private async handleListProducts(
+        botId: string,
         send: (text: string, extra?: any) => Promise<any>,
     ): Promise<void> {
         const products = await this.prisma.product.findMany({
-            where: { isActive: true },
+            where: await this.buildProductScopeWhere(botId),
             orderBy: { priceCents: "asc" },
         });
 
@@ -571,8 +575,11 @@ export class BusinessBotService {
         send: (text: string, extra?: any) => Promise<any>,
     ): Promise<void> {
         const productId = data.split(":")[1];
-        const product = await this.prisma.product.findUnique({
-            where: { id: productId },
+        const product = await this.prisma.product.findFirst({
+            where: {
+                id: productId,
+                ...(await this.buildProductScopeWhere(botId)),
+            },
         });
         if (!product) {
             const businessConnectionId =
@@ -679,11 +686,14 @@ export class BusinessBotService {
         const [, productId, percentStr] = data.split(":");
         const discountPercent = percentStr ? parseInt(percentStr) : 10;
 
-        const product = await this.prisma.product.findUnique({
-            where: { id: productId },
+        const scopedProduct = await this.prisma.product.findFirst({
+            where: {
+                id: productId,
+                ...(await this.buildProductScopeWhere(botId)),
+            },
         });
 
-        if (!product) {
+        if (!scopedProduct) {
             const businessConnectionId =
                 await this.botApi.resolveConnectionForChat(botId, chatId);
             await this.chatAction.sendActionBotApi(
@@ -723,15 +733,15 @@ export class BusinessBotService {
             1200,
         );
 
-        await send(`⏳ Gerando PIX para *${product.title}*...`);
+        await send(`⏳ Gerando PIX para *${scopedProduct.title}*...`);
 
         const finalAmountCents = Math.round(
-            product.priceCents * (1 - discountPercent / 100),
+            scopedProduct.priceCents * (1 - discountPercent / 100),
         );
 
         const pixData = await this.syncPay.createCharge({
             amountCents: finalAmountCents,
-            productTitle: product.title,
+            productTitle: scopedProduct.title,
             referenceId: String(chatId),
         });
 
@@ -739,7 +749,7 @@ export class BusinessBotService {
             data: {
                 botId,
                 telegramUserId: userTelegram.telegramUserId,
-                productId: product.id,
+                productId: scopedProduct.id,
                 amountCents: finalAmountCents,
                 referenceId: pixData.identifier,
                 status: "PENDING",
@@ -771,7 +781,7 @@ export class BusinessBotService {
             businessConnectionId,
             this.chatAction.calculateTypingDelay(
                 this.buildPixMessage(
-                    product,
+                    scopedProduct,
                     pixData.pix_code,
                     finalAmountCents,
                     discountPercent,
@@ -781,12 +791,47 @@ export class BusinessBotService {
 
         await send(
             this.buildPixMessage(
-                product,
+                scopedProduct,
                 pixData.pix_code,
                 finalAmountCents,
                 discountPercent,
             ),
         );
+    }
+
+    private async buildProductScopeWhere(botId: string): Promise<{
+        isActive: true;
+        ownerUserId: string | null;
+    }> {
+        const bot = await this.prisma.botAccount.findUnique({
+            where: { id: botId },
+            select: { ownerUserId: true },
+        });
+
+        return {
+            isActive: true,
+            ownerUserId: bot?.ownerUserId ?? null,
+        };
+    }
+
+    private async buildTemplateScopeWhere(
+        botId: string,
+        key: MessageTemplateKey,
+    ): Promise<{
+        key: MessageTemplateKey;
+        isActive: true;
+        ownerUserId: string | null;
+    }> {
+        const bot = await this.prisma.botAccount.findUnique({
+            where: { id: botId },
+            select: { ownerUserId: true },
+        });
+
+        return {
+            key,
+            isActive: true,
+            ownerUserId: bot?.ownerUserId ?? null,
+        };
     }
 
     private buildPixMessage(
