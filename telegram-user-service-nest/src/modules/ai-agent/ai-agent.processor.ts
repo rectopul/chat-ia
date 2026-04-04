@@ -92,8 +92,38 @@ export class AiAgentProcessor extends WorkerHost {
 
             await job.updateProgress(100);
         } catch (error) {
+            const attempt = job.attemptsMade + 1;
+            const maxAttempts =
+                typeof job.opts.attempts === "number" ? job.opts.attempts : 1;
+
+            if (this.isAiQuotaError(error)) {
+                if (attempt === 1) {
+                    this.logger.warn(
+                        `[process] Cota da IA indisponivel para telegramId=${job.data.telegramId}; retry automatico ativo (${attempt}/${maxAttempts})`,
+                    );
+                } else if (attempt >= maxAttempts) {
+                    this.logger.error(
+                        `[process] Cota da IA permaneceu indisponivel para telegramId=${job.data.telegramId} apos ${attempt} tentativas`,
+                    );
+                }
+                throw error;
+            }
+
+            if (this.isBusinessPeerInvalidError(error)) {
+                if (attempt === 1) {
+                    this.logger.warn(
+                        `[process] Business connection em renovacao para telegramId=${job.data.telegramId}; retry automatico segue normal (${attempt}/${maxAttempts})`,
+                    );
+                } else if (attempt >= maxAttempts) {
+                    this.logger.warn(
+                        `[process] Nao foi possivel renovar a business connection para telegramId=${job.data.telegramId} apos ${attempt} tentativas`,
+                    );
+                }
+                throw error;
+            }
+
             this.logger.error(
-                `[process] Failed for telegramId=${job.data.telegramId} attempt=${job.attemptsMade + 1}`,
+                `[process] Failed for telegramId=${job.data.telegramId} attempt=${attempt}`,
                 error instanceof Error ? error.stack : String(error),
             );
             throw error;
@@ -105,23 +135,78 @@ export class AiAgentProcessor extends WorkerHost {
         responseText: string,
         typingDelay: number,
     ): Promise<void> {
-        if (!data.token || !data.businessConnectionId) {
+        if (!data.token) {
             throw new Error(
                 `Business response data is incomplete for chatId=${data.chatId}`,
             );
         }
 
+        let businessConnectionId =
+            (await this.botApi.resolveConnectionForChat(data.botId, data.chatId)) ??
+            data.businessConnectionId;
+
+        if (!businessConnectionId) {
+            throw new Error(
+                `Business connection not found for chatId=${data.chatId}`,
+            );
+        }
+
+        data.businessConnectionId = businessConnectionId;
+
         await this.chatAction.sendActionBotApi(
             data.token,
             data.chatId,
             "typing",
-            data.businessConnectionId,
+            businessConnectionId,
             typingDelay,
         );
 
-        await this.botApi.sendMessageHttp(data.token, data.chatId, responseText, {
-            business_connection_id: data.businessConnectionId,
-        });
+        try {
+            await this.botApi.sendMessageHttp(
+                data.token,
+                data.chatId,
+                responseText,
+                {
+                    business_connection_id: businessConnectionId,
+                },
+            );
+        } catch (error) {
+            if (!this.isBusinessPeerInvalidError(error)) {
+                throw error;
+            }
+
+            const refreshedConnectionId = await this.botApi.refreshConnectionForChat(
+                data.botId,
+                data.chatId,
+            );
+
+            if (!refreshedConnectionId) {
+                throw error;
+            }
+
+            data.businessConnectionId = refreshedConnectionId;
+
+            await this.chatAction.sendActionBotApi(
+                data.token,
+                data.chatId,
+                "typing",
+                refreshedConnectionId,
+                Math.min(typingDelay, 1200),
+            );
+
+            await this.botApi.sendMessageHttp(
+                data.token,
+                data.chatId,
+                responseText,
+                {
+                    business_connection_id: refreshedConnectionId,
+                },
+            );
+
+            this.logger.warn(
+                `[sendBusinessResponse] BUSINESS_PEER_INVALID em chatId=${data.chatId}; connection renovada, fluxo normal segue`,
+            );
+        }
     }
 
     private async sendMtprotoResponse(
@@ -203,5 +288,32 @@ export class AiAgentProcessor extends WorkerHost {
             data.telegramId,
             charge.pixMessage,
         );
+    }
+
+    private isBusinessPeerInvalidError(error: any): boolean {
+        const message = this.extractErrorMessage(error).toUpperCase();
+        return message.includes("BUSINESS_PEER_INVALID");
+    }
+
+    private isAiQuotaError(error: any): boolean {
+        const message = this.extractErrorMessage(error).toUpperCase();
+        return (
+            message.includes("RESOURCE_EXHAUSTED") ||
+            message.includes("QUOTA") ||
+            message.includes("RATE LIMIT") ||
+            message.includes("TOO MANY REQUESTS") ||
+            message.includes("[429")
+        );
+    }
+
+    private extractErrorMessage(error: any): string {
+        const message =
+            error?.response?.data?.description ??
+            error?.response?.data?.message ??
+            error?.message;
+
+        return typeof message === "string"
+            ? message
+            : JSON.stringify(message ?? error);
     }
 }

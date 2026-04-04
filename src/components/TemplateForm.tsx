@@ -18,6 +18,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select";
+import {
     Tooltip,
     TooltipContent,
     TooltipTrigger,
@@ -188,17 +195,18 @@ export function TemplateForm({ onSubmit }: Props) {
                                 </TooltipContent>
                             </Tooltip>
                         </Label>
-                        <select
-                            value={key}
-                            onChange={(e) => setKey(e.target.value)}
-                            className="w-full h-10 px-3 py-2 bg-slate-50/50 border border-slate-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
-                        >
-                            {TEMPLATE_KEYS.map((k) => (
-                                <option key={k} value={k}>
-                                    {k}
-                                </option>
-                            ))}
-                        </select>
+                        <Select value={key} onValueChange={setKey}>
+                            <SelectTrigger className="w-full bg-slate-50/50 border-slate-200">
+                                <SelectValue placeholder="Selecione a key" />
+                            </SelectTrigger>
+                            <SelectContent>
+                                {TEMPLATE_KEYS.map((k) => (
+                                    <SelectItem key={k} value={k}>
+                                        {k}
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
                     </div>
                     <div className="space-y-2">
                         <Label className="font-semibold">
@@ -368,27 +376,23 @@ export function TemplateForm({ onSubmit }: Props) {
                                                         ?.split("?")[0]
                                                 }
                                             </span>
-                                            <select
+                                            <Select
                                                 value={item.type}
-                                                onChange={(e) =>
-                                                    updateComboType(
-                                                        item.localId,
-                                                        e.target.value,
-                                                    )
+                                                onValueChange={(value) =>
+                                                    updateComboType(item.localId, value)
                                                 }
-                                                className="h-7 px-2 bg-slate-50 border border-slate-200 rounded text-[11px] focus:outline-none shrink-0"
                                             >
-                                                {["IMAGE", "VIDEO", "AUDIO"].map(
-                                                    (t) => (
-                                                        <option
-                                                            key={t}
-                                                            value={t}
-                                                        >
+                                                <SelectTrigger className="h-7 w-[120px] bg-slate-50 border-slate-200 text-[11px] shrink-0">
+                                                    <SelectValue placeholder="Tipo" />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    {["IMAGE", "VIDEO", "AUDIO"].map((t) => (
+                                                        <SelectItem key={t} value={t}>
                                                             {t}
-                                                        </option>
-                                                    ),
-                                                )}
-                                            </select>
+                                                        </SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
                                             <button
                                                 type="button"
                                                 onClick={() =>

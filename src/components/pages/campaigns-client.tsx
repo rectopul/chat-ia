@@ -25,6 +25,13 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select";
+import {
     Table,
     TableBody,
     TableCell,
@@ -245,22 +252,23 @@ export function CampaignsClient({
                             <label className="text-sm font-semibold">
                                 Conta (Bot)
                             </label>
-                            <select
+                            <Select
                                 name="botId"
-                                required
                                 value={selectedBotId}
-                                onChange={(e) =>
-                                    handleBotChange(e.target.value)
-                                }
-                                className="w-full h-10 px-3 py-2 bg-slate-50/50 border border-slate-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+                                onValueChange={handleBotChange}
+                                required
                             >
-                                <option value="">Selecionar Bot</option>
-                                {bots.map((b) => (
-                                    <option key={b.id} value={b.id}>
-                                        {b.name}
-                                    </option>
-                                ))}
-                            </select>
+                                <SelectTrigger className="w-full bg-slate-50/50 border-slate-200">
+                                    <SelectValue placeholder="Selecionar Bot" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {bots.map((b) => (
+                                        <SelectItem key={b.id} value={b.id}>
+                                            {b.name}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
                         </div>
 
                         <div className="space-y-2">
@@ -275,16 +283,18 @@ export function CampaignsClient({
                                     </TooltipContent>
                                 </Tooltip>
                             </label>
-                            <select
-                                name="segment"
-                                className="w-full h-10 px-3 py-2 bg-slate-50/50 border border-slate-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
-                            >
-                                {Object.values(UserSegment).map((s) => (
-                                    <option key={s} value={s}>
-                                        {segmentLabels[s]}
-                                    </option>
-                                ))}
-                            </select>
+                            <Select name="segment" defaultValue={UserSegment.ALL}>
+                                <SelectTrigger className="w-full bg-slate-50/50 border-slate-200">
+                                    <SelectValue placeholder="Selecione o segmento" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {Object.values(UserSegment).map((s) => (
+                                        <SelectItem key={s} value={s}>
+                                            {segmentLabels[s]}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
                         </div>
 
                         <div className="space-y-2">
@@ -352,18 +362,18 @@ export function CampaignsClient({
                             <label className="text-sm font-semibold">
                                 Template TIMED
                             </label>
-                            <select
-                                name="templateId"
-                                required
-                                className="w-full h-10 px-3 py-2 bg-slate-50/50 border border-slate-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
-                            >
-                                <option value="">Selecionar Template</option>
-                                {templates.map((t) => (
-                                    <option key={t.id} value={t.id}>
-                                        {t.title}
-                                    </option>
-                                ))}
-                            </select>
+                            <Select name="templateId" required>
+                                <SelectTrigger className="w-full bg-slate-50/50 border-slate-200">
+                                    <SelectValue placeholder="Selecionar Template" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {templates.map((t) => (
+                                        <SelectItem key={t.id} value={t.id}>
+                                            {t.title}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
                         </div>
 
                         {/* Feedback messages */}

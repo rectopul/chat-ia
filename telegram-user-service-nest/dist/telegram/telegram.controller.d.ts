@@ -27,6 +27,18 @@ export declare class TelegramController {
     }): Promise<{
         message: string;
     }>;
+    createSaleCheckout(body: {
+        botId: string;
+        telegramUserId: string;
+        productId: string;
+        discountPercent?: number;
+    }): Promise<{
+        saleId: string;
+        pixCode: string;
+        amountCents: number;
+        productTitle: string;
+        gatewayReference: string;
+    }>;
     getBotStatus(): Promise<BotStatusResponse>;
     confirmPayment(body: {
         saleId: string;

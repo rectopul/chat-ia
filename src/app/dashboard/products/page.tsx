@@ -1,8 +1,6 @@
 import { auth } from "@/auth";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
-import { revalidatePath } from "next/cache";
-import { ProductType } from "@prisma/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -15,6 +13,17 @@ import {
     TableRow,
 } from "@/components/ui/table";
 import { ShoppingBag, Trash2 } from "lucide-react";
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select";
+import {
+    createUserProductAction,
+    deleteUserProductAction,
+} from "./actions";
 
 export default async function UserProductsPage() {
     const session = await auth();
@@ -28,43 +37,6 @@ export default async function UserProductsPage() {
         where: { ownerUserId: userId },
         orderBy: { createdAt: "desc" },
     });
-
-    async function createProduct(formData: FormData) {
-        "use server";
-        const session = await auth();
-        if (!session?.user?.id) redirect("/login");
-
-        const title = String(formData.get("title") ?? "");
-        const description = String(formData.get("description") ?? "");
-        const priceCents = Math.round(Number(formData.get("price") ?? 0) * 100);
-        const productType = String(formData.get("productType") ?? "ONE_TIME") as ProductType;
-        const subscriberDays = String(formData.get("subscriberDays") ?? "").trim();
-
-        await prisma.product.create({
-            data: {
-                ownerUserId: session.user.id,
-                title,
-                description: description || null,
-                priceCents,
-                productType,
-                subscriberDays: subscriberDays ? Number(subscriberDays) : null,
-            },
-        });
-
-        revalidatePath("/dashboard/products");
-    }
-
-    async function deleteProduct(formData: FormData) {
-        "use server";
-        const session = await auth();
-        if (!session?.user?.id) redirect("/login");
-        const id = String(formData.get("id") ?? "");
-
-        await prisma.product.deleteMany({
-            where: { id, ownerUserId: session.user.id },
-        });
-        revalidatePath("/dashboard/products");
-    }
 
     return (
         <div className="space-y-8">
@@ -83,7 +55,7 @@ export default async function UserProductsPage() {
                     <CardTitle>Novo produto</CardTitle>
                 </CardHeader>
                 <CardContent>
-                    <form action={createProduct} className="grid gap-4 md:grid-cols-3">
+                    <form action={createUserProductAction} className="grid gap-4 md:grid-cols-3">
                         <input
                             name="title"
                             placeholder="Titulo"
@@ -98,13 +70,15 @@ export default async function UserProductsPage() {
                             className="h-10 rounded-md border border-slate-200 bg-slate-50 px-3"
                             required
                         />
-                        <select
-                            name="productType"
-                            className="h-10 rounded-md border border-slate-200 bg-slate-50 px-3"
-                        >
-                            <option value="ONE_TIME">Compra unica</option>
-                            <option value="SUBSCRIPTION">Assinatura</option>
-                        </select>
+                        <Select name="productType" defaultValue="ONE_TIME">
+                            <SelectTrigger className="h-10 w-full border-slate-200 bg-slate-50">
+                                <SelectValue placeholder="Selecione o tipo" />
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="ONE_TIME">Compra unica</SelectItem>
+                                <SelectItem value="SUBSCRIPTION">Assinatura</SelectItem>
+                            </SelectContent>
+                        </Select>
                         <input
                             name="subscriberDays"
                             type="number"
@@ -155,7 +129,7 @@ export default async function UserProductsPage() {
                                     })}`}
                                 </TableCell>
                                 <TableCell className="text-right">
-                                    <form action={deleteProduct}>
+                                    <form action={deleteUserProductAction}>
                                         <input type="hidden" name="id" value={product.id} />
                                         <Button size="sm" variant="outline">
                                             <Trash2 className="w-4 h-4 mr-2" />

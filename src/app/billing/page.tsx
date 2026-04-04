@@ -1,10 +1,7 @@
 import { auth } from "@/auth";
 import { redirect } from "next/navigation";
-import {
-    activateFreePlan,
-    createPaidPlanCheckout,
-    getUserWithSaasContext,
-} from "@/lib/saas/server";
+import Link from "next/link";
+import { getUserWithSaasContext } from "@/lib/saas/server";
 import { getPlanCatalog } from "@/lib/saas/plans";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -16,7 +13,8 @@ import {
     CardTitle,
 } from "@/components/ui/card";
 import { PlanType, TransactionStatus } from "@prisma/client";
-import { Copy, CreditCard, ShieldCheck } from "lucide-react";
+import { ArrowLeft, CreditCard, ShieldCheck } from "lucide-react";
+import { activateFreePlanAction, checkoutPlanAction } from "./actions";
 
 type SearchParams = Promise<{ checkout?: string }>;
 
@@ -47,34 +45,6 @@ export default async function BillingPage({
         redirect("/login");
     }
 
-    async function activateFreeAction() {
-        "use server";
-        const session = await auth();
-        if (!session?.user?.id) redirect("/login");
-        await activateFreePlan(session.user.id);
-        redirect("/dashboard");
-    }
-
-    async function checkoutAction(formData: FormData) {
-        "use server";
-        const session = await auth();
-        if (!session?.user?.id) redirect("/login");
-
-        const planType = String(formData.get("planType") ?? "") as PlanType;
-
-        if (!Object.values(PlanType).includes(planType)) {
-            redirect("/billing");
-        }
-
-        if (planType === PlanType.FREE) {
-            await activateFreePlan(session.user.id);
-            redirect("/dashboard");
-        }
-
-        const result = await createPaidPlanCheckout(session.user.id, planType);
-        redirect(`/billing?checkout=${result.transaction.id}`);
-    }
-
     const params = await searchParams;
     const checkout = params.checkout
         ? user.transactions.find(
@@ -82,29 +52,38 @@ export default async function BillingPage({
           ) ?? null
         : null;
     const checkoutPix =
-        checkout?.status === TransactionStatus.PENDING
-            ? (checkout.rawPayload as any)?.pix_code
+        checkout?.status === TransactionStatus.PENDING &&
+        checkout.rawPayload &&
+        typeof checkout.rawPayload === "object" &&
+        "pix_code" in checkout.rawPayload
+            ? checkout.rawPayload.pix_code
             : null;
     const plans = getPlanCatalog();
 
     return (
         <div className="min-h-screen bg-slate-50 px-4 py-10">
             <div className="mx-auto max-w-6xl space-y-8">
-                <div className="space-y-3">
-                    <Badge
-                        variant="outline"
-                        className="w-fit border-primary/20 bg-primary/5 text-primary"
-                    >
-                        Billing
-                    </Badge>
-                    <h1 className="text-4xl font-bold tracking-tight text-slate-900">
-                        Escolha o plano do seu tenant
-                    </h1>
-                    <p className="max-w-2xl text-slate-500">
-                        Ative o plano que faz sentido para a sua operacao. O
-                        acesso do painel e da IA passa a obedecer a assinatura
-                        escolhida.
-                    </p>
+                <div className="space-y-4">
+                    <Button asChild variant="outline" className="border-blue-200 text-blue-700">
+                        <Link href="/dashboard">
+                            <ArrowLeft className="mr-2 h-4 w-4" />
+                            Voltar ao painel
+                        </Link>
+                    </Button>
+
+                    <div className="rounded-3xl bg-linear-to-r from-blue-700 via-blue-600 to-cyan-500 p-6 text-white shadow-xl shadow-blue-200/70">
+                        <Badge className="w-fit border-white/20 bg-white/15 text-white">
+                            Billing
+                        </Badge>
+                        <h1 className="mt-3 text-4xl font-bold tracking-tight">
+                            Escolha o plano do seu tenant
+                        </h1>
+                        <p className="mt-2 max-w-2xl text-blue-100">
+                            Ative o plano que faz sentido para a sua operacao. O
+                            acesso do painel e da IA passa a obedecer a assinatura
+                            escolhida.
+                        </p>
+                    </div>
                 </div>
 
                 <Card className="border-none shadow-sm">
@@ -195,8 +174,8 @@ export default async function BillingPage({
                                     <form
                                         action={
                                             plan.planType === PlanType.FREE
-                                                ? activateFreeAction
-                                                : checkoutAction
+                                                ? activateFreePlanAction
+                                                : checkoutPlanAction
                                         }
                                     >
                                         {plan.planType !== PlanType.FREE && (

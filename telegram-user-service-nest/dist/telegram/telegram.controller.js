@@ -49,6 +49,9 @@ let TelegramController = class TelegramController {
         await this.telegramService.initBusinessBot(body.botId, body.token);
         return { message: "Business bot inicializado com sucesso." };
     }
+    async createSaleCheckout(body) {
+        return this.telegramService.createSaleCheckout(body);
+    }
     async getBotStatus() {
         return this.telegramService.getBotStatus();
     }
@@ -93,6 +96,14 @@ __decorate([
     __metadata("design:paramtypes", [Object]),
     __metadata("design:returntype", Promise)
 ], TelegramController.prototype, "registerBusinessBot", null);
+__decorate([
+    (0, common_1.Post)("create-sale-checkout"),
+    (0, common_1.HttpCode)(200),
+    __param(0, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", Promise)
+], TelegramController.prototype, "createSaleCheckout", null);
 __decorate([
     (0, common_1.Get)("bot-status"),
     __metadata("design:type", Function),

@@ -99,7 +99,7 @@ let SyncPayService = class SyncPayService {
                 cpf: client.cpf.replace(/\D/g, ""),
                 phone: client.phone.replace(/\D/g, ""),
             },
-            webhook_url: `${process.env.SYNCPAY_WEBHOOK_URL}/api/syncpay/webhook`,
+            webhook_url: this.getWebhookUrl(),
             external_reference: input.referenceId,
         };
         this.logger.log(`[SyncPay] Cash-in R$ ${body.amount} — ${input.productTitle}`);
@@ -120,6 +120,18 @@ let SyncPayService = class SyncPayService {
             this.logger.error("SyncPay Cash-In Error:", err.response?.data ?? err.message);
             throw err;
         }
+    }
+    getWebhookUrl() {
+        const configuredUrl = String(process.env.SYNCPAY_WEBHOOK_URL ?? "").trim();
+        if (!configuredUrl) {
+            throw new Error("SYNCPAY_WEBHOOK_URL não configurado");
+        }
+        const trimmedUrl = configuredUrl.replace(/\/$/, "");
+        if (trimmedUrl.endsWith("/api/syncpay/webhook") ||
+            trimmedUrl.endsWith("/webhook/syncpay")) {
+            return trimmedUrl;
+        }
+        return `${trimmedUrl}/api/syncpay/webhook`;
     }
     static { this.SUCCESS_STATUSES = [
         "PAGO",

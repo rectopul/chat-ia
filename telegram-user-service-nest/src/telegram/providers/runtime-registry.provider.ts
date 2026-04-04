@@ -101,6 +101,13 @@ export class RuntimeRegistryProvider implements OnModuleDestroy {
         return this.redis.get(this.chatConnectionKey(botId, chatId));
     }
 
+    async deleteChatConnection(
+        botId: string,
+        chatId: string | number,
+    ): Promise<void> {
+        await this.redis.del(this.chatConnectionKey(botId, chatId));
+    }
+
     async acquireLock(
         lockName: string,
         ttlSeconds: number,

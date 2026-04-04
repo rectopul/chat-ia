@@ -68,6 +68,20 @@ export class TelegramController {
         return { message: "Business bot inicializado com sucesso." };
     }
 
+    @Post("create-sale-checkout")
+    @HttpCode(200)
+    async createSaleCheckout(
+        @Body()
+        body: {
+            botId: string;
+            telegramUserId: string;
+            productId: string;
+            discountPercent?: number;
+        },
+    ) {
+        return this.telegramService.createSaleCheckout(body);
+    }
+
     @Get("bot-status")
     async getBotStatus(): Promise<BotStatusResponse> {
         return this.telegramService.getBotStatus();

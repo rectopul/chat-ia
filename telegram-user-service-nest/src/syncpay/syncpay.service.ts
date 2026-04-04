@@ -174,7 +174,7 @@ export class SyncPayService {
                 phone: client.phone.replace(/\D/g, ""),
             },
             // webhook para receber confirmação de pagamento
-            webhook_url: `${process.env.SYNCPAY_WEBHOOK_URL}/api/syncpay/webhook`,
+            webhook_url: this.getWebhookUrl(),
             // referência externa para correlacionar no webhook
             external_reference: input.referenceId,
         };
@@ -213,6 +213,27 @@ export class SyncPayService {
             );
             throw err;
         }
+    }
+
+    private getWebhookUrl(): string {
+        const configuredUrl = String(
+            process.env.SYNCPAY_WEBHOOK_URL ?? "",
+        ).trim();
+
+        if (!configuredUrl) {
+            throw new Error("SYNCPAY_WEBHOOK_URL não configurado");
+        }
+
+        const trimmedUrl = configuredUrl.replace(/\/$/, "");
+
+        if (
+            trimmedUrl.endsWith("/api/syncpay/webhook") ||
+            trimmedUrl.endsWith("/webhook/syncpay")
+        ) {
+            return trimmedUrl;
+        }
+
+        return `${trimmedUrl}/api/syncpay/webhook`;
     }
 
     // ─────────────────────────────────────────────────────────────────────

@@ -1,11 +1,13 @@
 import {
     BadRequestException,
     Injectable,
+    Logger,
     NotFoundException,
 } from "@nestjs/common";
 import {
     PlanType,
     Prisma,
+    SaleStatus,
     Subscription,
     SubscriptionStatus,
     Transaction,
@@ -14,6 +16,7 @@ import {
 import { PrismaService } from "../../prisma/prisma.service";
 import { SyncPayService } from "../../syncpay/syncpay.service";
 import { getSaasPlan, getSaasPlanCatalog } from "../subscription/plan-catalog";
+import { TelegramService } from "../../telegram/services/telegram.service";
 
 type CheckoutResult = {
     subscription: Subscription;
@@ -24,9 +27,12 @@ type CheckoutResult = {
 
 @Injectable()
 export class BillingService {
+    private readonly logger = new Logger(BillingService.name);
+
     constructor(
         private readonly prisma: PrismaService,
         private readonly syncPay: SyncPayService,
+        private readonly telegramService: TelegramService,
     ) {}
 
     getPlans() {
@@ -147,6 +153,15 @@ export class BillingService {
         const referenceCandidates = this.getReferenceCandidates(data);
         const gatewaySubscriptionId = this.getGatewaySubscriptionId(data);
 
+        await this.logWebhookEvent(rawPayload, data);
+        await this.handleLegacySaleWebhook({
+            rawPayload,
+            data,
+            normalizedStatus,
+            eventType,
+            referenceCandidates,
+        });
+
         const transaction = await this.findTransaction(referenceCandidates);
         const parsedReference = this.parseExternalReference(referenceCandidates);
 
@@ -185,6 +200,191 @@ export class BillingService {
                 gatewaySubscriptionId,
             });
         }
+    }
+
+    private async logWebhookEvent(
+        rawPayload: Record<string, any>,
+        data: Record<string, any>,
+    ): Promise<void> {
+        try {
+            await this.prisma.webhookEvent.create({
+                data: {
+                    provider: "SYNCPAY",
+                    eventType: this.normalizeEventType(rawPayload, data) || "update",
+                    referenceId:
+                        this.getReferenceCandidates(data)[0] ??
+                        (typeof data?.id === "string" || typeof data?.id === "number"
+                            ? String(data.id)
+                            : null),
+                    rawPayload: rawPayload as Prisma.InputJsonValue,
+                },
+            });
+        } catch (error) {
+            this.logger.warn(
+                `[handleWebhook] Failed to persist webhook event: ${
+                    error instanceof Error ? error.message : String(error)
+                }`,
+            );
+        }
+    }
+
+    private async handleLegacySaleWebhook(input: {
+        rawPayload: Record<string, any>;
+        data: Record<string, any>;
+        normalizedStatus: string;
+        eventType: string;
+        referenceCandidates: string[];
+    }): Promise<void> {
+        const sale = await this.findLegacySale(
+            input.referenceCandidates,
+            input.data,
+        );
+
+        if (!sale) {
+            return;
+        }
+
+        if (this.isSuccessEvent(input.normalizedStatus, input.eventType)) {
+            await this.markLegacySalePaid(sale.id, input.rawPayload);
+            return;
+        }
+
+        if (
+            this.isFailureEvent(input.normalizedStatus, input.eventType) ||
+            this.isCancelEvent(input.normalizedStatus, input.eventType)
+        ) {
+            await this.markLegacySaleCanceled(sale.id, input.rawPayload);
+        }
+    }
+
+    private async findLegacySale(
+        referenceCandidates: string[],
+        data: Record<string, any>,
+    ) {
+        const pixCode =
+            typeof data?.pix_code === "string" ? data.pix_code : null;
+        const orFilters: Prisma.SaleWhereInput[] = referenceCandidates.map(
+            (reference) => ({
+                OR: [
+                    { referenceId: reference },
+                    {
+                        rawPayload: {
+                            path: ["identifier"],
+                            equals: reference,
+                        },
+                    },
+                ],
+            }),
+        );
+
+        if (pixCode) {
+            orFilters.push({
+                rawPayload: {
+                    path: ["pix_code"],
+                    equals: pixCode,
+                },
+            });
+        }
+
+        if (!orFilters.length) {
+            return null;
+        }
+
+        return this.prisma.sale.findFirst({
+            where: {
+                OR: orFilters,
+            },
+            include: {
+                product: true,
+                user: true,
+            },
+            orderBy: { createdAt: "desc" },
+        });
+    }
+
+    private async markLegacySalePaid(
+        saleId: string,
+        rawPayload: Record<string, any>,
+    ): Promise<void> {
+        const sale = await this.prisma.sale.findUnique({
+            where: { id: saleId },
+            include: {
+                product: true,
+                user: true,
+            },
+        });
+
+        if (!sale || sale.status === SaleStatus.PAID) {
+            return;
+        }
+
+        await this.prisma.sale.update({
+            where: { id: sale.id },
+            data: {
+                status: SaleStatus.PAID,
+                paidAt: new Date(),
+                rawPayload: rawPayload as Prisma.InputJsonValue,
+            },
+        });
+
+        let subscriberUntil: Date | null = null;
+        if (
+            sale.product.productType === "SUBSCRIPTION" &&
+            sale.product.subscriberDays
+        ) {
+            const currentUntil = sale.user.subscriberUntil || new Date();
+            const baseDate =
+                currentUntil > new Date() ? currentUntil : new Date();
+            subscriberUntil = this.addDays(
+                baseDate,
+                sale.product.subscriberDays,
+            );
+        }
+
+        await this.prisma.telegramUser.update({
+            where: {
+                telegramUserId_botId: {
+                    telegramUserId: sale.telegramUserId,
+                    botId: sale.botId,
+                },
+            },
+            data: {
+                isSubscriber: true,
+                subscriberUntil,
+            },
+        });
+
+        try {
+            await this.telegramService.confirmPayment(sale.id);
+        } catch (error) {
+            this.logger.error(
+                `[markLegacySalePaid] Failed to confirm payment for saleId=${sale.id}: ${
+                    error instanceof Error ? error.message : String(error)
+                }`,
+            );
+        }
+    }
+
+    private async markLegacySaleCanceled(
+        saleId: string,
+        rawPayload: Record<string, any>,
+    ): Promise<void> {
+        const sale = await this.prisma.sale.findUnique({
+            where: { id: saleId },
+            select: { status: true },
+        });
+
+        if (!sale || sale.status === SaleStatus.PAID) {
+            return;
+        }
+
+        await this.prisma.sale.update({
+            where: { id: saleId },
+            data: {
+                status: SaleStatus.CANCELED,
+                rawPayload: rawPayload as Prisma.InputJsonValue,
+            },
+        });
     }
 
     private async markSuccess(input: {

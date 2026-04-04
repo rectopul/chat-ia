@@ -2,15 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { TelegramService } from "@/lib/telegram";
 import { scheduleCampaignsForUser } from "@/lib/scheduler";
-import { SyncPayService } from "@/lib/syncpay";
 import {
     MessageTemplateKey,
     MediaType,
     MessageDirection,
     UserSegment,
-    SaleStatus,
 } from "@prisma/client";
 import axios from "axios";
+import { getNestApiBaseUrl } from "@/lib/nest-api";
 
 async function handleCallbackQuery(
     callbackQuery: any,
@@ -118,23 +117,14 @@ async function handleCallbackQuery(
             where: { id: productId },
         });
         if (product) {
-            const referenceId = `sale_${Date.now()}_${telegramUserId}`;
-            await prisma.sale.create({
-                data: {
+            const { data: checkout } = await axios.post(
+                `${getNestApiBaseUrl()}/telegram/create-sale-checkout`,
+                {
                     botId,
                     telegramUserId,
                     productId: product.id,
-                    amountCents: product.priceCents,
-                    referenceId,
-                    status: SaleStatus.PENDING,
                 },
-            });
-
-            const charge = await SyncPayService.createCharge({
-                amountCents: product.priceCents,
-                referenceId,
-                productTitle: product.title,
-            });
+            );
 
             await TelegramService.sendText(
                 chatId,
@@ -145,7 +135,7 @@ async function handleCallbackQuery(
             );
             await TelegramService.sendText(
                 chatId,
-                `<code>${charge.pix_code}</code>`,
+                `<code>${checkout.pixCode}</code>`,
                 telegramUserId,
                 botId,
                 botToken,

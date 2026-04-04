@@ -44,30 +44,35 @@ export default async function UserDashboardPage() {
 
     return (
         <div className="space-y-8">
-            <div className="flex flex-col gap-2">
-                <h2 className="text-3xl font-bold tracking-tight text-slate-900">
+            <section className="rounded-3xl bg-gradient-to-r from-blue-700 via-blue-600 to-cyan-500 p-6 text-white shadow-xl shadow-blue-200/80">
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-blue-100">
+                    Dashboard
+                </p>
+                <h2 className="mt-2 text-3xl font-bold tracking-tight">
                     Ola, {user.name || user.email || "cliente"}
                 </h2>
-                <p className="text-slate-500">
-                    Aqui voce acompanha o plano ativo, consumo diario da IA e
-                    seus ultimos pagamentos.
+                <p className="mt-2 max-w-2xl text-sm text-blue-100">
+                    Aqui voce acompanha plano ativo, consumo diario de IA e o status
+                    da sua operacao no Telegram.
                 </p>
-            </div>
+            </section>
 
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                <Card className="border-none shadow-sm">
+                <Card className="border border-blue-100 bg-white/90 shadow-lg shadow-blue-100/70">
                     <CardHeader className="pb-3">
                         <CardDescription>Plano atual</CardDescription>
-                        <CardTitle className="text-3xl">{plan.name}</CardTitle>
+                        <CardTitle className="text-3xl text-slate-900">{plan.name}</CardTitle>
                     </CardHeader>
                     <CardContent className="pt-0">
-                        <Badge variant="outline">{user.subscription?.status || "SEM ASSINATURA"}</Badge>
+                        <Badge className="bg-blue-600 text-white hover:bg-blue-700">
+                            {user.subscription?.status || "SEM ASSINATURA"}
+                        </Badge>
                     </CardContent>
                 </Card>
-                <Card className="border-none shadow-sm">
+                <Card className="border border-blue-100 bg-white/90 shadow-lg shadow-blue-100/70">
                     <CardHeader className="pb-3">
                         <CardDescription>Valor do ciclo</CardDescription>
-                        <CardTitle className="text-3xl">
+                        <CardTitle className="text-3xl text-slate-900">
                             {formatMoney(user.subscription?.planPriceCents || plan.priceCents)}
                         </CardTitle>
                     </CardHeader>
@@ -75,10 +80,10 @@ export default async function UserDashboardPage() {
                         Renovacao baseada no plano atual.
                     </CardContent>
                 </Card>
-                <Card className="border-none shadow-sm">
+                <Card className="border border-blue-100 bg-white/90 shadow-lg shadow-blue-100/70">
                     <CardHeader className="pb-3">
                         <CardDescription>Consumo diario de IA</CardDescription>
-                        <CardTitle className="text-3xl">
+                        <CardTitle className="text-3xl text-slate-900">
                             {plan.messageLimitPerDay === null
                                 ? "Ilimitado"
                                 : `${usageToday}/${plan.messageLimitPerDay}`}
@@ -88,10 +93,10 @@ export default async function UserDashboardPage() {
                         Limite contabilizado por tenant para mensagens da IA.
                     </CardContent>
                 </Card>
-                <Card className="border-none shadow-sm">
+                <Card className="border border-blue-100 bg-white/90 shadow-lg shadow-blue-100/70">
                     <CardHeader className="pb-3">
                         <CardDescription>Bots vinculados</CardDescription>
-                        <CardTitle className="text-3xl">{user.bots.length}</CardTitle>
+                        <CardTitle className="text-3xl text-slate-900">{user.bots.length}</CardTitle>
                     </CardHeader>
                     <CardContent className="pt-0 text-sm text-slate-500">
                         Contas do Telegram sob este tenant.
@@ -100,10 +105,10 @@ export default async function UserDashboardPage() {
             </div>
 
             <div className="grid gap-4 lg:grid-cols-3">
-                <Card className="border-none shadow-sm lg:col-span-2">
+                <Card className="border border-blue-100 bg-white shadow-lg shadow-blue-100/70 lg:col-span-2">
                     <CardHeader>
                         <div className="flex items-center gap-2">
-                            <Gauge className="w-5 h-5 text-primary" />
+                            <Gauge className="h-5 w-5 text-blue-600" />
                             <CardTitle>Status do acesso</CardTitle>
                         </div>
                         <CardDescription>
@@ -111,15 +116,15 @@ export default async function UserDashboardPage() {
                         </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-4">
-                        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
-                            <p className="text-sm font-medium text-slate-600">
+                        <div className="rounded-2xl border border-blue-100 bg-blue-50/60 p-5">
+                            <p className="text-sm font-medium text-slate-700">
                                 {access.hasActiveAccess
                                     ? "Seu acesso esta liberado."
                                     : "Seu acesso precisa de uma assinatura ativa ou em grace period."}
                             </p>
-                            <p className="mt-2 text-sm text-slate-500">
+                            <p className="mt-2 text-sm text-slate-600">
                                 Expira em{" "}
-                                <strong className="text-slate-700">
+                                <strong className="text-slate-900">
                                     {user.subscription?.endDate
                                         ? user.subscription.endDate.toLocaleDateString("pt-BR")
                                         : "sem data definida"}
@@ -128,7 +133,7 @@ export default async function UserDashboardPage() {
                                     <>
                                         {" "}
                                         e o grace period vai ate{" "}
-                                        <strong className="text-slate-700">
+                                        <strong className="text-slate-900">
                                             {user.subscription.graceUntil.toLocaleDateString(
                                                 "pt-BR",
                                             )}
@@ -139,17 +144,20 @@ export default async function UserDashboardPage() {
                             </p>
                         </div>
                         <div className="flex gap-3">
-                            <Button asChild>
-                                <Link href="/billing">Gerenciar plano</Link>
+                            <Button asChild className="bg-blue-600 hover:bg-blue-700">
+                                <Link href="/billing">
+                                    <CreditCard className="mr-2 h-4 w-4" />
+                                    Gerenciar plano
+                                </Link>
                             </Button>
                         </div>
                     </CardContent>
                 </Card>
 
-                <Card className="border-none shadow-sm">
+                <Card className="border border-blue-100 bg-white shadow-lg shadow-blue-100/70">
                     <CardHeader>
                         <div className="flex items-center gap-2">
-                            <Sparkles className="w-5 h-5 text-primary" />
+                            <Sparkles className="h-5 w-5 text-blue-600" />
                             <CardTitle>Ultimos pagamentos</CardTitle>
                         </div>
                         <CardDescription>
@@ -160,7 +168,7 @@ export default async function UserDashboardPage() {
                         {user.transactions.map((transaction) => (
                             <div
                                 key={transaction.id}
-                                className="rounded-2xl border border-slate-200 bg-slate-50 p-4"
+                                className="rounded-2xl border border-blue-100 bg-blue-50/40 p-4"
                             >
                                 <div className="flex items-center justify-between gap-3">
                                     <div>
@@ -171,7 +179,9 @@ export default async function UserDashboardPage() {
                                             {transaction.referenceDate.toLocaleDateString("pt-BR")}
                                         </p>
                                     </div>
-                                    <Badge variant="outline">{transaction.status}</Badge>
+                                    <Badge variant="outline" className="border-blue-200 text-blue-700">
+                                        {transaction.status}
+                                    </Badge>
                                 </div>
                             </div>
                         ))}
@@ -184,10 +194,10 @@ export default async function UserDashboardPage() {
                 </Card>
             </div>
 
-            <Card className="border-none shadow-sm">
+            <Card className="border border-blue-100 bg-white shadow-lg shadow-blue-100/70">
                 <CardHeader>
                     <div className="flex items-center gap-2">
-                        <Bot className="w-5 h-5 text-primary" />
+                        <Bot className="h-5 w-5 text-blue-600" />
                         <CardTitle>Suas contas do Telegram</CardTitle>
                     </div>
                     <CardDescription>
@@ -198,17 +208,20 @@ export default async function UserDashboardPage() {
                     {user.bots.map((bot) => (
                         <div
                             key={bot.id}
-                            className="flex items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 p-4"
+                            className="flex items-center justify-between rounded-2xl border border-blue-100 bg-blue-50/40 p-4"
                         >
                             <div>
-                                <p className="font-semibold text-slate-900">
-                                    {bot.name}
-                                </p>
-                                <p className="text-xs text-slate-500">
-                                    {bot.phoneNumber || bot.id}
-                                </p>
+                                <p className="font-semibold text-slate-900">{bot.name}</p>
+                                <p className="text-xs text-slate-500">{bot.phoneNumber || bot.id}</p>
                             </div>
-                            <Badge variant={bot.isActive ? "default" : "outline"}>
+                            <Badge
+                                className={
+                                    bot.isActive
+                                        ? "bg-blue-600 text-white hover:bg-blue-700"
+                                        : "border-blue-200 text-blue-700"
+                                }
+                                variant={bot.isActive ? "default" : "outline"}
+                            >
                                 {bot.isActive ? "ATIVO" : "INATIVO"}
                             </Badge>
                         </div>

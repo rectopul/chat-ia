@@ -46,4 +46,11 @@ export class BillingController {
         await this.billingService.handleWebhook(payload);
         return { ok: true };
     }
+
+    @Post("webhook/syncpay")
+    @HttpCode(200)
+    async handleSyncPayWebhookAlias(@Body() payload: unknown) {
+        await this.billingService.handleWebhook(payload);
+        return { ok: true };
+    }
 }

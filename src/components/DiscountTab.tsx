@@ -5,6 +5,13 @@ import {
 import { BotAccount } from "@prisma/client";
 import { useEffect, useState } from "react";
 import { Textarea } from "./ui/textarea";
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select";
 
 // ─── Mock botId (troque pelo seu contexto real, ex: useParams ou prop) ────────
 const BOT_ID = "bot_default";
@@ -32,7 +39,7 @@ export function DiscountTab({
             fetch(`/api/discount-config?botId=${BOT_ID}`).then((r) => r.json()),
             fetch("/api/products?active=true").then((r) => r.json()),
         ])
-            .then(([disc, prods]) => {
+            .then(([disc]) => {
                 if (disc) {
                     setConfig(disc);
                     setProductId(disc.productId);
@@ -83,8 +90,12 @@ export function DiscountTab({
             if (!res.ok) throw new Error(data.error);
             setConfig(data);
             flash("Desconto salvo com sucesso!");
-        } catch (e: any) {
-            flash(e.message ?? "Erro ao salvar.", true);
+        } catch (e: unknown) {
+            if (e instanceof Error) {
+                flash(e.message, true);
+            } else {
+                flash("Erro ao salvar.", true);
+            }
         } finally {
             setSaving(false);
         }
@@ -116,9 +127,6 @@ export function DiscountTab({
 
     const selectedProduct = products.find((p) => p.id === productId);
     const pct = parseInt(discountPercent) || 0;
-    const discountedPrice = selectedProduct
-        ? Number(selectedProduct.priceCents) * (1 - pct / 100)
-        : null;
 
     if (loading) return <Spinner />;
 
@@ -202,48 +210,36 @@ export function DiscountTab({
                     label="Conta Telegram"
                     hint="Selecione a conta do telegram a ser usada"
                 >
-                    <select
-                        value={productId}
-                        onChange={(e) => setProductId(e.target.value)}
-                        className="w-full bg-white/4 border border-white/10 rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:border-amber-500/60 transition"
-                    >
-                        <option value="" className="bg-[#1a1a24]">
-                            Selecione uma conta...
-                        </option>
-                        {botsAccounts.map((b) => (
-                            <option
-                                key={b.id}
-                                value={b.id}
-                                className="bg-[#1a1a24]"
-                            >
-                                {b.name}
-                            </option>
-                        ))}
-                    </select>
+                    <Select value={productId} onValueChange={setProductId}>
+                        <SelectTrigger className="w-full bg-white/4 border-white/10 text-white">
+                            <SelectValue placeholder="Selecione uma conta..." />
+                        </SelectTrigger>
+                        <SelectContent>
+                            {botsAccounts.map((b) => (
+                                <SelectItem key={b.id} value={b.id}>
+                                    {b.name}
+                                </SelectItem>
+                            ))}
+                        </SelectContent>
+                    </Select>
                 </Field>
 
                 <Field
                     label="Produto *"
                     hint="Produto que receberá o desconto na oferta DONT_SELL"
                 >
-                    <select
-                        value={productId}
-                        onChange={(e) => setProductId(e.target.value)}
-                        className="w-full bg-white/4 border border-white/10 rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:border-amber-500/60 transition"
-                    >
-                        <option value="" className="bg-[#1a1a24]">
-                            Selecione um produto...
-                        </option>
-                        {products.map((p) => (
-                            <option
-                                key={p.id}
-                                value={p.id}
-                                className="bg-[#1a1a24]"
-                            >
-                                {p.title} — {fmt(Number(p.priceCents))}
-                            </option>
-                        ))}
-                    </select>
+                    <Select value={productId} onValueChange={setProductId}>
+                        <SelectTrigger className="w-full bg-white/4 border-white/10 text-white">
+                            <SelectValue placeholder="Selecione um produto..." />
+                        </SelectTrigger>
+                        <SelectContent>
+                            {products.map((p) => (
+                                <SelectItem key={p.id} value={p.id}>
+                                    {p.title} — {fmt(Number(p.priceCents))}
+                                </SelectItem>
+                            ))}
+                        </SelectContent>
+                    </Select>
                 </Field>
 
                 <Field

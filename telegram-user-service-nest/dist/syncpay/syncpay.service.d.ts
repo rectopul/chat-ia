@@ -26,6 +26,7 @@ export declare class SyncPayService {
     };
     private getToken;
     createCharge(input: CreatePixChargeInput): Promise<PixChargeResult>;
+    private getWebhookUrl;
     private static readonly SUCCESS_STATUSES;
     processCashInWebhook(payload: any): {
         success: boolean;

@@ -1,4 +1,4 @@
-import { listSaasUsers, setSaasUserAccessStatus } from "@/lib/saas/server";
+import { listSaasUsers } from "@/lib/saas/server";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,10 +10,10 @@ import {
     TableHeader,
     TableRow,
 } from "@/components/ui/table";
-import { SubscriptionStatus, UserAccessStatus } from "@prisma/client";
+import { SubscriptionStatus } from "@prisma/client";
 import Link from "next/link";
 import { Users } from "lucide-react";
-import { revalidatePath } from "next/cache";
+import { updateTenantAccessAction } from "./actions";
 
 type SearchParams = Promise<{
     accessStatus?: string;
@@ -39,28 +39,6 @@ export default async function AdminTenantsPage({
 }) {
     const params = await searchParams;
     const users = await listSaasUsers(params);
-
-    async function updateAccess(formData: FormData) {
-        "use server";
-
-        const userId = String(formData.get("userId") ?? "");
-        const accessStatus = String(formData.get("accessStatus") ?? "");
-
-        if (
-            !userId ||
-            !Object.values(UserAccessStatus).includes(
-                accessStatus as UserAccessStatus,
-            )
-        ) {
-            return;
-        }
-
-        await setSaasUserAccessStatus(
-            userId,
-            accessStatus as UserAccessStatus,
-        );
-        revalidatePath("/admin/tenants");
-    }
 
     const statusHref = (status?: string, subscriptionStatus?: string) => {
         const query = new URLSearchParams();
@@ -187,7 +165,7 @@ export default async function AdminTenantsPage({
                                     {formatDate(user.subscription?.endDate)}
                                 </TableCell>
                                 <TableCell className="text-right">
-                                    <form action={updateAccess} className="inline-flex gap-2">
+                                    <form action={updateTenantAccessAction} className="inline-flex gap-2">
                                         <input type="hidden" name="userId" value={user.id} />
                                         {user.accessStatus === "ACTIVE" ? (
                                             <>
