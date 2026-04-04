@@ -16,6 +16,7 @@ import { StringSession } from "telegram/sessions";
 import bigInt from "big-integer";
 import { PrismaService } from "../../prisma/prisma.service";
 import { AiAgentService } from "../../modules/ai-agent/ai-agent.service";
+import { MtprotoClientLogger } from "./mtproto-client.logger";
 
 @Injectable()
 export class MtprotoProvider implements OnModuleDestroy {
@@ -145,7 +146,15 @@ export class MtprotoProvider implements OnModuleDestroy {
             new StringSession(bot.session || ""),
             Number(bot.apiId),
             bot.apiHash!,
-            { connectionRetries: 5, retryDelay: 2000 },
+            {
+                connectionRetries: 5,
+                retryDelay: 2000,
+                baseLogger: new MtprotoClientLogger(
+                    this.logger,
+                    bot.id,
+                    bot.name,
+                ),
+            },
         );
 
         await client.connect();

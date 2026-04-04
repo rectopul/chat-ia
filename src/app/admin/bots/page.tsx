@@ -6,8 +6,6 @@ import {
     Plus,
     Info,
     Phone,
-    Hash,
-    ShieldCheck,
     Power,
     PowerOff,
     Trash,
@@ -22,6 +20,13 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select";
+import {
     Table,
     TableBody,
     TableCell,
@@ -34,7 +39,6 @@ import {
     TooltipContent,
     TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
     createAdminBotAction,
@@ -209,19 +213,19 @@ export default async function AdminBotsPage({
                             <label className="text-sm font-semibold">
                                 Dono do Tenant
                             </label>
-                            <select
-                                name="ownerUserId"
-                                className="w-full h-10 px-3 py-2 bg-slate-50/50 border border-slate-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
-                            >
-                                <option value="">Sem dono definido</option>
-                                {customers.map((customer) => (
-                                    <option key={customer.id} value={customer.id}>
-                                        {customer.name ||
-                                            customer.email ||
-                                            customer.id}
-                                    </option>
-                                ))}
-                            </select>
+                            <Select name="ownerUserId" defaultValue="__none">
+                                <SelectTrigger className="w-full bg-slate-50/50 border-slate-200">
+                                    <SelectValue placeholder="Sem dono definido" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="__none">Sem dono definido</SelectItem>
+                                    {customers.map((customer) => (
+                                        <SelectItem key={customer.id} value={customer.id}>
+                                            {customer.name || customer.email || customer.id}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
                         </div>
                         <Button
                             type="submit"

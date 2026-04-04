@@ -30,8 +30,9 @@ export async function createAdminBotAction(formData: FormData) {
     );
     const apiId = Number(formData.get("apiId") ?? 0);
     const apiHash = String(formData.get("apiHash") ?? "").trim();
+    const ownerUserIdRaw = String(formData.get("ownerUserId") ?? "").trim();
     const ownerUserId =
-        String(formData.get("ownerUserId") ?? "").trim() || null;
+        !ownerUserIdRaw || ownerUserIdRaw === "__none" ? null : ownerUserIdRaw;
 
     const existingBot = await prisma.botAccount.findFirst({
         where: {

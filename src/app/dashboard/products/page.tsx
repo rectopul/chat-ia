@@ -1,7 +1,6 @@
 import { auth } from "@/auth";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
-import { ProductType } from "@prisma/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,6 +13,13 @@ import {
     TableRow,
 } from "@/components/ui/table";
 import { ShoppingBag, Trash2 } from "lucide-react";
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select";
 import {
     createUserProductAction,
     deleteUserProductAction,
@@ -64,13 +70,15 @@ export default async function UserProductsPage() {
                             className="h-10 rounded-md border border-slate-200 bg-slate-50 px-3"
                             required
                         />
-                        <select
-                            name="productType"
-                            className="h-10 rounded-md border border-slate-200 bg-slate-50 px-3"
-                        >
-                            <option value="ONE_TIME">Compra unica</option>
-                            <option value="SUBSCRIPTION">Assinatura</option>
-                        </select>
+                        <Select name="productType" defaultValue="ONE_TIME">
+                            <SelectTrigger className="h-10 w-full border-slate-200 bg-slate-50">
+                                <SelectValue placeholder="Selecione o tipo" />
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="ONE_TIME">Compra unica</SelectItem>
+                                <SelectItem value="SUBSCRIPTION">Assinatura</SelectItem>
+                            </SelectContent>
+                        </Select>
                         <input
                             name="subscriberDays"
                             type="number"

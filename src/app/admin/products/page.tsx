@@ -5,6 +5,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select";
+import {
     Table,
     TableBody,
     TableCell,
@@ -96,16 +103,18 @@ export default async function AdminProductsPage() {
                             <label className="text-sm font-semibold">
                                 Tipo
                             </label>
-                            <select
-                                name="productType"
-                                className="w-full h-10 px-3 py-2 bg-slate-50/50 border border-slate-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
-                            >
-                                {Object.values(ProductType).map((t) => (
-                                    <option key={t} value={t}>
-                                        {typeLabels[t]}
-                                    </option>
-                                ))}
-                            </select>
+                            <Select name="productType" defaultValue={ProductType.ONE_TIME}>
+                                <SelectTrigger className="w-full bg-slate-50/50 border-slate-200">
+                                    <SelectValue placeholder="Selecione o tipo" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {Object.values(ProductType).map((t) => (
+                                        <SelectItem key={t} value={t}>
+                                            {typeLabels[t]}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
                         </div>
 
                         <div className="space-y-2">
