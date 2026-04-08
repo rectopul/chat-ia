@@ -9,5 +9,7 @@ export const WHATSAPP_MEDIA_OUTGOING_JOB_NAME =
 
 export const WHATSAPP_MAX_MESSAGES_PER_MINUTE = 20;
 export const WHATSAPP_RATE_LIMIT_WINDOW_MS = 60_000;
+export const WHATSAPP_PRE_AI_TYPING_DELAY_MS = 4_000;
 
 export type WhatsappMessageType = "TEXT" | "AUDIO" | "IMAGE" | "VIDEO";
+export type WhatsappIncomingProcessingStage = "typing" | "respond";

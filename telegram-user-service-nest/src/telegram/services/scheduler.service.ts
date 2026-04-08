@@ -315,6 +315,7 @@ export class SchedulerService {
                 job.botId,
                 job.chatId,
                 reply.text,
+                reply.usage,
             );
 
             if (reply.previewTemplateIds.length > 0) {

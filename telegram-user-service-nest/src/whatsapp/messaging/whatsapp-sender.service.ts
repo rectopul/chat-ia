@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto";
+import IORedis, { Redis } from "ioredis";
 import { Injectable, Logger, OnModuleDestroy } from "@nestjs/common";
 import { EvolutionService } from "../../modules/evolution/evolution.service";
 import { PrismaService } from "../../prisma/prisma.service";
@@ -8,8 +9,6 @@ import {
 } from "../queue/constants/whatsapp-queue.constants";
 import { WhatsappOutgoingJobData } from "../queue/types/whatsapp-jobs.types";
 
-const IORedis = require("ioredis");
-
 type ReserveSlotResult = {
     allowed: boolean;
     retryAfterMs: number;
@@ -18,7 +17,7 @@ type ReserveSlotResult = {
 @Injectable()
 export class WhatsappSenderService implements OnModuleDestroy {
     private readonly logger = new Logger(WhatsappSenderService.name);
-    private readonly redis: any;
+    private readonly redis: Redis;
 
     constructor(
         private readonly prisma: PrismaService,
@@ -50,9 +49,11 @@ export class WhatsappSenderService implements OnModuleDestroy {
 
         try {
             await this.redis.quit();
-        } catch (error: any) {
+        } catch (error: unknown) {
             this.logger.debug(
-                `[redis] erro ao encerrar sender do WhatsApp: ${error?.message ?? error}`,
+                `[redis] erro ao encerrar sender do WhatsApp: ${
+                    error instanceof Error ? error.message : String(error)
+                }`,
             );
         }
     }
@@ -74,6 +75,7 @@ export class WhatsappSenderService implements OnModuleDestroy {
         const text = data.text?.trim() ?? "";
         const typingDurationMs = this.calculateTypingDuration(text);
         const replyContext = this.extractReplyContext(data);
+        const skipTypingSimulation = Boolean(data.skipTypingSimulation);
 
         await this.runBestEffort("read-receipt", async () => {
             if (!replyContext?.messageId) {
@@ -86,14 +88,17 @@ export class WhatsappSenderService implements OnModuleDestroy {
                 replyContext.messageId,
             );
         });
-        await this.runBestEffort("typing-start", async () => {
-            await this.sendTypingIndicator(instance, data.chatId, "composing");
-        });
-        await this.delay(typingDurationMs);
-        await this.runBestEffort("typing-stop", async () => {
-            await this.sendTypingIndicator(instance, data.chatId, "paused");
-        });
-        await this.delay(this.randomBetween(1000, 3000));
+
+        if (!skipTypingSimulation) {
+            await this.runBestEffort("typing-start", async () => {
+                await this.sendTypingIndicator(instance, data.chatId, "composing");
+            });
+            await this.delay(typingDurationMs);
+            await this.runBestEffort("typing-stop", async () => {
+                await this.sendTypingIndicator(instance, data.chatId, "paused");
+            });
+            await this.delay(this.randomBetween(1000, 3000));
+        }
 
         await this.waitForRateLimitSlot(instance.id, jobId);
 
@@ -102,6 +107,30 @@ export class WhatsappSenderService implements OnModuleDestroy {
         this.logger.debug(
             `[sendQueuedMessage] instanceId=${instance.id} chatId=${data.chatId} messageType=${data.messageType ?? "TEXT"}`,
         );
+    }
+
+    async sendComposingIndicatorForIncomingMessage(
+        instanceId: string,
+        chatId: string,
+    ): Promise<void> {
+        const instance = await this.prisma.whatsappInstance.findUnique({
+            where: { id: instanceId },
+            select: {
+                id: true,
+                instanceName: true,
+                webhookUrl: true,
+            },
+        });
+
+        if (!instance) {
+            throw new Error(
+                `WhatsApp instance "${instanceId}" nao encontrada para typing antecipado`,
+            );
+        }
+
+        await this.runBestEffort("incoming-typing-start", async () => {
+            await this.sendTypingIndicator(instance, chatId, "composing");
+        });
     }
 
     private async sendReadReceipt(

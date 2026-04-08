@@ -81,6 +81,9 @@ export default async function AdminDashboardPage() {
                     <Button asChild variant="outline">
                         <Link href="/admin/tenants">Gerenciar clientes</Link>
                     </Button>
+                    <Button asChild variant="outline">
+                        <Link href="/admin/ai-usage">Consumo IA</Link>
+                    </Button>
                     <Button asChild>
                         <Link href="/admin/bots">
                             Ver tenants e bots

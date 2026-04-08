@@ -66,6 +66,7 @@ export class AiAgentProcessor extends WorkerHost {
                 job.data.botId,
                 job.data.telegramId,
                 reply.text,
+                reply.usage,
             );
 
             try {

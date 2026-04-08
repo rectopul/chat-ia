@@ -1,4 +1,7 @@
-import { WhatsappMessageType } from "../constants/whatsapp-queue.constants";
+import {
+    WhatsappIncomingProcessingStage,
+    WhatsappMessageType,
+} from "../constants/whatsapp-queue.constants";
 
 export interface WhatsappIncomingJobData {
     instanceId: string;
@@ -6,6 +9,7 @@ export interface WhatsappIncomingJobData {
     text?: string;
     mediaUrl?: string | null;
     messageType?: WhatsappMessageType;
+    processingStage?: WhatsappIncomingProcessingStage;
     payload?: Record<string, unknown>;
 }
 
@@ -20,5 +24,6 @@ export interface WhatsappOutgoingJobData {
     messageType?: WhatsappMessageType;
     previewTemplateIds?: string[];
     prepared?: boolean;
+    skipTypingSimulation?: boolean;
     payload?: Record<string, unknown>;
 }

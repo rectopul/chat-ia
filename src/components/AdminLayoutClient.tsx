@@ -18,6 +18,7 @@ import {
     Menu,
     Clock,
     ArrowUpDown,
+    Cpu,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -39,6 +40,7 @@ const navItems = [
     { href: "/admin/campaigns", label: "Campanhas Timed", icon: Zap },
     { href: "/admin/products", label: "Produtos", icon: ShoppingBag },
     { href: "/admin/sales", label: "Vendas", icon: CreditCard },
+    { href: "/admin/ai-usage", label: "Consumo IA", icon: Cpu },
     { href: "/admin/configuracoes", label: "Configurações", icon: Settings },
     {
         href: "/admin/dont-sell-intervals",

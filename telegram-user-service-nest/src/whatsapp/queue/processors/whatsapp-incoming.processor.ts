@@ -13,10 +13,12 @@ import {
 } from "@prisma/client";
 import { Job } from "bullmq";
 import { WhatsappHandoverService } from "../../application/handover/whatsapp-handover.service";
+import { WhatsappSenderService } from "../../messaging/whatsapp-sender.service";
 import { WhatsappQueueService } from "../services/whatsapp-queue.service";
 import {
     WHATSAPP_INCOMING_JOB_NAME,
     WHATSAPP_INCOMING_QUEUE_NAME,
+    WHATSAPP_PRE_AI_TYPING_DELAY_MS,
     WhatsappMessageType,
 } from "../constants/whatsapp-queue.constants";
 import { WhatsappIncomingJobData } from "../types/whatsapp-jobs.types";
@@ -55,6 +57,7 @@ export class WhatsappIncomingProcessor extends WorkerHost {
         private readonly deliveryOrderService: DeliveryOrderService,
         private readonly whatsappHandoverService: WhatsappHandoverService,
         private readonly whatsappQueueService: WhatsappQueueService,
+        private readonly whatsappSenderService: WhatsappSenderService,
         private readonly subscriptionService: SubscriptionService,
     ) {
         super();
@@ -168,6 +171,32 @@ export class WhatsappIncomingProcessor extends WorkerHost {
                     job.data.chatId,
                 );
 
+            if (
+                !hasOpenHandover &&
+                this.shouldSchedulePreAiTyping(job.data, text, hasAudioInput)
+            ) {
+                await this.whatsappSenderService.sendComposingIndicatorForIncomingMessage(
+                    job.data.instanceId,
+                    job.data.chatId,
+                );
+
+                await this.whatsappQueueService.enqueueIncomingMessage(
+                    {
+                        ...job.data,
+                        processingStage: "respond",
+                    },
+                    {
+                        delay: WHATSAPP_PRE_AI_TYPING_DELAY_MS,
+                    },
+                );
+
+                this.logger.debug(
+                    `[process] typing antecipado agendado instanceId=${job.data.instanceId} chatId=${job.data.chatId} delayMs=${WHATSAPP_PRE_AI_TYPING_DELAY_MS}`,
+                );
+                await job.updateProgress(100);
+                return;
+            }
+
             if (location) {
                 const locationResult = await this.handleLocationInput({
                     instanceId: job.data.instanceId,
@@ -257,6 +286,7 @@ export class WhatsappIncomingProcessor extends WorkerHost {
                                     this.extractIncomingMessageId(job.data),
                                 replyToText: text || null,
                             },
+                            skipTypingSimulation: true,
                         },
                         {
                             delay: index === 0 ? 0 : SPLIT_REPLY_DELAY_MS,
@@ -268,6 +298,8 @@ export class WhatsappIncomingProcessor extends WorkerHost {
                         job.data.chatId,
                         chunk,
                         ChatMessageType.TEXT,
+                        undefined,
+                        index === 0 ? reply.usage : null,
                     );
                 }
             } else {
@@ -283,6 +315,7 @@ export class WhatsappIncomingProcessor extends WorkerHost {
                         replyToMessageId: this.extractIncomingMessageId(job.data),
                         replyToText: text || null,
                     },
+                    skipTypingSimulation: true,
                 });
 
                 await this.aiAgentService.saveWhatsappModelMessage(
@@ -290,6 +323,8 @@ export class WhatsappIncomingProcessor extends WorkerHost {
                     job.data.chatId,
                     reply.text,
                     this.toChatMessageType(suggestedMediaType),
+                    undefined,
+                    reply.usage,
                 );
             }
 
@@ -331,15 +366,18 @@ export class WhatsappIncomingProcessor extends WorkerHost {
     private extractLocation(
         data: WhatsappIncomingJobData,
     ): CustomerLocation | null {
-        const payload = (data.payload ?? {}) as Record<string, any>;
+        const payload = this.asRecord(data.payload);
+        const location = this.asRecord(payload.location);
+        const message = this.asRecord(payload.message);
+        const messageLocation = this.asRecord(message.location);
         const candidates: Array<[unknown, unknown]> = [
             [payload.latitude, payload.longitude],
             [payload.lat, payload.lng],
             [payload.lat, payload.lon],
-            [payload.location?.latitude, payload.location?.longitude],
-            [payload.location?.lat, payload.location?.lng],
-            [payload.message?.location?.latitude, payload.message?.location?.longitude],
-            [payload.message?.location?.lat, payload.message?.location?.lng],
+            [location.latitude, location.longitude],
+            [location.lat, location.lng],
+            [messageLocation.latitude, messageLocation.longitude],
+            [messageLocation.lat, messageLocation.lng],
         ];
 
         for (const [latitudeValue, longitudeValue] of candidates) {
@@ -366,6 +404,18 @@ export class WhatsappIncomingProcessor extends WorkerHost {
         return this.isValidCoordinatePair(latitude, longitude)
             ? { latitude, longitude }
             : null;
+    }
+
+    private shouldSchedulePreAiTyping(
+        data: WhatsappIncomingJobData,
+        text?: string,
+        hasAudioInput?: boolean,
+    ): boolean {
+        if (data.processingStage === "respond") {
+            return false;
+        }
+
+        return Boolean(text?.trim() || hasAudioInput);
     }
 
     private isValidCoordinatePair(
@@ -466,6 +516,14 @@ export class WhatsappIncomingProcessor extends WorkerHost {
             .normalize("NFD")
             .replace(/[\u0300-\u036f]/g, "")
             .toLowerCase();
+    }
+
+    private asRecord(value: unknown): Record<string, unknown> {
+        if (!value || typeof value !== "object") {
+            return {};
+        }
+
+        return value as Record<string, unknown>;
     }
 
     private async resolveSuggestedMediaType(
