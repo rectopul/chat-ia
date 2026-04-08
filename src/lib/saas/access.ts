@@ -6,6 +6,32 @@ import {
 } from "@prisma/client";
 import { getPlanDefinition } from "./plans";
 
+export function normalizeAiMessageLimitOverride(
+    value?: number | null,
+): number | null {
+    if (value === null || value === undefined) {
+        return null;
+    }
+
+    const parsed = Math.trunc(value);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+export function getEffectiveAiMessageLimitPerDay(input: {
+    planType: PlanType;
+    aiMessageLimitOverride?: number | null;
+}): number | null {
+    const override = normalizeAiMessageLimitOverride(
+        input.aiMessageLimitOverride,
+    );
+
+    if (override !== null) {
+        return override;
+    }
+
+    return getPlanDefinition(input.planType).messageLimitPerDay;
+}
+
 export function hasActiveSubscriptionAccess(input: {
     role: UserRole;
     accessStatus: UserAccessStatus;
@@ -47,6 +73,7 @@ export function getAccessSummary(input: {
     role: UserRole;
     accessStatus: UserAccessStatus;
     subscription: Subscription | null;
+    aiMessageLimitOverride?: number | null;
 }) {
     const planType = input.subscription?.planType ?? PlanType.FREE;
     const plan = getPlanDefinition(planType);
@@ -54,6 +81,10 @@ export function getAccessSummary(input: {
     return {
         planType,
         plan,
+        effectiveAiMessageLimitPerDay: getEffectiveAiMessageLimitPerDay({
+            planType,
+            aiMessageLimitOverride: input.aiMessageLimitOverride,
+        }),
         isSuperAdmin: input.role === UserRole.SUPER_ADMIN,
         hasActiveAccess: hasActiveSubscriptionAccess(input),
     };

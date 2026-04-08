@@ -8,6 +8,7 @@ import { MtprotoProvider } from "../../telegram/providers/mtproto.provider";
 import { ChatActionService } from "../../telegram/services/chat-action.service";
 import { TemplateService } from "../../telegram/services/template.service";
 import { AiAgentCommerceService } from "./ai-agent-commerce.service";
+import { extractAiErrorMessage, isAiQuotaError } from "./ai-error.utils";
 import {
     AI_RESPONSE_JOB_NAME,
     AI_RESPONSE_QUEUE_NAME,
@@ -96,7 +97,7 @@ export class AiAgentProcessor extends WorkerHost {
             const maxAttempts =
                 typeof job.opts.attempts === "number" ? job.opts.attempts : 1;
 
-            if (this.isAiQuotaError(error)) {
+            if (isAiQuotaError(error)) {
                 if (attempt === 1) {
                     this.logger.warn(
                         `[process] Cota da IA indisponivel para telegramId=${job.data.telegramId}; retry automatico ativo (${attempt}/${maxAttempts})`,
@@ -124,7 +125,9 @@ export class AiAgentProcessor extends WorkerHost {
 
             this.logger.error(
                 `[process] Failed for telegramId=${job.data.telegramId} attempt=${attempt}`,
-                error instanceof Error ? error.stack : String(error),
+                error instanceof Error
+                    ? error.stack
+                    : extractAiErrorMessage(error),
             );
             throw error;
         }
@@ -291,29 +294,7 @@ export class AiAgentProcessor extends WorkerHost {
     }
 
     private isBusinessPeerInvalidError(error: any): boolean {
-        const message = this.extractErrorMessage(error).toUpperCase();
+        const message = extractAiErrorMessage(error).toUpperCase();
         return message.includes("BUSINESS_PEER_INVALID");
-    }
-
-    private isAiQuotaError(error: any): boolean {
-        const message = this.extractErrorMessage(error).toUpperCase();
-        return (
-            message.includes("RESOURCE_EXHAUSTED") ||
-            message.includes("QUOTA") ||
-            message.includes("RATE LIMIT") ||
-            message.includes("TOO MANY REQUESTS") ||
-            message.includes("[429")
-        );
-    }
-
-    private extractErrorMessage(error: any): string {
-        const message =
-            error?.response?.data?.description ??
-            error?.response?.data?.message ??
-            error?.message;
-
-        return typeof message === "string"
-            ? message
-            : JSON.stringify(message ?? error);
     }
 }

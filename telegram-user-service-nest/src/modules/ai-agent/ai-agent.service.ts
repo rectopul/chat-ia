@@ -1,8 +1,10 @@
 import { InjectQueue } from "@nestjs/bullmq";
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import axios from "axios";
 import {
     BotAccount,
+    ChatMessageType,
     ChatMessageRole,
     MediaType,
     MessageDirection,
@@ -10,8 +12,23 @@ import {
     MessageTemplateMedia,
     Product,
 } from "@prisma/client";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import {
+    GenerationConfig,
+    GoogleGenerativeAI,
+    ResponseSchema,
+    SchemaType,
+} from "@google/generative-ai";
 import { Queue } from "bullmq";
+import { DeliveryOrderService } from "../delivery/delivery-order.service";
+import {
+    ProductSearchResult,
+    ProductService,
+} from "../delivery/product.service";
+import {
+    TemporaryCart,
+    TemporaryCartItem,
+    TemporaryCartService,
+} from "../delivery/temporary-cart.service";
 import { AiAgentRepository } from "./ai-agent.repository";
 import { SubscriptionService } from "../subscription/subscription.service";
 
@@ -19,6 +36,8 @@ export const AI_RESPONSE_QUEUE_NAME = "ai-response";
 export const AI_RESPONSE_JOB_NAME = "generate-ai-response";
 
 const AI_MODEL_NAME = "gemini-2.5-flash";
+const WHATSAPP_GROCERY_MODEL_NAME = "gemini-2.5-flash";
+const WHATSAPP_AUDIO_TRANSCRIPTION_MODEL_NAME = "gemini-2.5-flash";
 const AI_SYSTEM_PROMPT = [
     "Your name is Clara.",
     "Answer in Brazilian Portuguese.",
@@ -32,6 +51,99 @@ const AI_SYSTEM_PROMPT = [
     "If the user asks for a preview, sample, photo, video, audio, or to see more, you may mention that you are sending a preview when one is available.",
     "Keep answers short, engaging, and sales-oriented.",
 ].join(" ");
+
+const GROCERY_SYSTEM_PROMPT = [
+    "You are a grocery store attendant for a neighborhood shop in Brazil.",
+    "Answer in Brazilian Portuguese.",
+    "Be cordial, brief, practical, and helpful.",
+    "Always confirm quantities when the customer asks for products.",
+    "Never invent products, prices, availability, stock levels, or categories.",
+    "Use only the products and IDs provided in the runtime catalog.",
+    "If the quantity is unclear, do not update the cart and ask a short follow-up question asking for the quantity.",
+    "When the quantity is clear, prepare cart operations using only valid product IDs.",
+    "If it feels natural, suggest one or two related products from the related suggestions list.",
+    "Return only valid JSON with replyText, cartOperations, and suggestedProductIds.",
+].join(" ");
+
+const GROCERY_RESPONSE_SCHEMA: ResponseSchema = {
+    type: SchemaType.OBJECT,
+    required: ["replyText", "cartOperations", "suggestedProductIds"],
+    properties: {
+        replyText: {
+            type: SchemaType.STRING,
+            description:
+                "Short reply in Brazilian Portuguese to be sent to the customer.",
+        },
+        cartOperations: {
+            type: SchemaType.ARRAY,
+            items: {
+                type: SchemaType.OBJECT,
+                required: ["productId", "quantity", "mode"],
+                properties: {
+                    productId: {
+                        type: SchemaType.STRING,
+                        description: "Valid product ID from the provided catalog.",
+                    },
+                    quantity: {
+                        type: SchemaType.INTEGER,
+                        description: "Positive integer quantity requested by the customer.",
+                    },
+                    mode: {
+                        type: SchemaType.STRING,
+                        enum: ["set", "add"],
+                        description: "Use set for replacement and add for incremental additions.",
+                    },
+                },
+            },
+        },
+        suggestedProductIds: {
+            type: SchemaType.ARRAY,
+            items: {
+                type: SchemaType.STRING,
+            },
+        },
+    },
+};
+
+const GROCERY_JSON_GENERATION_CONFIG: GenerationConfig = {
+    responseMimeType: "application/json",
+    responseSchema: GROCERY_RESPONSE_SCHEMA,
+    temperature: 0.2,
+};
+
+const GROCERY_RELATED_PRODUCT_RULES = [
+    {
+        triggers: ["carvao", "carvão"],
+        suggestions: ["carne", "picanha", "frango", "linguica", "linguiça", "sal grosso"],
+    },
+    {
+        triggers: ["carne", "picanha", "frango", "linguica", "linguiça"],
+        suggestions: ["carvao", "carvão", "sal grosso", "cerveja", "refrigerante"],
+    },
+    {
+        triggers: ["arroz"],
+        suggestions: ["feijao", "feijão", "oleo", "óleo", "alho"],
+    },
+    {
+        triggers: ["macarrao", "macarrão", "massa", "espaguete"],
+        suggestions: ["molho", "queijo", "queijo ralado"],
+    },
+    {
+        triggers: ["pao", "pão"],
+        suggestions: ["manteiga", "queijo", "presunto", "requeijao", "requeijão"],
+    },
+    {
+        triggers: ["cafe", "café"],
+        suggestions: ["acucar", "açúcar", "leite", "biscoito"],
+    },
+    {
+        triggers: ["refrigerante", "cerveja", "suco"],
+        suggestions: ["gelo", "salgadinho", "carvao", "carvão"],
+    },
+].map((rule) => ({
+    triggers: rule.triggers.map((term) => term.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()),
+    suggestions: rule.suggestions.map((term) => term.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()),
+}));
 
 const PREVIEW_TAG_SYNONYM_GROUPS = [
     ["banho", "chuveiro", "banheira", "espuma", "molhada", "toalha"],
@@ -72,8 +184,42 @@ export interface AiDontSellRequest {
     anchorTemplateText?: string | null;
 }
 
+export interface WhatsappAiRequest {
+    instanceId: string;
+    chatId: string;
+    ownerUserId: string;
+    personaName: string;
+    messageText?: string;
+    mediaUrl?: string | null;
+    messageType?: ChatMessageType;
+}
+
 type PreviewTemplate = MessageTemplate & {
     mediaItems: MessageTemplateMedia[];
+};
+
+type GroceryCartOperation = {
+    productId: string;
+    quantity: number;
+    mode?: "set" | "add";
+};
+
+type GroceryAiStructuredResponse = {
+    replyText?: string;
+    cartOperations?: GroceryCartOperation[];
+    suggestedProductIds?: string[];
+};
+
+type WhatsappResolvedInput = {
+    messageText: string;
+    originalMessageType: ChatMessageType;
+    mediaUrl?: string | null;
+};
+
+type AppliedCartOperation = {
+    productId: string;
+    title: string;
+    quantity: number;
 };
 
 @Injectable()
@@ -85,6 +231,9 @@ export class AiAgentService {
         private readonly configService: ConfigService,
         private readonly repository: AiAgentRepository,
         private readonly subscriptionService: SubscriptionService,
+        private readonly productService: ProductService,
+        private readonly temporaryCartService: TemporaryCartService,
+        private readonly deliveryOrderService: DeliveryOrderService,
         @InjectQueue(AI_RESPONSE_QUEUE_NAME)
         private readonly aiResponseQueue: Queue<AiResponseJobData>,
     ) {}
@@ -274,6 +423,147 @@ export class AiAgentService {
         };
     }
 
+    async generateWhatsappResponse(
+        data: WhatsappAiRequest,
+    ): Promise<AiAgentReply> {
+        const resolvedInput = await this.resolveWhatsappInput(data);
+        const messageText = resolvedInput.messageText;
+
+        const conversationKey = this.buildWhatsappConversationKey(
+            data.instanceId,
+            data.chatId,
+        );
+
+        await this.repository.createMessage({
+            botId: null,
+            telegramId: conversationKey,
+            role: ChatMessageRole.user,
+            content: messageText,
+            mediaUrl: resolvedInput.mediaUrl ?? null,
+            messageType: resolvedInput.originalMessageType,
+        });
+
+        const [history, products, previewTemplates, currentCart, matchedProducts] =
+            await Promise.all([
+            this.repository.getConversationMessages(conversationKey, 10),
+            this.repository.getActiveDeliveryProductsForOwner(
+                data.ownerUserId,
+            ),
+            this.repository.getActivePreviewTemplatesForOwner(data.ownerUserId),
+                this.temporaryCartService.getCart(data.chatId),
+                this.productService.searchProducts({
+                    instanceId: data.instanceId,
+                    ownerUserId: data.ownerUserId,
+                    query: messageText,
+                    onlyAvailable: false,
+                    limit: 12,
+                }),
+            ]);
+
+        const relatedProducts = this.selectRelatedProducts(
+            products,
+            this.resolveMentionedProducts(products, matchedProducts),
+            currentCart,
+        );
+
+        if (
+            currentCart.items.length > 0 &&
+            this.isSimpleCartConfirmationIntent(messageText)
+        ) {
+            const finalizedOrder = await this.maybeFinalizeWhatsappOrder({
+                messageText,
+                instanceId: data.instanceId,
+                chatId: data.chatId,
+                cart: currentCart,
+            });
+
+            if (finalizedOrder) {
+                await this.temporaryCartService.clearCart(data.chatId);
+
+                return {
+                    text: this.buildOrderFinalizedReplyText(currentCart),
+                    previewTemplateIds: [],
+                };
+            }
+
+            return {
+                text: this.buildCartConfirmedReplyText(currentCart),
+                previewTemplateIds: [],
+            };
+        }
+
+        const structuredReply = await this.generateWhatsappGroceryReply({
+            personaName: data.personaName,
+            history,
+            catalogProducts: products,
+            matchedProducts,
+            currentCart,
+            relatedProducts,
+        });
+        let cartUpdateResult = {
+            cart: currentCart,
+            appliedOperations: [] as AppliedCartOperation[],
+        };
+
+        try {
+            cartUpdateResult = await this.updateCart(
+                data.chatId,
+                data.instanceId,
+                data.ownerUserId,
+                structuredReply.cartOperations ?? [],
+                messageText,
+            );
+        } catch (error) {
+            this.logger.warn(
+                `[generateWhatsappResponse] falha ao atualizar carrinho instanceId=${data.instanceId} chatId=${data.chatId}: ${
+                    error instanceof Error ? error.message : String(error)
+                }`,
+            );
+
+            return {
+                text: this.buildCartUpdateFailureReply(error),
+                previewTemplateIds: [],
+            };
+        }
+
+        const finalizedOrder = await this.maybeFinalizeWhatsappOrder({
+            messageText,
+            instanceId: data.instanceId,
+            chatId: data.chatId,
+            cart: cartUpdateResult.cart,
+        });
+
+        if (finalizedOrder) {
+            await this.temporaryCartService.clearCart(data.chatId);
+        }
+
+        const responseText = finalizedOrder
+            ? this.buildOrderFinalizedReplyText(cartUpdateResult.cart)
+            : this.buildWhatsappReplyText({
+            fallbackReplyText: structuredReply.replyText,
+            appliedOperations: cartUpdateResult.appliedOperations,
+            cart: cartUpdateResult.cart,
+            relatedProducts: this.selectRelatedProducts(
+                products,
+                this.resolveMentionedProducts(products, matchedProducts),
+                cartUpdateResult.cart,
+                structuredReply.suggestedProductIds,
+            ),
+        });
+
+        this.logger.debug(
+            `[generateWhatsappResponse] instanceId=${data.instanceId} chatId=${data.chatId} history=${history.length} model=${this.getModelName()}`,
+        );
+
+        return {
+            text: responseText,
+            previewTemplateIds: this.selectPreviewTemplateIds(
+                messageText,
+                previewTemplates,
+            ),
+        };
+    }
+
     async saveModelMessage(
         botId: string,
         telegramId: string,
@@ -290,6 +580,29 @@ export class AiAgentService {
             telegramId,
             role: ChatMessageRole.model,
             content: trimmedContent,
+        });
+    }
+
+    async saveWhatsappModelMessage(
+        instanceId: string,
+        chatId: string,
+        content: string,
+        messageType: ChatMessageType = ChatMessageType.TEXT,
+        mediaUrl?: string | null,
+    ): Promise<void> {
+        const trimmedContent = content.trim();
+
+        if (!trimmedContent) {
+            return;
+        }
+
+        await this.repository.createMessage({
+            botId: null,
+            telegramId: this.buildWhatsappConversationKey(instanceId, chatId),
+            role: ChatMessageRole.model,
+            content: trimmedContent,
+            mediaUrl: mediaUrl ?? null,
+            messageType,
         });
     }
 
@@ -315,7 +628,788 @@ export class AiAgentService {
         await this.repository.createMessageLogs(logs);
     }
 
+    private async resolveWhatsappInput(
+        data: WhatsappAiRequest,
+    ): Promise<WhatsappResolvedInput> {
+        if (data.messageType === ChatMessageType.AUDIO && data.mediaUrl) {
+            return {
+                messageText: await this.transcribeWhatsappAudio(data.mediaUrl),
+                originalMessageType: ChatMessageType.AUDIO,
+                mediaUrl: data.mediaUrl,
+            };
+        }
+
+        const directText = data.messageText?.trim();
+
+        if (!directText) {
+            throw new Error("WhatsApp message text is empty");
+        }
+
+        return {
+            messageText: directText,
+            originalMessageType: data.messageType ?? ChatMessageType.TEXT,
+            mediaUrl: data.mediaUrl ?? null,
+        };
+    }
+
+    private async transcribeWhatsappAudio(mediaUrl: string): Promise<string> {
+        const audio = await this.fetchRemoteBinary(mediaUrl);
+        const model = this.getTranscriptionModel();
+        const result = await model.generateContent([
+            "Transcreva este audio em portugues do Brasil. Responda apenas com a transcricao limpa, sem aspas, sem comentarios e sem formatacao extra.",
+            {
+                inlineData: {
+                    data: audio.buffer.toString("base64"),
+                    mimeType: audio.mimeType,
+                },
+            },
+        ]);
+        const transcript = result.response.text().trim();
+
+        if (!transcript) {
+            throw new Error("Gemini returned an empty audio transcription");
+        }
+
+        return transcript;
+    }
+
+    private async fetchRemoteBinary(
+        mediaUrl: string,
+    ): Promise<{ buffer: Buffer; mimeType: string }> {
+        const response = await axios.get<ArrayBuffer>(mediaUrl, {
+            responseType: "arraybuffer",
+            timeout: Number(
+                this.configService.get("WHATSAPP_MEDIA_DOWNLOAD_TIMEOUT_MS") ??
+                    15_000,
+            ),
+        });
+        const headerContentType = response.headers["content-type"];
+        const mimeType =
+            this.normalizeRemoteMimeType(headerContentType) ??
+            this.inferMimeTypeFromUrl(mediaUrl) ??
+            "audio/ogg";
+
+        return {
+            buffer: Buffer.from(response.data),
+            mimeType,
+        };
+    }
+
+    private async generateWhatsappGroceryReply(input: {
+        personaName: string;
+        history: Array<{
+            role: ChatMessageRole;
+            content: string;
+        }>;
+        catalogProducts: Product[];
+        matchedProducts: ProductSearchResult[];
+        currentCart: TemporaryCart;
+        relatedProducts: Product[];
+    }): Promise<GroceryAiStructuredResponse> {
+        const model = this.getWhatsappModel(
+            input.personaName,
+            GROCERY_JSON_GENERATION_CONFIG,
+        );
+        const result = await model.generateContent({
+            contents: [
+                {
+                    role: "user",
+                    parts: [
+                        {
+                            text: this.buildWhatsappGroceryRuntimeContext(input),
+                        },
+                    ],
+                },
+                ...input.history.map((message) => ({
+                    role: message.role as GeminiRole,
+                    parts: [{ text: message.content }],
+                })),
+            ],
+        });
+        const rawText = result.response.text().trim();
+
+        if (!rawText) {
+            throw new Error("Gemini returned an empty WhatsApp grocery response");
+        }
+
+        return this.normalizeStructuredGroceryReply(rawText);
+    }
+
+    private buildWhatsappGroceryRuntimeContext(input: {
+        personaName: string;
+        catalogProducts: Product[];
+        matchedProducts: ProductSearchResult[];
+        currentCart: TemporaryCart;
+        relatedProducts: Product[];
+    }): string {
+        const catalogLines = input.catalogProducts.length
+            ? input.catalogProducts
+                  .slice(0, 80)
+                  .map((product) => this.buildCatalogLine(product))
+                  .join("\n")
+            : "- Nenhum produto ativo no catalogo.";
+        const matchedProductLines = input.matchedProducts.length
+            ? input.matchedProducts
+                  .map((product) => this.buildSearchResultLine(product))
+                  .join("\n")
+            : "- Nenhum produto diretamente relacionado a ultima mensagem.";
+        const relatedProductLines = input.relatedProducts.length
+            ? input.relatedProducts
+                  .map((product) => this.buildCatalogLine(product))
+                  .join("\n")
+            : "- Nenhuma sugestao relacionada no momento.";
+
+        return [
+            "CONTEXTO_MERCEARIA",
+            `Nome da loja ou atendente: ${input.personaName}`,
+            "",
+            "Carrinho temporario atual do cliente:",
+            this.buildCartContext(input.currentCart),
+            "",
+            "Produtos mais relacionados a ultima mensagem do cliente:",
+            matchedProductLines,
+            "",
+            "Catalogo atual:",
+            catalogLines,
+            "",
+            "Sugestoes relacionadas que podem ser oferecidas se fizer sentido:",
+            relatedProductLines,
+            "",
+            "FORMATO_DE_SAIDA_OBRIGATORIO",
+            '{"replyText":"...", "cartOperations":[{"productId":"...", "quantity":2, "mode":"set"}], "suggestedProductIds":["..."]}',
+            "",
+            "REGRAS",
+            "- Responda somente com JSON valido.",
+            "- replyText deve ser cordial, curto e objetivo.",
+            "- Sempre confirme quantidades quando o cliente pedir itens.",
+            "- Se a quantidade estiver clara, preencha cartOperations com IDs reais do catalogo.",
+            "- Se a quantidade nao estiver clara, deixe cartOperations vazio e pergunte quantas unidades.",
+            "- Se o carrinho ja tiver itens e o cliente pedir um novo produto, mantenha os itens anteriores e adicione somente o novo item pedido.",
+            "- Se o cliente pedir mais de um item, voce pode enviar varias operacoes.",
+            "- Se o cliente disser 'mais', prefira mode='add'. Caso contrario, use mode='set'.",
+            "- Se o cliente responder apenas com confirmacoes curtas como 'sim', 'correto' ou 'isso mesmo', nao repita a mesma pergunta de quantidade.",
+            "- suggestedProductIds deve usar somente IDs reais do catalogo relacionado. Se nao fizer sentido, envie [].",
+        ].join("\n");
+    }
+
+    private async updateCart(
+        whatsappId: string,
+        instanceId: string,
+        ownerUserId: string,
+        operations: GroceryCartOperation[],
+        sourceMessageText: string,
+    ): Promise<{
+        cart: TemporaryCart;
+        appliedOperations: AppliedCartOperation[];
+    }> {
+        let cart = await this.temporaryCartService.getCart(whatsappId);
+        const appliedOperations: AppliedCartOperation[] = [];
+
+        for (const operation of this.normalizeCartOperations(operations)) {
+            const existingItem = cart.items.find(
+                (item) => item.productId === operation.productId,
+            );
+            const operationMode = this.resolveCartOperationMode(
+                operation,
+                existingItem,
+                sourceMessageText,
+            );
+
+            if (operationMode === "add" || !existingItem) {
+                cart = await this.temporaryCartService.addProduct(whatsappId, {
+                    productId: operation.productId,
+                    quantity: operation.quantity,
+                    instanceId,
+                    ownerUserId,
+                });
+            } else {
+                cart = await this.temporaryCartService.setItemQuantity(
+                    whatsappId,
+                    operation.productId,
+                    operation.quantity,
+                    {
+                        instanceId,
+                        ownerUserId,
+                    },
+                );
+            }
+
+            const updatedItem = cart.items.find(
+                (item) => item.productId === operation.productId,
+            );
+
+            if (updatedItem) {
+                appliedOperations.push({
+                    productId: updatedItem.productId,
+                    title: updatedItem.title,
+                    quantity: updatedItem.quantity,
+                });
+            }
+        }
+
+        if (cart.deliveryAddress?.trim()) {
+            await this.deliveryOrderService.syncPendingOrderFromCart({
+                ownerUserId,
+                instanceId,
+                whatsappId,
+                deliveryAddress: cart.deliveryAddress,
+            });
+        }
+
+        return { cart, appliedOperations };
+    }
+
+    private buildWhatsappReplyText(input: {
+        fallbackReplyText?: string;
+        appliedOperations: AppliedCartOperation[];
+        cart: TemporaryCart;
+        relatedProducts: Product[];
+    }): string {
+        if (input.appliedOperations.length > 0) {
+            const confirmation = this.buildCartConfirmationText(
+                input.appliedOperations,
+                input.cart,
+            );
+            const suggestion = input.relatedProducts.length
+                ? ` Se quiser, também posso incluir ${this.joinHumanList(
+                      input.relatedProducts.map((product) => product.title),
+                  )}.`
+                : "";
+
+            return `${confirmation}${suggestion}`.trim();
+        }
+
+        const fallback =
+            input.fallbackReplyText?.trim() ||
+            "Claro! Me diga o produto e a quantidade que eu separo pra voce.";
+
+        return fallback;
+    }
+
+    private buildCartConfirmationText(
+        operations: AppliedCartOperation[],
+        cart: TemporaryCart,
+    ): string {
+        const appliedSummary = this.joinHumanList(
+            operations.map(
+                (operation) => `${operation.quantity}x ${operation.title}`,
+            ),
+        );
+        const cartSummary = this.buildCartItemsSummary(cart);
+
+        if (
+            cart.items.length > operations.length ||
+            cart.items.some(
+                (item) =>
+                    !operations.some(
+                        (operation) => operation.productId === item.productId,
+                    ),
+            )
+        ) {
+            return `Perfeito! Adicionei ${appliedSummary}. Seu carrinho agora está com ${cartSummary}. Confirma pra mim se as quantidades estão certas?`;
+        }
+
+        return `Perfeito! Separei ${appliedSummary}. Confirma pra mim se as quantidades estão certas?`;
+    }
+
+    private buildCartConfirmedReplyText(cart: TemporaryCart): string {
+        const cartSummary = this.buildCartItemsSummary(cart);
+        const totalText = this.formatPrice(cart.totalCents);
+
+        if (cart.deliveryAddress?.trim()) {
+            return `Perfeito! Seu carrinho está com ${cartSummary}. Total parcial: ${totalText}. Entrega em ${cart.deliveryAddress}. Se estiver tudo certo, posso finalizar o pedido.`;
+        }
+
+        return `Perfeito! Seu carrinho está com ${cartSummary}. Total parcial: ${totalText}. Se quiser, posso adicionar mais itens ou você pode me mandar o endereço para entrega.`;
+    }
+
+    private buildCartUpdateFailureReply(error: unknown): string {
+        const message =
+            error instanceof Error ? error.message.trim() : String(error).trim();
+
+        if (!message) {
+            return "Tive um probleminha para atualizar o carrinho agora. Pode me mandar o item e a quantidade de novo, por favor?";
+        }
+
+        return `${message}. Se quiser, me manda o item e a quantidade novamente que eu confiro pra voce.`;
+    }
+
+    private async maybeFinalizeWhatsappOrder(input: {
+        messageText: string;
+        instanceId: string;
+        chatId: string;
+        cart: TemporaryCart;
+    }) {
+        if (!input.cart.items.length || !input.cart.deliveryAddress?.trim()) {
+            return null;
+        }
+
+        if (!this.isWhatsappOrderConfirmationIntent(input.messageText)) {
+            return null;
+        }
+
+        return this.deliveryOrderService.finalizePendingOrder({
+            instanceId: input.instanceId,
+            whatsappId: input.chatId,
+        });
+    }
+
+    private buildOrderFinalizedReplyText(cart: TemporaryCart): string {
+        const summary = this.joinHumanList(
+            cart.items.map((item) => `${item.quantity}x ${item.title}`),
+        );
+
+        return `Pedido confirmado! Separei ${summary} para entrega em ${cart.deliveryAddress}. Assim que sair com o motoboy eu te aviso por aqui.`;
+    }
+
+    private normalizeCartOperations(
+        operations: GroceryCartOperation[],
+    ): GroceryCartOperation[] {
+        return (operations ?? [])
+            .map((operation) => ({
+                productId: String(operation?.productId ?? "").trim(),
+                quantity: Math.trunc(Number(operation?.quantity ?? 0)),
+                mode: (operation?.mode === "add" ? "add" : "set") as
+                    | "add"
+                    | "set",
+            }))
+            .filter(
+                (operation) =>
+                    operation.productId.length > 0 && operation.quantity > 0,
+            )
+            .slice(0, 8);
+    }
+
+    private resolveCartOperationMode(
+        operation: GroceryCartOperation,
+        existingItem: TemporaryCartItem | undefined,
+        sourceMessageText: string,
+    ): "add" | "set" {
+        if (!existingItem) {
+            return "set";
+        }
+
+        if (operation.mode === "add") {
+            return "add";
+        }
+
+        return this.isIncrementCartIntent(sourceMessageText) ? "add" : "set";
+    }
+
+    private selectRelatedProducts(
+        catalogProducts: Product[],
+        anchorProducts: Product[],
+        currentCart: TemporaryCart,
+        suggestedProductIds: string[] = [],
+    ): Product[] {
+        const relatedProducts: Product[] = [];
+        const excludedIds = new Set<string>([
+            ...anchorProducts.map((product) => product.id),
+            ...currentCart.items.map((item) => item.productId),
+        ]);
+        const catalogById = new Map(
+            catalogProducts.map((product) => [product.id, product]),
+        );
+        const pushProduct = (product?: Product | null) => {
+            if (!product || excludedIds.has(product.id) || !product.isActive) {
+                return;
+            }
+
+            if (
+                product.stockQuantity !== null &&
+                product.stockQuantity <= 0
+            ) {
+                return;
+            }
+
+            excludedIds.add(product.id);
+            relatedProducts.push(product);
+        };
+
+        for (const productId of suggestedProductIds) {
+            pushProduct(catalogById.get(productId));
+        }
+
+        const cartProducts = this.resolveCartProducts(catalogProducts, currentCart);
+        const sourceProducts = [...anchorProducts, ...cartProducts];
+
+        for (const sourceProduct of sourceProducts) {
+            const normalizedSource = this.normalizeText(
+                [
+                    sourceProduct.title,
+                    sourceProduct.description ?? "",
+                    sourceProduct.category ?? "",
+                ].join(" "),
+            );
+
+            for (const rule of GROCERY_RELATED_PRODUCT_RULES) {
+                if (
+                    !rule.triggers.some((trigger) =>
+                        normalizedSource.includes(trigger),
+                    )
+                ) {
+                    continue;
+                }
+
+                for (const keyword of rule.suggestions) {
+                    const match = catalogProducts.find((product) => {
+                        if (excludedIds.has(product.id) || !product.isActive) {
+                            return false;
+                        }
+
+                        if (
+                            product.stockQuantity !== null &&
+                            product.stockQuantity <= 0
+                        ) {
+                            return false;
+                        }
+
+                        const searchableText = this.normalizeText(
+                            [
+                                product.title,
+                                product.description ?? "",
+                                product.category ?? "",
+                            ].join(" "),
+                        );
+
+                        return searchableText.includes(keyword);
+                    });
+
+                    pushProduct(match);
+
+                    if (relatedProducts.length >= 2) {
+                        return relatedProducts;
+                    }
+                }
+            }
+        }
+
+        return relatedProducts.slice(0, 2);
+    }
+
+    private resolveMentionedProducts(
+        catalogProducts: Product[],
+        matchedProducts: ProductSearchResult[],
+    ): Product[] {
+        const matchedIds = new Set(matchedProducts.map((product) => product.id));
+        return catalogProducts.filter((product) => matchedIds.has(product.id));
+    }
+
+    private resolveCartProducts(
+        catalogProducts: Product[],
+        cart: TemporaryCart,
+    ): Product[] {
+        const cartIds = new Set(cart.items.map((item) => item.productId));
+        return catalogProducts.filter((product) => cartIds.has(product.id));
+    }
+
+    private normalizeStructuredGroceryReply(
+        rawText: string,
+    ): GroceryAiStructuredResponse {
+        try {
+            const parsed = JSON.parse(this.extractJsonPayload(rawText)) as Record<
+                string,
+                unknown
+            >;
+            const replyText =
+                typeof parsed.replyText === "string"
+                    ? parsed.replyText.trim()
+                    : rawText.trim();
+
+            return {
+                replyText,
+                cartOperations: Array.isArray(parsed.cartOperations)
+                    ? parsed.cartOperations
+                          .map((operation) => operation as GroceryCartOperation)
+                          .filter(Boolean)
+                    : [],
+                suggestedProductIds: Array.isArray(parsed.suggestedProductIds)
+                    ? parsed.suggestedProductIds
+                          .map((productId) => String(productId).trim())
+                          .filter(Boolean)
+                    : [],
+            };
+        } catch (error) {
+            const message =
+                error instanceof Error ? error.message : String(error);
+
+            if (message.includes("JSON object not found")) {
+                this.logger.debug(
+                    "[normalizeStructuredGroceryReply] modelo respondeu em texto livre; usando fallback textual",
+                );
+            } else {
+                this.logger.warn(
+                    `[normalizeStructuredGroceryReply] resposta nao estruturada, usando fallback textual: ${message}`,
+                );
+            }
+
+            return {
+                replyText: rawText.trim(),
+                cartOperations: [],
+                suggestedProductIds: [],
+            };
+        }
+    }
+
+    private extractJsonPayload(rawText: string): string {
+        const trimmed = rawText.trim();
+        const withoutFence = trimmed
+            .replace(/^```json\s*/i, "")
+            .replace(/^```\s*/i, "")
+            .replace(/\s*```$/i, "")
+            .trim();
+
+        if (withoutFence.startsWith("{") && withoutFence.endsWith("}")) {
+            return withoutFence;
+        }
+
+        const start = withoutFence.indexOf("{");
+        if (start < 0) {
+            throw new Error("JSON object not found in model response");
+        }
+
+        let depth = 0;
+        let inString = false;
+        let escaping = false;
+
+        for (let index = start; index < withoutFence.length; index += 1) {
+            const char = withoutFence[index];
+
+            if (escaping) {
+                escaping = false;
+                continue;
+            }
+
+            if (char === "\\") {
+                escaping = true;
+                continue;
+            }
+
+            if (char === '"') {
+                inString = !inString;
+                continue;
+            }
+
+            if (inString) {
+                continue;
+            }
+
+            if (char === "{") {
+                depth += 1;
+            } else if (char === "}") {
+                depth -= 1;
+
+                if (depth === 0) {
+                    return withoutFence.slice(start, index + 1);
+                }
+            }
+        }
+
+        throw new Error("Unterminated JSON object in model response");
+    }
+
+    private buildCatalogLine(product: Product): string {
+        const stockText =
+            product.stockQuantity === null
+                ? "estoque: sob consulta"
+                : product.stockQuantity > 0
+                  ? `estoque: ${product.stockQuantity}`
+                  : "estoque: indisponivel";
+        const description = product.description?.trim()
+            ? ` | descricao: ${product.description.trim()}`
+            : "";
+        const category = product.category?.trim()
+            ? ` | categoria: ${product.category.trim()}`
+            : "";
+
+        return `- id: ${product.id} | nome: ${product.title} | preco: ${this.formatPrice(product.priceCents)} | ${stockText}${category}${description}`;
+    }
+
+    private buildSearchResultLine(product: ProductSearchResult): string {
+        const stockText =
+            product.stockQuantity === null
+                ? "estoque: sob consulta"
+                : product.isAvailable
+                  ? `estoque: ${product.stockQuantity}`
+                  : "estoque: indisponivel";
+        const category = product.category?.trim()
+            ? ` | categoria: ${product.category.trim()}`
+            : "";
+        const description = product.description?.trim()
+            ? ` | descricao: ${product.description.trim()}`
+            : "";
+
+        return `- id: ${product.id} | nome: ${product.title} | preco: ${this.formatPrice(product.priceCents)} | ${stockText}${category}${description}`;
+    }
+
+    private buildCartContext(cart: TemporaryCart): string {
+        if (!cart.items.length) {
+            return "- Carrinho vazio.";
+        }
+
+        return [
+            ...cart.items.map((item) => this.buildCartItemLine(item)),
+            `- Total parcial: ${this.formatPrice(cart.totalCents)}`,
+            cart.deliveryAddress
+                ? `- Endereco de entrega: ${cart.deliveryAddress}`
+                : "- Endereco de entrega: nao informado",
+        ].join("\n");
+    }
+
+    private buildCartItemLine(item: TemporaryCartItem): string {
+        return `- ${item.quantity}x ${item.title} | subtotal: ${this.formatPrice(item.subtotalCents)}`;
+    }
+
+    private buildCartItemsSummary(cart: TemporaryCart): string {
+        if (!cart.items.length) {
+            return "carrinho vazio";
+        }
+
+        return this.joinHumanList(
+            cart.items.map((item) => `${item.quantity}x ${item.title}`),
+        );
+    }
+
+    private joinHumanList(values: string[]): string {
+        const filtered = values
+            .map((value) => value.trim())
+            .filter(Boolean);
+
+        if (!filtered.length) {
+            return "";
+        }
+
+        if (filtered.length === 1) {
+            return filtered[0];
+        }
+
+        if (filtered.length === 2) {
+            return `${filtered[0]} e ${filtered[1]}`;
+        }
+
+        return `${filtered.slice(0, -1).join(", ")} e ${filtered[filtered.length - 1]}`;
+    }
+
+    private formatPrice(valueCents: number): string {
+        return `R$ ${(valueCents / 100).toFixed(2).replace(".", ",")}`;
+    }
+
+    private isWhatsappOrderConfirmationIntent(messageText: string): boolean {
+        const normalized = this.normalizeText(messageText);
+
+        return [
+            "pode fechar",
+            "fechar pedido",
+            "fecha meu pedido",
+            "pode finalizar",
+            "finaliza",
+            "pedido confirmado",
+            "confirmo",
+            "isso mesmo",
+            "ta certo",
+            "esta certo",
+            "fechado",
+            "pode mandar",
+            "pode entregar",
+        ].some((keyword) => normalized.includes(keyword));
+    }
+
+    private isSimpleCartConfirmationIntent(messageText: string): boolean {
+        const normalized = this.normalizeText(messageText)
+            .replace(/[!?.,]/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+
+        if (!normalized || normalized.length > 24) {
+            return false;
+        }
+
+        return [
+            "sim",
+            "sim correto",
+            "sim certinho",
+            "sim isso mesmo",
+            "correto",
+            "isso mesmo",
+            "ta certo",
+            "esta certo",
+            "certo",
+            "ok",
+            "perfeito",
+            "confirmo",
+        ].includes(normalized);
+    }
+
+    private isIncrementCartIntent(messageText: string): boolean {
+        const normalized = this.normalizeText(messageText);
+
+        return [
+            "mais",
+            "tambem",
+            "também",
+            "outra",
+            "outro",
+            "acrescenta",
+            "adiciona",
+            "coloca mais",
+            "leva mais",
+        ].some((keyword) => normalized.includes(keyword));
+    }
+
+    private normalizeRemoteMimeType(value?: string | null): string | null {
+        const normalized = value?.split(";")[0]?.trim().toLowerCase();
+        return normalized || null;
+    }
+
+    private inferMimeTypeFromUrl(mediaUrl: string): string | null {
+        const urlWithoutQuery = mediaUrl.split("?")[0]?.toLowerCase() ?? "";
+
+        if (urlWithoutQuery.endsWith(".ogg") || urlWithoutQuery.endsWith(".opus")) {
+            return "audio/ogg";
+        }
+
+        if (urlWithoutQuery.endsWith(".mp3")) {
+            return "audio/mpeg";
+        }
+
+        if (urlWithoutQuery.endsWith(".wav")) {
+            return "audio/wav";
+        }
+
+        if (urlWithoutQuery.endsWith(".m4a")) {
+            return "audio/mp4";
+        }
+
+        return null;
+    }
+
     private getModel(personaName: string) {
+        return this.getGenerativeModel(
+            this.getModelName(),
+            this.buildSystemPrompt(personaName),
+        );
+    }
+
+    private getWhatsappModel(
+        personaName: string,
+        generationConfig?: GenerationConfig,
+    ) {
+        return this.getGenerativeModel(
+            this.getWhatsappModelName(),
+            this.buildWhatsappSystemPrompt(personaName),
+            generationConfig,
+        );
+    }
+
+    private getTranscriptionModel() {
+        return this.getGenerativeModel(this.getTranscriptionModelName());
+    }
+
+    private getGenerativeModel(
+        modelName: string,
+        systemInstruction?: string,
+        generationConfig?: GenerationConfig,
+    ) {
         const apiKey = this.configService.get<string>("GEMINI_API_KEY")?.trim();
 
         if (!apiKey) {
@@ -327,8 +1421,9 @@ export class AiAgentService {
         }
 
         return this.genAI.getGenerativeModel({
-            model: this.getModelName(),
-            systemInstruction: this.buildSystemPrompt(personaName),
+            model: modelName,
+            ...(systemInstruction ? { systemInstruction } : {}),
+            ...(generationConfig ? { generationConfig } : {}),
         });
     }
 
@@ -336,10 +1431,32 @@ export class AiAgentService {
         return AI_SYSTEM_PROMPT.replace("Your name is Clara.", `Your name is ${personaName}.`);
     }
 
+    private buildWhatsappSystemPrompt(personaName: string): string {
+        return `Your name is ${personaName}. ${GROCERY_SYSTEM_PROMPT}`;
+    }
+
     private getModelName(): string {
         return (
             this.configService.get<string>("GEMINI_MODEL")?.trim() ||
             AI_MODEL_NAME
+        );
+    }
+
+    private getWhatsappModelName(): string {
+        return (
+            this.configService.get<string>("GEMINI_WHATSAPP_MODEL")?.trim() ||
+            this.configService.get<string>("GEMINI_MODEL")?.trim() ||
+            WHATSAPP_GROCERY_MODEL_NAME
+        );
+    }
+
+    private getTranscriptionModelName(): string {
+        return (
+            this.configService
+                .get<string>("GEMINI_AUDIO_TRANSCRIPTION_MODEL")
+                ?.trim() ||
+            this.configService.get<string>("GEMINI_MODEL")?.trim() ||
+            WHATSAPP_AUDIO_TRANSCRIPTION_MODEL_NAME
         );
     }
 
@@ -938,6 +2055,13 @@ export class AiAgentService {
     private getPersonaName(botAccount: BotAccount | null): string {
         const rawName = botAccount?.name?.trim();
         return rawName || "Clara";
+    }
+
+    private buildWhatsappConversationKey(
+        instanceId: string,
+        chatId: string,
+    ): string {
+        return `whatsapp:${instanceId}:${chatId}`;
     }
 
     private buildPreviewMessageLogs(

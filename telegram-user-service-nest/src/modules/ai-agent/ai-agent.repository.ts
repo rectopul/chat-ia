@@ -1,6 +1,7 @@
 import { Injectable } from "@nestjs/common";
 import {
     ChatMessage,
+    ChatMessageType,
     ChatMessageRole,
     MediaType,
     MessageDirection,
@@ -9,8 +10,13 @@ import {
     MessageTemplateMedia,
     BotAccount,
     Product,
+    ProductType,
     Sale,
+    Subscription,
+    SubscriptionStatus,
     TelegramUser,
+    UserAccessStatus,
+    UserRole,
 } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 
@@ -19,6 +25,16 @@ type CreateChatMessageInput = {
     telegramId: string;
     role: ChatMessageRole;
     content: string;
+    mediaUrl?: string | null;
+    messageType?: ChatMessageType;
+};
+
+export type WhatsappInstanceAccessContext = {
+    instanceId: string;
+    ownerUserId: string;
+    personaName: string;
+    subscriptionStatus: SubscriptionStatus | null;
+    hasActiveAccess: boolean;
 };
 
 @Injectable()
@@ -58,6 +74,22 @@ export class AiAgentRepository {
         return legacyMessages.reverse();
     }
 
+    async getConversationMessages(
+        conversationKey: string,
+        limit: number = 10,
+    ): Promise<ChatMessage[]> {
+        const messages = await this.prisma.chatMessage.findMany({
+            where: {
+                botId: null,
+                telegramId: conversationKey,
+            },
+            orderBy: { createdAt: "desc" },
+            take: limit,
+        });
+
+        return messages.reverse();
+    }
+
     async getActiveProducts(): Promise<Product[]> {
         return this.prisma.product.findMany({
             where: { isActive: true, ownerUserId: null },
@@ -74,6 +106,29 @@ export class AiAgentRepository {
                 ownerUserId,
             },
             orderBy: { priceCents: "asc" },
+        });
+    }
+
+    async getActiveProductsForOwner(ownerUserId: string): Promise<Product[]> {
+        return this.prisma.product.findMany({
+            where: {
+                isActive: true,
+                ownerUserId,
+            },
+            orderBy: { priceCents: "asc" },
+        });
+    }
+
+    async getActiveDeliveryProductsForOwner(
+        ownerUserId: string,
+    ): Promise<Product[]> {
+        return this.prisma.product.findMany({
+            where: {
+                isActive: true,
+                ownerUserId,
+                productType: ProductType.ONE_TIME,
+            },
+            orderBy: [{ category: "asc" }, { title: "asc" }],
         });
     }
 
@@ -96,6 +151,38 @@ export class AiAgentRepository {
                 ownerUserId: null,
                 OR: [
                     { type: { in: [MediaType.IMAGE, MediaType.VIDEO, MediaType.AUDIO] } },
+                    { mediaUrl: { not: null } },
+                    { mediaItems: { some: {} } },
+                ],
+            },
+            include: {
+                mediaItems: {
+                    orderBy: { order: "asc" },
+                },
+            },
+            orderBy: { createdAt: "desc" },
+        });
+    }
+
+    async getActivePreviewTemplatesForOwner(
+        ownerUserId: string,
+    ): Promise<
+        Array<
+            MessageTemplate & {
+                mediaItems: MessageTemplateMedia[];
+            }
+        >
+    > {
+        return this.prisma.messageTemplate.findMany({
+            where: {
+                isActive: true,
+                ownerUserId,
+                OR: [
+                    {
+                        type: {
+                            in: [MediaType.IMAGE, MediaType.VIDEO, MediaType.AUDIO],
+                        },
+                    },
                     { mediaUrl: { not: null } },
                     { mediaItems: { some: {} } },
                 ],
@@ -267,6 +354,37 @@ export class AiAgentRepository {
         });
     }
 
+    async getWhatsappInstanceAccessContext(
+        instanceId: string,
+    ): Promise<WhatsappInstanceAccessContext | null> {
+        const instance = await this.prisma.whatsappInstance.findUnique({
+            where: { id: instanceId },
+            include: {
+                user: {
+                    include: {
+                        subscription: true,
+                    },
+                },
+            },
+        });
+
+        if (!instance) {
+            return null;
+        }
+
+        return {
+            instanceId: instance.id,
+            ownerUserId: instance.userId,
+            personaName: instance.instanceName.trim() || instance.user.name?.trim() || "Clara",
+            subscriptionStatus: instance.user.subscription?.status ?? null,
+            hasActiveAccess: this.hasUserActiveAccess(
+                instance.user.role,
+                instance.user.accessStatus,
+                instance.user.subscription,
+            ),
+        };
+    }
+
     private async getBotOwnerUserId(botId: string): Promise<string | null> {
         const bot = await this.prisma.botAccount.findUnique({
             where: { id: botId },
@@ -274,5 +392,39 @@ export class AiAgentRepository {
         });
 
         return bot?.ownerUserId ?? null;
+    }
+
+    private hasUserActiveAccess(
+        role: UserRole,
+        accessStatus: UserAccessStatus,
+        subscription: Subscription | null,
+    ): boolean {
+        if (role === UserRole.SUPER_ADMIN) {
+            return true;
+        }
+
+        if (accessStatus === UserAccessStatus.BANNED) {
+            return false;
+        }
+
+        if (!subscription) {
+            return false;
+        }
+
+        const now = new Date();
+
+        if (subscription.status === SubscriptionStatus.ACTIVE) {
+            return !subscription.endDate || subscription.endDate >= now;
+        }
+
+        if (subscription.status === SubscriptionStatus.PAST_DUE) {
+            return !!subscription.graceUntil && subscription.graceUntil >= now;
+        }
+
+        if (subscription.status === SubscriptionStatus.CANCELED) {
+            return !!subscription.endDate && subscription.endDate >= now;
+        }
+
+        return false;
     }
 }

@@ -9,12 +9,20 @@ import { BullBoardModule } from "@bull-board/nestjs";
 import { ExpressAdapter } from "@bull-board/express";
 import { BullMQAdapter } from "@bull-board/api/bullMQAdapter";
 import { QUEUE_NAME, TRANSFER_QUEUE_NAME } from "./telegram/constants";
+import {
+    WHATSAPP_INCOMING_QUEUE_NAME,
+    WHATSAPP_MEDIA_OUTGOING_QUEUE_NAME,
+    WHATSAPP_OUTGOING_QUEUE_NAME,
+} from "./whatsapp/queue/constants/whatsapp-queue.constants";
 import { WhatsappModule } from "./whatsapp/whatsapp.module";
 import { AiAgentModule } from "./modules/ai-agent/ai-agent.module";
 import { AI_RESPONSE_QUEUE_NAME } from "./modules/ai-agent/ai-agent.service";
 import { SubscriptionModule } from "./modules/subscription/subscription.module";
 import { BillingModule } from "./modules/billing/billing.module";
+import { DeliveryModule } from "./modules/delivery/delivery.module";
 import { AdminModule } from "./modules/admin/admin.module";
+import { OrdersModule } from "./modules/orders/orders.module";
+import { EvolutionModule } from "./modules/evolution/evolution.module";
 
 @Module({
     imports: [
@@ -49,6 +57,21 @@ import { AdminModule } from "./modules/admin/admin.module";
             adapter: BullMQAdapter,
         }),
 
+        BullBoardModule.forFeature({
+            name: WHATSAPP_INCOMING_QUEUE_NAME,
+            adapter: BullMQAdapter,
+        }),
+
+        BullBoardModule.forFeature({
+            name: WHATSAPP_OUTGOING_QUEUE_NAME,
+            adapter: BullMQAdapter,
+        }),
+
+        BullBoardModule.forFeature({
+            name: WHATSAPP_MEDIA_OUTGOING_QUEUE_NAME,
+            adapter: BullMQAdapter,
+        }),
+
         ConfigModule.forRoot({
             // Ele tentará carregar o .env.local primeiro; se não achar, carrega o .env
             envFilePath: [".env.local", ".env"],
@@ -59,7 +82,10 @@ import { AdminModule } from "./modules/admin/admin.module";
         AiAgentModule,
         SubscriptionModule,
         BillingModule,
+        DeliveryModule,
+        OrdersModule,
         AdminModule,
+        EvolutionModule,
         SyncPayModule,
         TemplateModule,
         WhatsappModule,

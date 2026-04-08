@@ -5,8 +5,10 @@ import {
     TransactionStatus,
     UserAccessStatus,
     UserRole,
+    WhatsappHandoverStatus,
 } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
+import { AdminMonitoringService } from "./admin-monitoring.service";
 import { SubscriptionService } from "../subscription/subscription.service";
 
 type BalancePeriod = "daily" | "monthly";
@@ -16,6 +18,7 @@ export class AdminService {
     constructor(
         private readonly prisma: PrismaService,
         private readonly subscriptionService: SubscriptionService,
+        private readonly adminMonitoring: AdminMonitoringService,
     ) {}
 
     async getDashboardMetrics() {
@@ -83,6 +86,40 @@ export class AdminService {
             this.getBalance("monthly"),
         ]);
 
+        const [
+            instanceHealth,
+            processedMessagesByDay,
+            openHandoverCount,
+            recentHandovers,
+        ] = await Promise.all([
+            this.adminMonitoring.getInstanceHealth(),
+            this.adminMonitoring.getProcessedMessagesByDay({}),
+            this.prisma.whatsappHandover.count({
+                where: { status: WhatsappHandoverStatus.OPEN },
+            }),
+            this.prisma.whatsappHandover.findMany({
+                where: { status: WhatsappHandoverStatus.OPEN },
+                include: {
+                    user: {
+                        select: {
+                            id: true,
+                            name: true,
+                            email: true,
+                        },
+                    },
+                    whatsappInstance: {
+                        select: {
+                            id: true,
+                            instanceName: true,
+                            status: true,
+                        },
+                    },
+                },
+                orderBy: { createdAt: "desc" },
+                take: 10,
+            }),
+        ]);
+
         return {
             mrrCents,
             churnRate,
@@ -93,6 +130,14 @@ export class AdminService {
             balance: {
                 daily: dailyBalance,
                 monthly: monthlyBalance,
+            },
+            instanceHealth,
+            handovers: {
+                openCount: openHandoverCount,
+                recent: recentHandovers,
+            },
+            monitoring: {
+                processedMessagesByDay,
             },
         };
     }
@@ -144,29 +189,58 @@ export class AdminService {
 
     async getBalance(
         period: BalancePeriod,
+        planType?: Prisma.EnumPlanTypeFilter["equals"],
         from?: Date,
         to?: Date,
-    ): Promise<{ period: BalancePeriod; amountCents: number }> {
-        const now = new Date();
-        const defaultFrom =
-            period === "daily"
-                ? new Date(now.getFullYear(), now.getMonth(), now.getDate())
-                : new Date(now.getFullYear(), now.getMonth(), 1);
-
-        const aggregate = await this.prisma.transaction.aggregate({
-            where: {
-                status: TransactionStatus.PAID,
-                referenceDate: {
-                    gte: from ?? defaultFrom,
-                    ...(to ? { lte: to } : {}),
-                },
-            },
-            _sum: { amountCents: true },
+    ) {
+        const overview = await this.adminMonitoring.getFinancialOverview({
+            period,
+            planType: planType as any,
+            from,
+            to,
         });
 
         return {
-            period,
-            amountCents: aggregate._sum.amountCents ?? 0,
+            ...overview,
+            amountCents: overview.subscriptionRevenueCents,
         };
+    }
+
+    async getProcessedMessagesByDay(filters: {
+        planType?: Prisma.EnumPlanTypeFilter["equals"];
+        from?: Date;
+        to?: Date;
+    }) {
+        return this.adminMonitoring.getProcessedMessagesByDay({
+            planType: filters.planType as any,
+            from: filters.from,
+            to: filters.to,
+        });
+    }
+
+    async getInstanceHealth() {
+        return this.adminMonitoring.getInstanceHealth();
+    }
+
+    async getFinancialMonitoring(filters: {
+        period: BalancePeriod;
+        planType?: Prisma.EnumPlanTypeFilter["equals"];
+        from?: Date;
+        to?: Date;
+    }) {
+        return this.adminMonitoring.getFinancialOverview({
+            period: filters.period,
+            planType: filters.planType as any,
+            from: filters.from,
+            to: filters.to,
+        });
+    }
+
+    getOpenApiDocument() {
+        return this.adminMonitoring.getOpenApiDocument();
+    }
+
+    getSwaggerHtml(specPath: string) {
+        return this.adminMonitoring.getSwaggerHtml(specPath);
     }
 }

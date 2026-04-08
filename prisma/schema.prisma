@@ -38,20 +38,88 @@ enum TransactionStatus {
 }
 
 model User {
-  id           String            @id @default(cuid())
-  name         String?
-  email        String?           @unique
-  password     String?
-  role         UserRole          @default(CUSTOMER)
-  accessStatus UserAccessStatus  @default(ACTIVE)
-  createdAt    DateTime          @default(now())
-  updatedAt    DateTime          @updatedAt
+  id                     String           @id @default(cuid())
+  name                   String?
+  email                  String?          @unique
+  password               String?
+  role                   UserRole         @default(CUSTOMER)
+  accessStatus           UserAccessStatus @default(ACTIVE)
+  aiMessageLimitOverride Int?
+  createdAt              DateTime         @default(now())
+  updatedAt              DateTime         @updatedAt
 
-  bots         BotAccount[]
-  products     Product[]
-  templates    MessageTemplate[]
-  subscription Subscription?
-  transactions Transaction[]
+  bots              BotAccount[]
+  products          Product[]
+  templates         MessageTemplate[]
+  subscription      Subscription?
+  transactions      Transaction[]
+  whatsappInstances WhatsappInstance[]
+  whatsappCustomers WhatsappCustomer[]
+  orders            Order[]            @relation("UserOrders")
+  whatsappHandovers WhatsappHandover[]
+}
+
+model WhatsappInstance {
+  id           String   @id @default(cuid())
+  userId       String
+  instanceName String
+  status       String   @default("DISCONNECTED")
+  webhookUrl   String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orders    Order[]
+  handovers WhatsappHandover[]
+  customers WhatsappCustomer[]
+
+  @@unique([userId, instanceName])
+  @@index([userId, status])
+}
+
+enum WhatsappHandoverStatus {
+  OPEN
+  RESOLVED
+}
+
+model WhatsappHandover {
+  id                  String                 @id @default(cuid())
+  userId              String
+  whatsappInstanceId  String
+  chatId              String
+  triggerText         String?                @db.Text
+  lastCustomerMessage String?                @db.Text
+  triggerKeywords     String[]               @default([])
+  status              WhatsappHandoverStatus @default(OPEN)
+  resolvedAt          DateTime?
+  createdAt           DateTime               @default(now())
+  updatedAt           DateTime               @updatedAt
+
+  user             User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  whatsappInstance WhatsappInstance @relation(fields: [whatsappInstanceId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status, createdAt])
+  @@index([whatsappInstanceId, chatId, status])
+}
+
+model WhatsappCustomer {
+  id                 String   @id @default(cuid())
+  ownerUserId        String
+  whatsappInstanceId String?
+  whatsappId         String
+  displayName        String?
+  lastMessageText    String?  @db.Text
+  firstSeenAt        DateTime @default(now())
+  lastSeenAt         DateTime @default(now())
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  ownerUser        User              @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  whatsappInstance WhatsappInstance? @relation(fields: [whatsappInstanceId], references: [id], onDelete: SetNull)
+
+  @@unique([ownerUserId, whatsappId])
+  @@index([ownerUserId, lastSeenAt])
+  @@index([whatsappInstanceId, lastSeenAt])
 }
 
 model Subscription {
@@ -109,7 +177,7 @@ model BotAccount {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  ownerUser         User?               @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
+  ownerUser         User?                 @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
   users             TelegramUser[]
   sales             Sale[]
   messageLogs       MessageLog[]
@@ -190,7 +258,7 @@ model MessageTemplate {
   createdAt      DateTime           @default(now())
   updatedAt      DateTime           @updatedAt
 
-  ownerUser     User?                 @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
+  ownerUser     User?                  @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
   mediaItems    MessageTemplateMedia[]
   rules         TimedMessageRule[]
   scheduledJobs ScheduledMessageJob[]
@@ -284,6 +352,8 @@ model Product {
   title          String
   description    String?
   priceCents     Int
+  stockQuantity  Int?
+  category       String?
   currency       String      @default("BRL")
   isActive       Boolean     @default(true)
   productType    ProductType @default(ONE_TIME)
@@ -291,11 +361,58 @@ model Product {
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
 
-  ownerUser       User?       @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
+  ownerUser       User?            @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
   sales           Sale[]
   discountConfigs DiscountConfig[]
+  orderItems      OrderItem[]
 
   @@index([ownerUserId])
+  @@index([ownerUserId, category, isActive])
+}
+
+enum OrderStatus {
+  PENDING
+  PREPARING
+  SHIPPED
+  DELIVERED
+}
+
+model Order {
+  id                 String      @id @default(cuid())
+  ownerUserId        String?
+  whatsappInstanceId String?
+  customerWhatsappId String
+  customerName       String?
+  status             OrderStatus @default(PENDING)
+  totalCents         Int
+  currency           String      @default("BRL")
+  deliveryAddress    String
+  notes              String?
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+
+  ownerUser        User?             @relation("UserOrders", fields: [ownerUserId], references: [id], onDelete: SetNull)
+  whatsappInstance WhatsappInstance? @relation(fields: [whatsappInstanceId], references: [id], onDelete: SetNull)
+  items            OrderItem[]
+
+  @@index([ownerUserId, status, createdAt])
+  @@index([whatsappInstanceId, customerWhatsappId, createdAt])
+}
+
+model OrderItem {
+  id             String   @id @default(cuid())
+  orderId        String
+  productId      String
+  quantity       Int
+  unitPriceCents Int
+  subtotalCents  Int
+  createdAt      DateTime @default(now())
+
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
+
+  @@index([orderId])
+  @@index([productId])
 }
 
 enum SaleStatus {
@@ -500,13 +617,22 @@ enum ChatMessageRole {
   model
 }
 
+enum ChatMessageType {
+  TEXT
+  AUDIO
+  IMAGE
+  VIDEO
+}
+
 model ChatMessage {
   botId       String?
-  id         String          @id @default(uuid())
-  telegramId String
-  role       ChatMessageRole
-  content    String          @db.Text
-  createdAt  DateTime        @default(now())
+  id          String          @id @default(uuid())
+  telegramId  String
+  role        ChatMessageRole
+  content     String          @db.Text
+  mediaUrl    String?
+  messageType ChatMessageType @default(TEXT)
+  createdAt   DateTime        @default(now())
 
   bot BotAccount? @relation(fields: [botId], references: [id], onDelete: Cascade)
 

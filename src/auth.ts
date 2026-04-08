@@ -4,6 +4,8 @@ import { prisma } from "@/lib/prisma";
 import bcrypt from "bcryptjs";
 import { getAccessSummary } from "@/lib/saas/access";
 
+const AUTH_SILENT_ERROR_CODES = new Set(["CredentialsSignin"]);
+
 export const { handlers, signIn, signOut, auth } = NextAuth({
     session: {
         strategy: "jwt",
@@ -18,7 +20,6 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
             async authorize(credentials) {
                 try {
                     if (!credentials?.email || !credentials?.password) {
-                        console.log("Login falhou: Credenciais ausentes");
                         return null;
                     }
 
@@ -27,11 +28,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
                         include: { subscription: true },
                     });
 
-                    // Log para debug
                     if (!user) {
-                        console.log(
-                            `Login falhou: Usuário ${credentials.email} não encontrado`,
-                        );
                         return null;
                     }
 
@@ -48,6 +45,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
                         role: user.role,
                         accessStatus: user.accessStatus,
                         subscription: user.subscription,
+                        aiMessageLimitOverride: user.aiMessageLimitOverride,
                     });
 
                     return {
@@ -69,6 +67,15 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
     ],
     pages: {
         signIn: "/login",
+    },
+    logger: {
+        error(code, ...message) {
+            if (AUTH_SILENT_ERROR_CODES.has(String(code))) {
+                return;
+            }
+
+            console.error(`[auth][error] ${code}`, ...message);
+        },
     },
     callbacks: {
         async jwt({ token, user }) {
@@ -96,6 +103,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
                 role: dbUser.role,
                 accessStatus: dbUser.accessStatus,
                 subscription: dbUser.subscription,
+                aiMessageLimitOverride: dbUser.aiMessageLimitOverride,
             });
 
             token.sub = dbUser.id;

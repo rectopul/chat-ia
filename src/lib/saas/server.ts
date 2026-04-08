@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { fetchNestApiJson } from "@/lib/nest-api";
-import { getAccessSummary, hasActiveSubscriptionAccess } from "./access";
+import { hasActiveSubscriptionAccess } from "./access";
 import { getPlanDefinition, getPlanCatalog } from "./plans";
 import {
     ChatMessageRole,
@@ -10,7 +10,7 @@ import {
     SubscriptionStatus,
     Transaction,
     TransactionStatus,
-    User,
+    UserAccessStatus,
     UserRole,
 } from "@prisma/client";
 
@@ -20,6 +20,8 @@ type BillingCheckoutResponse = {
     pixCode: string;
     gatewayReference: string;
 };
+
+type UnknownRecord = Record<string, unknown>;
 
 export async function getUserWithSaasContext(userId: string) {
     return prisma.user.findUnique({
@@ -33,6 +35,19 @@ export async function getUserWithSaasContext(userId: string) {
                 orderBy: { createdAt: "desc" },
                 take: 10,
             },
+            whatsappInstances: {
+                orderBy: { createdAt: "desc" },
+            },
+            _count: {
+                select: {
+                    bots: true,
+                    products: true,
+                    templates: true,
+                    orders: true,
+                    whatsappInstances: true,
+                    whatsappCustomers: true,
+                },
+            },
         },
     });
 }
@@ -41,13 +56,33 @@ export async function getUserAiUsageToday(userId: string): Promise<number> {
     const start = new Date();
     start.setHours(0, 0, 0, 0);
 
+    const whatsappInstances = await prisma.whatsappInstance.findMany({
+        where: { userId },
+        select: { id: true },
+    });
+
+    const ownershipFilters: Prisma.ChatMessageWhereInput[] = [
+        {
+            bot: {
+                ownerUserId: userId,
+            },
+        },
+    ];
+
+    for (const instance of whatsappInstances) {
+        ownershipFilters.push({
+            botId: null,
+            telegramId: {
+                startsWith: `whatsapp:${instance.id}:`,
+            },
+        });
+    }
+
     return prisma.chatMessage.count({
         where: {
             role: ChatMessageRole.user,
             createdAt: { gte: start },
-            bot: {
-                ownerUserId: userId,
-            },
+            OR: ownershipFilters,
         },
     });
 }
@@ -81,8 +116,8 @@ export async function createPaidPlanCheckout(
 }
 
 export async function handleSaasWebhook(payload: unknown) {
-    const rawPayload = payload as Record<string, any>;
-    const data = (rawPayload?.data ?? rawPayload) as Record<string, any>;
+    const rawPayload = asRecord(payload);
+    const data = asRecord(rawPayload.data ?? rawPayload);
     const normalizedStatus = normalizeStatus(data?.status);
     const eventType = normalizeEventType(rawPayload, data);
     const referenceCandidates = getReferenceCandidates(data);
@@ -214,19 +249,34 @@ export async function listSaasUsers(filters?: {
     accessStatus?: string;
     subscriptionStatus?: string;
 }) {
+    const accessStatus =
+        filters?.accessStatus &&
+        Object.values(UserAccessStatus).includes(
+            filters.accessStatus as UserAccessStatus,
+        )
+            ? (filters.accessStatus as UserAccessStatus)
+            : undefined;
+    const subscriptionStatus =
+        filters?.subscriptionStatus &&
+        Object.values(SubscriptionStatus).includes(
+            filters.subscriptionStatus as SubscriptionStatus,
+        )
+            ? (filters.subscriptionStatus as SubscriptionStatus)
+            : undefined;
+
     return prisma.user.findMany({
         where: {
             role: UserRole.CUSTOMER,
-            ...(filters?.accessStatus
+            ...(accessStatus
                 ? {
-                      accessStatus: filters.accessStatus as any,
+                      accessStatus,
                   }
                 : {}),
-            ...(filters?.subscriptionStatus
+            ...(subscriptionStatus
                 ? {
                       subscription: {
                           is: {
-                              status: filters.subscriptionStatus as any,
+                              status: subscriptionStatus,
                           },
                       },
                   }
@@ -252,6 +302,18 @@ export async function setSaasUserAccessStatus(
     return prisma.user.update({
         where: { id: userId },
         data: { accessStatus },
+    });
+}
+
+export async function setSaasUserAiLimitOverride(
+    userId: string,
+    aiMessageLimitOverride: number | null,
+) {
+    return prisma.user.update({
+        where: { id: userId },
+        data: {
+            aiMessageLimitOverride,
+        },
     });
 }
 
@@ -320,7 +382,7 @@ async function markSuccess(input: {
     rawPayload: unknown;
     gatewaySubscriptionId: string | null;
     parsedReference: { userId: string; planType: PlanType } | null;
-    data: Record<string, any>;
+    data: UnknownRecord;
 }) {
     let subscription = input.subscription;
 
@@ -460,8 +522,8 @@ function normalizeStatus(status: unknown) {
 }
 
 function normalizeEventType(
-    payload: Record<string, any>,
-    data: Record<string, any>,
+    payload: UnknownRecord,
+    data: UnknownRecord,
 ) {
     return String(
         payload?.event ?? payload?.type ?? data?.event ?? data?.type ?? "",
@@ -511,7 +573,7 @@ function isCancelEvent(status: string, eventType: string) {
     );
 }
 
-function getReferenceCandidates(data: Record<string, any>): string[] {
+function getReferenceCandidates(data: UnknownRecord): string[] {
     return [
         data?.external_reference,
         data?.reference,
@@ -526,11 +588,12 @@ function getReferenceCandidates(data: Record<string, any>): string[] {
         .filter(Boolean);
 }
 
-function getGatewaySubscriptionId(data: Record<string, any>): string | null {
+function getGatewaySubscriptionId(data: UnknownRecord): string | null {
+    const subscription = asRecord(data.subscription);
     const value =
         data?.subscription_id ??
         data?.gateway_subscription_id ??
-        data?.subscription?.id;
+        subscription.id;
 
     if (typeof value === "string" || typeof value === "number") {
         return String(value);
@@ -581,7 +644,7 @@ function computeNextEndDate(
     return addDays(baseDate, plan.cycleDays);
 }
 
-function getAmountCents(data: Record<string, any>, fallback: number) {
+function getAmountCents(data: UnknownRecord, fallback: number) {
     const rawAmount = Number(data?.amount ?? fallback / 100);
 
     if (!Number.isFinite(rawAmount)) {
@@ -589,6 +652,10 @@ function getAmountCents(data: Record<string, any>, fallback: number) {
     }
 
     return rawAmount > 1000 ? Math.round(rawAmount) : Math.round(rawAmount * 100);
+}
+
+function asRecord(value: unknown): UnknownRecord {
+    return value && typeof value === "object" ? (value as UnknownRecord) : {};
 }
 
 function buildExternalReference(userId: string, planType: PlanType) {

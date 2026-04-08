@@ -4,6 +4,35 @@ type NestApiOptions = {
     body?: BodyInit | null;
 };
 
+export class NestApiError extends Error {
+    status: number;
+    payload: unknown;
+
+    constructor(message: string, status: number, payload: unknown) {
+        super(message);
+        this.name = "NestApiError";
+        this.status = status;
+        this.payload = payload;
+    }
+}
+
+function extractErrorMessage(payload: unknown, status: number): string {
+    if (payload && typeof payload === "object") {
+        const message = "message" in payload ? payload.message : null;
+        const error = "error" in payload ? payload.error : null;
+
+        if (typeof message === "string" && message.trim()) {
+            return message;
+        }
+
+        if (typeof error === "string" && error.trim()) {
+            return error;
+        }
+    }
+
+    return `Nest API request failed with status ${status}`;
+}
+
 export function getNestApiBaseUrl(): string {
     const baseUrl =
         process.env.NEST_API_URL ||
@@ -15,6 +44,10 @@ export function getNestApiBaseUrl(): string {
     }
 
     return baseUrl.replace(/\/$/, "");
+}
+
+export function getPublicNestApiBaseUrl(): string | null {
+    return process.env.NEXT_PUBLIC_NEST_API_URL?.replace(/\/$/, "") ?? null;
 }
 
 export async function fetchNestApiJson<T>(
@@ -32,7 +65,7 @@ export async function fetchNestApiJson<T>(
     });
 
     const rawText = await response.text();
-    let payload: any = null;
+    let payload: unknown = null;
 
     if (rawText) {
         try {
@@ -43,11 +76,8 @@ export async function fetchNestApiJson<T>(
     }
 
     if (!response.ok) {
-        const message =
-            payload?.message ||
-            payload?.error ||
-            `Nest API request failed with status ${response.status}`;
-        throw new Error(message);
+        const message = extractErrorMessage(payload, response.status);
+        throw new NestApiError(message, response.status, payload);
     }
 
     return payload as T;

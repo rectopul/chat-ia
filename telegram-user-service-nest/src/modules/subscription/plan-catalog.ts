@@ -61,3 +61,29 @@ export function getSaasPlanCatalog(): SaasPlanDefinition[] {
         PLAN_CATALOG.ENTERPRISE,
     ];
 }
+
+export function normalizeSaasAiLimitOverride(
+    value?: number | null,
+): number | null {
+    if (value === null || value === undefined) {
+        return null;
+    }
+
+    const parsed = Math.trunc(value);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+export function getEffectiveSaasAiMessageLimit(input: {
+    planType: PlanType;
+    aiMessageLimitOverride?: number | null;
+}): number | null {
+    const override = normalizeSaasAiLimitOverride(
+        input.aiMessageLimitOverride,
+    );
+
+    if (override !== null) {
+        return override;
+    }
+
+    return getSaasPlan(input.planType).messageLimitPerDay;
+}

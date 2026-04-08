@@ -1,5 +1,4 @@
 "use client";
-export const runtime = "nodejs";
 import { useActionState, useEffect } from "react";
 import { Lock, Mail } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -10,8 +9,12 @@ import { actionLogin, type LoginPrevState } from "@/actions/login";
 import { useRouter } from "next/navigation";
 
 const initialState: LoginPrevState = {
-    message: null,
-    error: null,
+    status: "idle",
+    formError: null,
+    fieldErrors: {},
+    values: {
+        email: "",
+    },
 };
 
 export function LoginForm() {
@@ -22,7 +25,7 @@ export function LoginForm() {
     );
 
     useEffect(() => {
-        if (state?.message === "success") {
+        if (state?.status === "success") {
             router.push("/dashboard");
         }
     }, [state, router]);
@@ -30,10 +33,10 @@ export function LoginForm() {
     return (
         <form action={submitAction}>
             <CardContent className="space-y-4">
-                {state.error && (
+                {state.formError && (
                     <div className="p-3 text-xs font-medium text-red-600 bg-red-50 border border-red-100 rounded-lg flex items-center gap-2 animate-in fade-in zoom-in duration-200">
                         <div className="w-1 h-1 bg-red-600 rounded-full" />
-                        {state.message}
+                        {state.formError}
                     </div>
                 )}
                 <div className="space-y-2">
@@ -45,10 +48,18 @@ export function LoginForm() {
                             type="email"
                             name="email"
                             placeholder="admin@exemplo.com"
+                            defaultValue={state.values.email}
                             className="pl-10 bg-slate-50/50 border-slate-200 focus:bg-white transition-colors"
+                            aria-invalid={Boolean(state.fieldErrors.email)}
+                            autoComplete="email"
                             required
                         />
                     </div>
+                    {state.fieldErrors.email && (
+                        <p className="text-xs font-medium text-red-600">
+                            {state.fieldErrors.email}
+                        </p>
+                    )}
                 </div>
                 <div className="space-y-2">
                     <div className="flex items-center justify-between">
@@ -62,9 +73,16 @@ export function LoginForm() {
                             name="password"
                             placeholder="••••••••"
                             className="pl-10 bg-slate-50/50 border-slate-200 focus:bg-white transition-colors"
+                            aria-invalid={Boolean(state.fieldErrors.password)}
+                            autoComplete="current-password"
                             required
                         />
                     </div>
+                    {state.fieldErrors.password && (
+                        <p className="text-xs font-medium text-red-600">
+                            {state.fieldErrors.password}
+                        </p>
+                    )}
                 </div>
             </CardContent>
             <CardFooter className="mt-4">

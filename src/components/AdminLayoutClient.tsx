@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import type { Session } from "next-auth";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -52,21 +52,14 @@ const navItems = [
     },
 ];
 
-export default function AdminLayout({
-    children,
+function AdminNavContent({
+    pathname,
     session,
 }: {
-    children: React.ReactNode;
-    session: any;
+    pathname: string;
+    session: Session;
 }) {
-    const pathname = usePathname();
-    const [mounted, setMounted] = useState(false);
-
-    useEffect(() => {
-        setMounted(true);
-    }, []);
-
-    const NavContent = () => (
+    return (
         <div className="flex flex-col h-full">
             <div className="p-6">
                 <div className="flex items-center gap-2 px-2">
@@ -130,12 +123,27 @@ export default function AdminLayout({
             </div>
         </div>
     );
+}
+
+export default function AdminLayout({
+    children,
+    session,
+}: {
+    children: React.ReactNode;
+    session: Session;
+}) {
+    const pathname = usePathname();
+    const formattedDate = new Date().toLocaleDateString("pt-BR", {
+        weekday: "long",
+        day: "numeric",
+        month: "long",
+    });
 
     return (
         <div className="flex min-h-screen bg-slate-50/50">
             {/* Desktop Sidebar */}
             <aside className="fixed inset-y-0 left-0 w-64 bg-white border-r border-slate-200 hidden md:flex flex-col z-20">
-                <NavContent />
+                <AdminNavContent pathname={pathname} session={session} />
             </aside>
 
             {/* Main Content */}
@@ -156,7 +164,10 @@ export default function AdminLayout({
                                 <SheetHeader className="sr-only">
                                     <SheetTitle>Navegação</SheetTitle>
                                 </SheetHeader>
-                                <NavContent />
+                                <AdminNavContent
+                                    pathname={pathname}
+                                    session={session}
+                                />
                             </SheetContent>
                         </Sheet>
                         <h2 className="text-lg font-semibold text-slate-800">
@@ -166,14 +177,11 @@ export default function AdminLayout({
 
                     <div className="flex items-center gap-4">
                         <div className="h-8 w-px bg-slate-200 hidden sm:block" />
-                        <span className="text-sm text-slate-500 hidden sm:block">
-                            {mounted
-                                ? new Date().toLocaleDateString("pt-BR", {
-                                      weekday: "long",
-                                      day: "numeric",
-                                      month: "long",
-                                  })
-                                : ""}
+                        <span
+                            suppressHydrationWarning
+                            className="text-sm text-slate-500 hidden sm:block"
+                        >
+                            {formattedDate}
                         </span>
                     </div>
                 </header>

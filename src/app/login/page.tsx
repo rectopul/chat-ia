@@ -19,8 +19,8 @@ export default function LoginPage() {
                         Bot Admin Pro
                     </h1>
                     <p className="text-sm text-slate-500 text-balance">
-                        Entre com suas credenciais para gerenciar seus bots e
-                        campanhas.
+                        Entre com suas credenciais para gerenciar sua operacao,
+                        pedidos e automacoes.
                     </p>
                 </div>
 
@@ -28,7 +28,7 @@ export default function LoginPage() {
                     <CardHeader className="space-y-1">
                         <CardTitle className="text-xl">Login</CardTitle>
                         <CardDescription>
-                            Acesse o painel administrativo
+                            Acesse o painel da sua conta
                         </CardDescription>
                     </CardHeader>
                     <LoginForm />

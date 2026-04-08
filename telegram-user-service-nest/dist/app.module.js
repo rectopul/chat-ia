@@ -18,12 +18,16 @@ const nestjs_1 = require("@bull-board/nestjs");
 const express_1 = require("@bull-board/express");
 const bullMQAdapter_1 = require("@bull-board/api/bullMQAdapter");
 const constants_1 = require("./telegram/constants");
+const whatsapp_queue_constants_1 = require("./whatsapp/queue/constants/whatsapp-queue.constants");
 const whatsapp_module_1 = require("./whatsapp/whatsapp.module");
 const ai_agent_module_1 = require("./modules/ai-agent/ai-agent.module");
 const ai_agent_service_1 = require("./modules/ai-agent/ai-agent.service");
 const subscription_module_1 = require("./modules/subscription/subscription.module");
 const billing_module_1 = require("./modules/billing/billing.module");
+const delivery_module_1 = require("./modules/delivery/delivery.module");
 const admin_module_1 = require("./modules/admin/admin.module");
+const orders_module_1 = require("./modules/orders/orders.module");
+const evolution_module_1 = require("./modules/evolution/evolution.module");
 let AppModule = class AppModule {
 };
 exports.AppModule = AppModule;
@@ -52,6 +56,18 @@ exports.AppModule = AppModule = __decorate([
                 name: ai_agent_service_1.AI_RESPONSE_QUEUE_NAME,
                 adapter: bullMQAdapter_1.BullMQAdapter,
             }),
+            nestjs_1.BullBoardModule.forFeature({
+                name: whatsapp_queue_constants_1.WHATSAPP_INCOMING_QUEUE_NAME,
+                adapter: bullMQAdapter_1.BullMQAdapter,
+            }),
+            nestjs_1.BullBoardModule.forFeature({
+                name: whatsapp_queue_constants_1.WHATSAPP_OUTGOING_QUEUE_NAME,
+                adapter: bullMQAdapter_1.BullMQAdapter,
+            }),
+            nestjs_1.BullBoardModule.forFeature({
+                name: whatsapp_queue_constants_1.WHATSAPP_MEDIA_OUTGOING_QUEUE_NAME,
+                adapter: bullMQAdapter_1.BullMQAdapter,
+            }),
             config_1.ConfigModule.forRoot({
                 envFilePath: [".env.local", ".env"],
                 isGlobal: true,
@@ -61,7 +77,10 @@ exports.AppModule = AppModule = __decorate([
             ai_agent_module_1.AiAgentModule,
             subscription_module_1.SubscriptionModule,
             billing_module_1.BillingModule,
+            delivery_module_1.DeliveryModule,
+            orders_module_1.OrdersModule,
             admin_module_1.AdminModule,
+            evolution_module_1.EvolutionModule,
             syncpay_module_1.SyncPayModule,
             template_module_1.TemplateModule,
             whatsapp_module_1.WhatsappModule,

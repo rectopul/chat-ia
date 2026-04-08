@@ -12,7 +12,18 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { getPlanDefinition } from "@/lib/saas/plans";
-import { Bot, CreditCard, Gauge, Sparkles } from "lucide-react";
+import {
+    ArrowRight,
+    Bike,
+    Bot,
+    CreditCard,
+    Gauge,
+    MessageCircle,
+    MessageSquare,
+    ShoppingBag,
+    Sparkles,
+    Users,
+} from "lucide-react";
 import Link from "next/link";
 
 function formatMoney(valueCents: number) {
@@ -38,9 +49,61 @@ export default async function UserDashboardPage() {
         role: user.role,
         accessStatus: user.accessStatus,
         subscription: user.subscription,
+        aiMessageLimitOverride: user.aiMessageLimitOverride,
     });
     const usageToday = await getUserAiUsageToday(user.id);
     const plan = getPlanDefinition(access.planType);
+    const toolCards = [
+        {
+            href: "/dashboard/bots",
+            label: "Telegram",
+            description: "Gerencie contas e conexoes do Telegram.",
+            value: user._count.bots,
+            icon: Bot,
+        },
+        {
+            href: "/dashboard/whatsapp",
+            label: "WhatsApp",
+            description: "Configure instancias e prepare a operacao.",
+            value: user._count.whatsappInstances,
+            icon: MessageCircle,
+        },
+        {
+            href: "/dashboard/customers",
+            label: "Clientes",
+            description: "Veja os contatos capturados somente no seu tenant.",
+            value: user._count.whatsappCustomers,
+            icon: Users,
+        },
+        {
+            href: "/dashboard/messages",
+            label: "Conteudos",
+            description: "Ajuste templates, gatilhos e midias.",
+            value: user._count.templates,
+            icon: MessageSquare,
+        },
+        {
+            href: "/dashboard/products",
+            label: "Produtos",
+            description: "Atualize catalogo, categoria e estoque.",
+            value: user._count.products,
+            icon: ShoppingBag,
+        },
+        {
+            href: "/dashboard/orders",
+            label: "Pedidos",
+            description: "Acompanhe o delivery em tempo real.",
+            value: user._count.orders,
+            icon: Bike,
+        },
+        {
+            href: "/billing",
+            label: "Billing",
+            description: "Consulte plano, cobranca e pagamentos.",
+            value: user.transactions.length,
+            icon: CreditCard,
+        },
+    ];
 
     return (
         <div className="space-y-8">
@@ -79,25 +142,69 @@ export default async function UserDashboardPage() {
                     <CardHeader className="pb-3">
                         <CardDescription>Consumo diario de IA</CardDescription>
                         <CardTitle className="text-3xl">
-                            {plan.messageLimitPerDay === null
+                            {access.effectiveAiMessageLimitPerDay === null
                                 ? "Ilimitado"
-                                : `${usageToday}/${plan.messageLimitPerDay}`}
+                                : `${usageToday}/${access.effectiveAiMessageLimitPerDay}`}
                         </CardTitle>
                     </CardHeader>
                     <CardContent className="pt-0 text-sm text-slate-500">
-                        Limite contabilizado por tenant para mensagens da IA.
+                        {user.aiMessageLimitOverride === null
+                            ? "Limite contabilizado pelo plano atual."
+                            : "Limite customizado manualmente para este tenant."}
                     </CardContent>
                 </Card>
                 <Card className="border-none shadow-sm">
                     <CardHeader className="pb-3">
-                        <CardDescription>Bots vinculados</CardDescription>
-                        <CardTitle className="text-3xl">{user.bots.length}</CardTitle>
+                        <CardDescription>Canais conectados</CardDescription>
+                        <CardTitle className="text-3xl">
+                            {user._count.bots + user._count.whatsappInstances}
+                        </CardTitle>
                     </CardHeader>
                     <CardContent className="pt-0 text-sm text-slate-500">
-                        Contas do Telegram sob este tenant.
+                        Telegram e WhatsApp vinculados a este tenant.
                     </CardContent>
                 </Card>
             </div>
+
+            <Card className="border-none shadow-sm">
+                <CardHeader>
+                    <div className="flex items-center gap-2">
+                        <Sparkles className="w-5 h-5 text-primary" />
+                        <CardTitle>Ferramentas do cliente</CardTitle>
+                    </div>
+                    <CardDescription>
+                        Atalhos rapidos para tudo o que o tenant pode operar.
+                    </CardDescription>
+                </CardHeader>
+                <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                    {toolCards.map((tool) => (
+                        <Link
+                            key={tool.href}
+                            href={tool.href}
+                            className="rounded-2xl border border-slate-200 bg-slate-50 p-5 transition-colors hover:border-primary/30 hover:bg-white"
+                        >
+                            <div className="flex items-start justify-between gap-4">
+                                <div className="space-y-2">
+                                    <div className="flex items-center gap-2">
+                                        <tool.icon className="w-5 h-5 text-primary" />
+                                        <span className="font-semibold text-slate-900">
+                                            {tool.label}
+                                        </span>
+                                    </div>
+                                    <p className="text-sm text-slate-500">
+                                        {tool.description}
+                                    </p>
+                                </div>
+                                <Badge variant="outline">{tool.value}</Badge>
+                            </div>
+                            <div className="mt-4 flex items-center text-sm font-medium text-primary">
+                                Abrir ferramenta
+                                <ArrowRight className="ml-2 h-4 w-4" />
+                            </div>
+                        </Link>
+                    ))}
+                </CardContent>
+            </Card>
 
             <div className="grid gap-4 lg:grid-cols-3">
                 <Card className="border-none shadow-sm lg:col-span-2">

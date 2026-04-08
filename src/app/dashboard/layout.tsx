@@ -1,9 +1,18 @@
 import { auth } from "@/auth";
 import { redirect } from "next/navigation";
 import Link from "next/link";
+import WhatsappStatusListener from "@/components/dashboard/whatsapp-status-listener";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Bot, LayoutDashboard, MessageSquare, ShoppingBag } from "lucide-react";
+import {
+    Bike,
+    Bot,
+    LayoutDashboard,
+    MessageCircle,
+    MessageSquare,
+    ShoppingBag,
+    Users,
+} from "lucide-react";
 
 export default async function DashboardLayout({
     children,
@@ -22,6 +31,7 @@ export default async function DashboardLayout({
 
     return (
         <div className="min-h-screen bg-slate-50">
+            <WhatsappStatusListener userId={session.user.id} />
             <header className="border-b border-slate-200 bg-white/90 backdrop-blur">
                 <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4">
                     <div>
@@ -67,6 +77,24 @@ export default async function DashboardLayout({
                         <Link href="/dashboard/products">
                             <ShoppingBag className="w-4 h-4 mr-2" />
                             Produtos
+                        </Link>
+                    </Button>
+                    <Button asChild variant="ghost" size="sm">
+                        <Link href="/dashboard/whatsapp">
+                            <MessageCircle className="w-4 h-4 mr-2" />
+                            WhatsApp
+                        </Link>
+                    </Button>
+                    <Button asChild variant="ghost" size="sm">
+                        <Link href="/dashboard/customers">
+                            <Users className="w-4 h-4 mr-2" />
+                            Clientes
+                        </Link>
+                    </Button>
+                    <Button asChild variant="ghost" size="sm">
+                        <Link href="/dashboard/orders">
+                            <Bike className="w-4 h-4 mr-2" />
+                            Pedidos
                         </Link>
                     </Button>
                 </div>

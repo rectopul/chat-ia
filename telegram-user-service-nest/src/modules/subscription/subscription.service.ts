@@ -17,6 +17,7 @@ import {
 import { PrismaService } from "../../prisma/prisma.service";
 import {
     SaasPlanDefinition,
+    getEffectiveSaasAiMessageLimit,
     getSaasPlan,
     getSaasPlanCatalog,
 } from "./plan-catalog";
@@ -24,6 +25,7 @@ import {
 type UserWithSubscription = User & {
     subscription: Subscription | null;
     bots: Array<{ id: string }>;
+    whatsappInstances: Array<{ id: string }>;
 };
 
 export type UserAccessSnapshot = {
@@ -34,7 +36,9 @@ export type UserAccessSnapshot = {
     plan: SaasPlanDefinition;
     hasActiveAccess: boolean;
     isSuperAdmin: boolean;
+    effectiveAiMessageLimitPerDay: number | null;
     botIds: string[];
+    whatsappInstanceIds: string[];
 };
 
 export type AiAccessDecision = {
@@ -62,6 +66,9 @@ export class SubscriptionService {
             include: {
                 subscription: true,
                 bots: {
+                    select: { id: true },
+                },
+                whatsappInstances: {
                     select: { id: true },
                 },
             },
@@ -102,6 +109,9 @@ export class SubscriptionService {
                         bots: {
                             select: { id: true },
                         },
+                        whatsappInstances: {
+                            select: { id: true },
+                        },
                     },
                 },
             },
@@ -135,7 +145,7 @@ export class SubscriptionService {
             };
         }
 
-        if (snapshot.plan.messageLimitPerDay === null) {
+        if (snapshot.effectiveAiMessageLimitPerDay === null) {
             return {
                 allowed: true,
                 planType: snapshot.plan.planType,
@@ -143,20 +153,10 @@ export class SubscriptionService {
             };
         }
 
-        const usedToday = await this.prisma.chatMessage.count({
-            where: {
-                botId: {
-                    in: snapshot.botIds.length ? snapshot.botIds : [botId],
-                },
-                role: ChatMessageRole.user,
-                createdAt: {
-                    gte: this.getStartOfToday(),
-                },
-            },
-        });
+        const usedToday = await this.countUserAiMessagesToday(snapshot);
 
         const remainingToday = Math.max(
-            snapshot.plan.messageLimitPerDay - usedToday,
+            snapshot.effectiveAiMessageLimitPerDay - usedToday,
             0,
         );
 
@@ -174,6 +174,72 @@ export class SubscriptionService {
         if (!decision.allowed) {
             this.logger.warn(
                 `[assertAiAccess] blocked botId=${botId} plan=${decision.planType} reason=${decision.reason}`,
+            );
+            throw new ForbiddenException(
+                `AI access blocked: ${decision.reason ?? "subscription-check"}`,
+            );
+        }
+    }
+
+    async getAiAccessDecisionForUser(
+        userId: string,
+    ): Promise<AiAccessDecision> {
+        const snapshot = await this.getUserAccessSnapshot(userId);
+
+        if (!snapshot) {
+            return {
+                allowed: false,
+                planType: PlanType.FREE,
+                remainingToday: 0,
+                reason: "user-not-found",
+            };
+        }
+
+        if (!snapshot.hasActiveAccess && !snapshot.isSuperAdmin) {
+            return {
+                allowed: false,
+                planType: snapshot.plan.planType,
+                remainingToday: 0,
+                reason: "inactive-subscription",
+            };
+        }
+
+        if (snapshot.isSuperAdmin) {
+            return {
+                allowed: true,
+                planType: snapshot.plan.planType,
+                remainingToday: null,
+            };
+        }
+
+        if (snapshot.effectiveAiMessageLimitPerDay === null) {
+            return {
+                allowed: true,
+                planType: snapshot.plan.planType,
+                remainingToday: null,
+            };
+        }
+
+        const usedToday = await this.countUserAiMessagesToday(snapshot);
+        const remainingToday = Math.max(
+            snapshot.effectiveAiMessageLimitPerDay - usedToday,
+            0,
+        );
+
+        return {
+            allowed: remainingToday > 0,
+            planType: snapshot.plan.planType,
+            remainingToday,
+            reason: remainingToday > 0 ? undefined : "daily-message-limit",
+        };
+    }
+
+    async assertAiAccessForUser(userId: string): Promise<void> {
+        const decision = await this.getAiAccessDecisionForUser(userId);
+
+        if (!decision.allowed) {
+            this.logger.warn(
+                `[assertAiAccessForUser] blocked userId=${userId} plan=${decision.planType} reason=${decision.reason}`,
             );
             throw new ForbiddenException(
                 `AI access blocked: ${decision.reason ?? "subscription-check"}`,
@@ -230,8 +296,52 @@ export class SubscriptionService {
                 user.subscription,
             ),
             isSuperAdmin: user.role === UserRole.SUPER_ADMIN,
+            effectiveAiMessageLimitPerDay: getEffectiveSaasAiMessageLimit({
+                planType,
+                aiMessageLimitOverride: user.aiMessageLimitOverride,
+            }),
             botIds: user.bots.map((bot) => bot.id),
+            whatsappInstanceIds: user.whatsappInstances.map(
+                (instance) => instance.id,
+            ),
         };
+    }
+
+    private async countUserAiMessagesToday(
+        snapshot: UserAccessSnapshot,
+    ): Promise<number> {
+        const ownershipFilters: Prisma.ChatMessageWhereInput[] = [];
+
+        if (snapshot.botIds.length) {
+            ownershipFilters.push({
+                botId: {
+                    in: snapshot.botIds,
+                },
+            });
+        }
+
+        for (const instanceId of snapshot.whatsappInstanceIds) {
+            ownershipFilters.push({
+                botId: null,
+                telegramId: {
+                    startsWith: `whatsapp:${instanceId}:`,
+                },
+            });
+        }
+
+        if (!ownershipFilters.length) {
+            return 0;
+        }
+
+        return this.prisma.chatMessage.count({
+            where: {
+                role: ChatMessageRole.user,
+                createdAt: {
+                    gte: this.getStartOfToday(),
+                },
+                OR: ownershipFilters,
+            },
+        });
     }
 
     private getStartOfToday(): Date {
