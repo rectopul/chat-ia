@@ -27,6 +27,10 @@ type CreateChatMessageInput = {
     content: string;
     mediaUrl?: string | null;
     messageType?: ChatMessageType;
+    aiModel?: string | null;
+    promptTokenCount?: number | null;
+    candidatesTokenCount?: number | null;
+    totalTokenCount?: number | null;
 };
 
 export type WhatsappInstanceAccessContext = {

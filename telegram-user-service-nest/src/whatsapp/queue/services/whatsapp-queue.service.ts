@@ -31,7 +31,10 @@ export class WhatsappQueueService {
         private readonly mediaQueue: Queue<WhatsappOutgoingJobData>,
     ) {}
 
-    async enqueueIncomingMessage(data: WhatsappIncomingJobData) {
+    async enqueueIncomingMessage(
+        data: WhatsappIncomingJobData,
+        options?: QueueScheduleOptions,
+    ) {
         await this.whatsappInstanceService.ensureInstanceExists(data.instanceId);
 
         return this.incomingQueue.add(
@@ -39,8 +42,10 @@ export class WhatsappQueueService {
             {
                 ...data,
                 messageType: data.messageType ?? "TEXT",
+                processingStage: data.processingStage ?? "typing",
             },
             {
+                delay: options?.delay ?? 0,
                 removeOnComplete: { count: 100 },
                 removeOnFail: { count: 100 },
             },

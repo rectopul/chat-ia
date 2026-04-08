@@ -175,7 +175,15 @@ export interface AiAgentReply {
     text: string;
     previewTemplateIds: string[];
     productIdToCharge?: string;
+    usage?: AiUsageSnapshot | null;
 }
+
+export type AiUsageSnapshot = {
+    modelName: string | null;
+    promptTokenCount: number | null;
+    candidatesTokenCount: number | null;
+    totalTokenCount: number | null;
+};
 
 export interface AiDontSellRequest {
     botId: string;
@@ -208,12 +216,14 @@ type GroceryAiStructuredResponse = {
     replyText?: string;
     cartOperations?: GroceryCartOperation[];
     suggestedProductIds?: string[];
+    usage?: AiUsageSnapshot | null;
 };
 
 type WhatsappResolvedInput = {
     messageText: string;
     originalMessageType: ChatMessageType;
     mediaUrl?: string | null;
+    usage?: AiUsageSnapshot | null;
 };
 
 type AppliedCartOperation = {
@@ -307,6 +317,7 @@ export class AiAgentService {
         }
 
         const personaName = this.getPersonaName(botAccount);
+        const modelName = this.getModelName();
         const model = this.getModel(personaName);
         const result = await model.generateContent({
             contents: [
@@ -350,6 +361,10 @@ export class AiAgentService {
                 data.messageText,
                 products,
             ),
+            usage: this.extractUsageSnapshot(
+                modelName,
+                result.response.usageMetadata,
+            ),
         };
     }
 
@@ -373,6 +388,7 @@ export class AiAgentService {
             ]);
 
         const personaName = this.getPersonaName(botAccount);
+        const modelName = this.getModelName();
         const model = this.getModel(personaName);
         const result = await model.generateContent({
             contents: [
@@ -420,6 +436,10 @@ export class AiAgentService {
                 previewTemplates,
                 recentPreviewMediaUrls,
             ),
+            usage: this.extractUsageSnapshot(
+                modelName,
+                result.response.usageMetadata,
+            ),
         };
     }
 
@@ -441,6 +461,11 @@ export class AiAgentService {
             content: messageText,
             mediaUrl: resolvedInput.mediaUrl ?? null,
             messageType: resolvedInput.originalMessageType,
+            aiModel: resolvedInput.usage?.modelName ?? null,
+            promptTokenCount: resolvedInput.usage?.promptTokenCount ?? null,
+            candidatesTokenCount:
+                resolvedInput.usage?.candidatesTokenCount ?? null,
+            totalTokenCount: resolvedInput.usage?.totalTokenCount ?? null,
         });
 
         const [history, products, previewTemplates, currentCart, matchedProducts] =
@@ -483,12 +508,14 @@ export class AiAgentService {
                 return {
                     text: this.buildOrderFinalizedReplyText(currentCart),
                     previewTemplateIds: [],
+                    usage: null,
                 };
             }
 
             return {
                 text: this.buildCartConfirmedReplyText(currentCart),
                 previewTemplateIds: [],
+                usage: null,
             };
         }
 
@@ -523,6 +550,7 @@ export class AiAgentService {
             return {
                 text: this.buildCartUpdateFailureReply(error),
                 previewTemplateIds: [],
+                usage: structuredReply.usage ?? null,
             };
         }
 
@@ -561,6 +589,7 @@ export class AiAgentService {
                 messageText,
                 previewTemplates,
             ),
+            usage: structuredReply.usage ?? null,
         };
     }
 
@@ -568,6 +597,7 @@ export class AiAgentService {
         botId: string,
         telegramId: string,
         content: string,
+        usage?: AiUsageSnapshot | null,
     ): Promise<void> {
         const trimmedContent = content.trim();
 
@@ -580,6 +610,10 @@ export class AiAgentService {
             telegramId,
             role: ChatMessageRole.model,
             content: trimmedContent,
+            aiModel: usage?.modelName ?? null,
+            promptTokenCount: usage?.promptTokenCount ?? null,
+            candidatesTokenCount: usage?.candidatesTokenCount ?? null,
+            totalTokenCount: usage?.totalTokenCount ?? null,
         });
     }
 
@@ -589,6 +623,7 @@ export class AiAgentService {
         content: string,
         messageType: ChatMessageType = ChatMessageType.TEXT,
         mediaUrl?: string | null,
+        usage?: AiUsageSnapshot | null,
     ): Promise<void> {
         const trimmedContent = content.trim();
 
@@ -603,6 +638,10 @@ export class AiAgentService {
             content: trimmedContent,
             mediaUrl: mediaUrl ?? null,
             messageType,
+            aiModel: usage?.modelName ?? null,
+            promptTokenCount: usage?.promptTokenCount ?? null,
+            candidatesTokenCount: usage?.candidatesTokenCount ?? null,
+            totalTokenCount: usage?.totalTokenCount ?? null,
         });
     }
 
@@ -632,10 +671,14 @@ export class AiAgentService {
         data: WhatsappAiRequest,
     ): Promise<WhatsappResolvedInput> {
         if (data.messageType === ChatMessageType.AUDIO && data.mediaUrl) {
+            const transcription = await this.transcribeWhatsappAudio(
+                data.mediaUrl,
+            );
             return {
-                messageText: await this.transcribeWhatsappAudio(data.mediaUrl),
+                messageText: transcription.transcript,
                 originalMessageType: ChatMessageType.AUDIO,
                 mediaUrl: data.mediaUrl,
+                usage: transcription.usage,
             };
         }
 
@@ -649,11 +692,16 @@ export class AiAgentService {
             messageText: directText,
             originalMessageType: data.messageType ?? ChatMessageType.TEXT,
             mediaUrl: data.mediaUrl ?? null,
+            usage: null,
         };
     }
 
-    private async transcribeWhatsappAudio(mediaUrl: string): Promise<string> {
+    private async transcribeWhatsappAudio(mediaUrl: string): Promise<{
+        transcript: string;
+        usage: AiUsageSnapshot | null;
+    }> {
         const audio = await this.fetchRemoteBinary(mediaUrl);
+        const modelName = this.getTranscriptionModelName();
         const model = this.getTranscriptionModel();
         const result = await model.generateContent([
             "Transcreva este audio em portugues do Brasil. Responda apenas com a transcricao limpa, sem aspas, sem comentarios e sem formatacao extra.",
@@ -670,7 +718,13 @@ export class AiAgentService {
             throw new Error("Gemini returned an empty audio transcription");
         }
 
-        return transcript;
+        return {
+            transcript,
+            usage: this.extractUsageSnapshot(
+                modelName,
+                result.response.usageMetadata,
+            ),
+        };
     }
 
     private async fetchRemoteBinary(
@@ -706,6 +760,7 @@ export class AiAgentService {
         currentCart: TemporaryCart;
         relatedProducts: Product[];
     }): Promise<GroceryAiStructuredResponse> {
+        const modelName = this.getWhatsappModelName();
         const model = this.getWhatsappModel(
             input.personaName,
             GROCERY_JSON_GENERATION_CONFIG,
@@ -732,7 +787,13 @@ export class AiAgentService {
             throw new Error("Gemini returned an empty WhatsApp grocery response");
         }
 
-        return this.normalizeStructuredGroceryReply(rawText);
+        return {
+            ...this.normalizeStructuredGroceryReply(rawText),
+            usage: this.extractUsageSnapshot(
+                modelName,
+                result.response.usageMetadata,
+            ),
+        };
     }
 
     private buildWhatsappGroceryRuntimeContext(input: {
@@ -1378,6 +1439,62 @@ export class AiAgentService {
 
         if (urlWithoutQuery.endsWith(".m4a")) {
             return "audio/mp4";
+        }
+
+        return null;
+    }
+
+    private extractUsageSnapshot(
+        modelName: string,
+        usageMetadata: unknown,
+    ): AiUsageSnapshot | null {
+        const usage = this.asRecord(usageMetadata);
+        const promptTokenCount = this.toTokenCount(usage.promptTokenCount);
+        const candidatesTokenCount = this.toTokenCount(
+            usage.candidatesTokenCount,
+        );
+        const totalTokenCount =
+            this.toTokenCount(usage.totalTokenCount) ??
+            (promptTokenCount !== null && candidatesTokenCount !== null
+                ? promptTokenCount + candidatesTokenCount
+                : null);
+
+        if (
+            promptTokenCount === null &&
+            candidatesTokenCount === null &&
+            totalTokenCount === null
+        ) {
+            return null;
+        }
+
+        return {
+            modelName,
+            promptTokenCount,
+            candidatesTokenCount,
+            totalTokenCount,
+        };
+    }
+
+    private asRecord(value: unknown): Record<string, unknown> {
+        if (!value || typeof value !== "object") {
+            return {};
+        }
+
+        return value as Record<string, unknown>;
+    }
+
+    private toTokenCount(value: unknown): number | null {
+        if (typeof value === "bigint") {
+            return Number(value);
+        }
+
+        if (typeof value === "number" && Number.isFinite(value)) {
+            return Math.trunc(value);
+        }
+
+        if (typeof value === "string" && value.trim()) {
+            const parsed = Number(value);
+            return Number.isFinite(parsed) ? Math.trunc(parsed) : null;
         }
 
         return null;

@@ -625,14 +625,18 @@ enum ChatMessageType {
 }
 
 model ChatMessage {
-  botId       String?
-  id          String          @id @default(uuid())
-  telegramId  String
-  role        ChatMessageRole
-  content     String          @db.Text
-  mediaUrl    String?
-  messageType ChatMessageType @default(TEXT)
-  createdAt   DateTime        @default(now())
+  botId                String?
+  id                   String          @id @default(uuid())
+  telegramId           String
+  role                 ChatMessageRole
+  content              String          @db.Text
+  mediaUrl             String?
+  messageType          ChatMessageType @default(TEXT)
+  aiModel              String?
+  promptTokenCount     Int?
+  candidatesTokenCount Int?
+  totalTokenCount      Int?
+  createdAt            DateTime        @default(now())
 
   bot BotAccount? @relation(fields: [botId], references: [id], onDelete: Cascade)
 
