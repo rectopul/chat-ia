@@ -12,6 +12,7 @@
     "@hookform/resolvers": "^5.2.2",
     "@prisma/adapter-pg": "^7.4.2",
     "@prisma/client": "^7.4.2",
+    "@radix-ui/react-switch": "^1.2.6",
     "@vercel/blob": "^2.3.0",
     "axios": "^1.13.6",
     "bcryptjs": "^3.0.3",

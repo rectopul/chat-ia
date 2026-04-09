@@ -28,6 +28,7 @@ const delivery_module_1 = require("./modules/delivery/delivery.module");
 const admin_module_1 = require("./modules/admin/admin.module");
 const orders_module_1 = require("./modules/orders/orders.module");
 const evolution_module_1 = require("./modules/evolution/evolution.module");
+const operating_hours_module_1 = require("./modules/operating-hours/operating-hours.module");
 let AppModule = class AppModule {
 };
 exports.AppModule = AppModule;
@@ -81,6 +82,7 @@ exports.AppModule = AppModule = __decorate([
             orders_module_1.OrdersModule,
             admin_module_1.AdminModule,
             evolution_module_1.EvolutionModule,
+            operating_hours_module_1.OperatingHoursModule,
             syncpay_module_1.SyncPayModule,
             template_module_1.TemplateModule,
             whatsapp_module_1.WhatsappModule,

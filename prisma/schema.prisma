@@ -1,5 +1,6 @@
 generator client {
   provider = "prisma-client-js"
+  output   = env("PRISMA_CLIENT_OUTPUT")
 }
 
 datasource db {
@@ -42,6 +43,8 @@ model User {
   name                   String?
   email                  String?          @unique
   password               String?
+  closedMessage          String?          @db.Text
+  manualStoreClosed      Boolean          @default(false)
   role                   UserRole         @default(CUSTOMER)
   accessStatus           UserAccessStatus @default(ACTIVE)
   aiMessageLimitOverride Int?
@@ -57,6 +60,21 @@ model User {
   whatsappCustomers WhatsappCustomer[]
   orders            Order[]            @relation("UserOrders")
   whatsappHandovers WhatsappHandover[]
+  operatingHours    OperatingHour[]    @relation("SubscriberOperatingHours")
+}
+
+model OperatingHour {
+  id           String  @id @default(uuid())
+  subscriberId String
+  dayOfWeek    Int
+  openTime     String
+  closeTime    String
+  isOpen       Boolean @default(true)
+  timezone     String  @default("America/Sao_Paulo")
+
+  subscriber User @relation("SubscriberOperatingHours", fields: [subscriberId], references: [id], onDelete: Cascade)
+
+  @@index([subscriberId, dayOfWeek])
 }
 
 model WhatsappInstance {
