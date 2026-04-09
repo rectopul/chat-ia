@@ -1,7 +1,13 @@
 import { InjectQueue } from "@nestjs/bullmq";
-import { Injectable, Logger } from "@nestjs/common";
+import {
+    Injectable,
+    Logger,
+    OnModuleDestroy,
+    OnModuleInit,
+} from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import axios from "axios";
+import IORedis, { Redis } from "ioredis";
 import {
     BotAccount,
     ChatMessageType,
@@ -14,6 +20,7 @@ import {
 } from "@prisma/client";
 import {
     GenerationConfig,
+    GenerativeModel,
     GoogleGenerativeAI,
     ResponseSchema,
     SchemaType,
@@ -31,6 +38,7 @@ import {
 } from "../delivery/temporary-cart.service";
 import { AiAgentRepository } from "./ai-agent.repository";
 import { SubscriptionService } from "../subscription/subscription.service";
+import { isAiServiceBusyError } from "./ai-error.utils";
 
 export const AI_RESPONSE_QUEUE_NAME = "ai-response";
 export const AI_RESPONSE_JOB_NAME = "generate-ai-response";
@@ -38,6 +46,10 @@ export const AI_RESPONSE_JOB_NAME = "generate-ai-response";
 const AI_MODEL_NAME = "gemini-2.5-flash";
 const WHATSAPP_GROCERY_MODEL_NAME = "gemini-2.5-flash";
 const WHATSAPP_AUDIO_TRANSCRIPTION_MODEL_NAME = "gemini-2.5-flash";
+const GEMINI_FALLBACK_MODEL_NAME = "gemini-2.0-flash";
+const GEMINI_PRIMARY_COOLDOWN_MS = 300_000;
+const GEMINI_PRIMARY_RECOVERY_SUCCESS_COUNT = 4;
+const GEMINI_CIRCUIT_KEY_PREFIX = "ai:gemini:circuit";
 const AI_SYSTEM_PROMPT = [
     "Your name is Clara.",
     "Answer in Brazilian Portuguese.",
@@ -232,10 +244,31 @@ type AppliedCartOperation = {
     quantity: number;
 };
 
+type AiModelScope = "default" | "whatsapp" | "transcription";
+
+type AiModelExecution<T> = {
+    result: T;
+    modelName: string;
+};
+
+type AiCircuitState = {
+    exists: boolean;
+    openUntilMs: number;
+    recoverySuccessCount: number;
+};
+
+type GeminiApiModel = {
+    name?: string;
+    displayName?: string;
+    supportedGenerationMethods?: string[];
+};
+
 @Injectable()
-export class AiAgentService {
+export class AiAgentService implements OnModuleDestroy, OnModuleInit {
     private readonly logger = new Logger(AiAgentService.name);
     private genAI?: GoogleGenerativeAI;
+    private readonly redis: Redis;
+    private hasLoggedAvailableModels = false;
 
     constructor(
         private readonly configService: ConfigService,
@@ -246,7 +279,41 @@ export class AiAgentService {
         private readonly deliveryOrderService: DeliveryOrderService,
         @InjectQueue(AI_RESPONSE_QUEUE_NAME)
         private readonly aiResponseQueue: Queue<AiResponseJobData>,
-    ) {}
+    ) {
+        if (process.env.REDIS_URL) {
+            this.redis = new IORedis(process.env.REDIS_URL);
+        } else {
+            this.redis = new IORedis({
+                host: process.env.REDIS_HOST ?? "localhost",
+                port: Number(process.env.REDIS_PORT ?? 6379),
+                password: process.env.REDIS_PASSWORD || undefined,
+                db: Number(process.env.REDIS_DB ?? 0),
+            });
+        }
+
+        this.redis.on("error", (error: Error) => {
+            this.logger.error(
+                `[redis] falha no circuito de fallback do Gemini: ${error.message}`,
+                error.stack,
+            );
+        });
+    }
+
+    async onModuleDestroy(): Promise<void> {
+        try {
+            await this.redis.quit();
+        } catch (error: unknown) {
+            this.logger.debug(
+                `[redis] erro ao encerrar circuito do Gemini: ${
+                    error instanceof Error ? error.message : String(error)
+                }`,
+            );
+        }
+    }
+
+    onModuleInit(): void {
+        void this.logAvailableModelsOnce();
+    }
 
     async enqueueIncomingMessage(data: AiResponseJobData): Promise<void> {
         const messageText = data.messageText.trim();
@@ -317,28 +384,34 @@ export class AiAgentService {
         }
 
         const personaName = this.getPersonaName(botAccount);
-        const modelName = this.getModelName();
-        const model = this.getModel(personaName);
-        const result = await model.generateContent({
-            contents: [
-                {
-                    role: "user",
-                    parts: [
+        const execution = await this.generateContentWithFallback({
+            scope: "default",
+            primaryModelName: this.getPrimaryModelName(),
+            fallbackModelName: this.getFallbackModelName(),
+            systemInstruction: this.buildSystemPrompt(personaName),
+            request: (model) =>
+                model.generateContent({
+                    contents: [
                         {
-                            text: this.buildRuntimeContext(
-                                personaName,
-                                products,
-                                previewTemplates,
-                            ),
+                            role: "user",
+                            parts: [
+                                {
+                                    text: this.buildRuntimeContext(
+                                        personaName,
+                                        products,
+                                        previewTemplates,
+                                    ),
+                                },
+                            ],
                         },
+                        ...history.map((message) => ({
+                            role: message.role as GeminiRole,
+                            parts: [{ text: message.content }],
+                        })),
                     ],
-                },
-                ...history.map((message) => ({
-                    role: message.role as GeminiRole,
-                    parts: [{ text: message.content }],
-                })),
-            ],
+                }),
         });
+        const result = execution.result;
 
         const responseText = result.response.text().trim();
 
@@ -347,7 +420,7 @@ export class AiAgentService {
         }
 
         this.logger.debug(
-            `[generateResponse] telegramId=${telegramId} history=${history.length} model=${this.getModelName()}`,
+            `[generateResponse] telegramId=${telegramId} history=${history.length} model=${execution.modelName}`,
         );
 
         return {
@@ -362,7 +435,7 @@ export class AiAgentService {
                 products,
             ),
             usage: this.extractUsageSnapshot(
-                modelName,
+                execution.modelName,
                 result.response.usageMetadata,
             ),
         };
@@ -388,31 +461,40 @@ export class AiAgentService {
             ]);
 
         const personaName = this.getPersonaName(botAccount);
-        const modelName = this.getModelName();
-        const model = this.getModel(personaName);
-        const result = await model.generateContent({
-            contents: [
-                {
-                    role: "user",
-                    parts: [
+        const execution = await this.generateContentWithFallback({
+            scope: "default",
+            primaryModelName: this.getPrimaryModelName(),
+            fallbackModelName: this.getFallbackModelName(),
+            systemInstruction: this.buildSystemPrompt(personaName),
+            request: (model) =>
+                model.generateContent({
+                    contents: [
                         {
-                            text: this.buildRuntimeContext(
-                                personaName,
-                                products,
-                                previewTemplates,
-                            ),
+                            role: "user",
+                            parts: [
+                                {
+                                    text: this.buildRuntimeContext(
+                                        personaName,
+                                        products,
+                                        previewTemplates,
+                                    ),
+                                },
+                                {
+                                    text: this.buildDontSellInstruction(
+                                        data,
+                                        history,
+                                    ),
+                                },
+                            ],
                         },
-                        {
-                            text: this.buildDontSellInstruction(data, history),
-                        },
+                        ...history.map((message) => ({
+                            role: message.role as GeminiRole,
+                            parts: [{ text: message.content }],
+                        })),
                     ],
-                },
-                ...history.map((message) => ({
-                    role: message.role as GeminiRole,
-                    parts: [{ text: message.content }],
-                })),
-            ],
+                }),
         });
+        const result = execution.result;
 
         const responseText = result.response.text().trim();
 
@@ -426,7 +508,7 @@ export class AiAgentService {
             .join(" ");
 
         this.logger.debug(
-            `[generateDontSellResponse] telegramId=${data.telegramId} history=${history.length} model=${this.getModelName()}`,
+            `[generateDontSellResponse] telegramId=${data.telegramId} history=${history.length} model=${execution.modelName}`,
         );
 
         return {
@@ -437,7 +519,7 @@ export class AiAgentService {
                 recentPreviewMediaUrls,
             ),
             usage: this.extractUsageSnapshot(
-                modelName,
+                execution.modelName,
                 result.response.usageMetadata,
             ),
         };
@@ -580,7 +662,7 @@ export class AiAgentService {
         });
 
         this.logger.debug(
-            `[generateWhatsappResponse] instanceId=${data.instanceId} chatId=${data.chatId} history=${history.length} model=${this.getModelName()}`,
+            `[generateWhatsappResponse] instanceId=${data.instanceId} chatId=${data.chatId} history=${history.length} model=${structuredReply.usage?.modelName ?? this.getWhatsappModelName()}`,
         );
 
         return {
@@ -701,17 +783,22 @@ export class AiAgentService {
         usage: AiUsageSnapshot | null;
     }> {
         const audio = await this.fetchRemoteBinary(mediaUrl);
-        const modelName = this.getTranscriptionModelName();
-        const model = this.getTranscriptionModel();
-        const result = await model.generateContent([
-            "Transcreva este audio em portugues do Brasil. Responda apenas com a transcricao limpa, sem aspas, sem comentarios e sem formatacao extra.",
-            {
-                inlineData: {
-                    data: audio.buffer.toString("base64"),
-                    mimeType: audio.mimeType,
-                },
-            },
-        ]);
+        const execution = await this.generateContentWithFallback({
+            scope: "transcription",
+            primaryModelName: this.getTranscriptionModelName(),
+            fallbackModelName: this.getTranscriptionFallbackModelName(),
+            request: (model) =>
+                model.generateContent([
+                    "Transcreva este audio em portugues do Brasil. Responda apenas com a transcricao limpa, sem aspas, sem comentarios e sem formatacao extra.",
+                    {
+                        inlineData: {
+                            data: audio.buffer.toString("base64"),
+                            mimeType: audio.mimeType,
+                        },
+                    },
+                ]),
+        });
+        const result = execution.result;
         const transcript = result.response.text().trim();
 
         if (!transcript) {
@@ -721,7 +808,7 @@ export class AiAgentService {
         return {
             transcript,
             usage: this.extractUsageSnapshot(
-                modelName,
+                execution.modelName,
                 result.response.usageMetadata,
             ),
         };
@@ -760,27 +847,33 @@ export class AiAgentService {
         currentCart: TemporaryCart;
         relatedProducts: Product[];
     }): Promise<GroceryAiStructuredResponse> {
-        const modelName = this.getWhatsappModelName();
-        const model = this.getWhatsappModel(
-            input.personaName,
-            GROCERY_JSON_GENERATION_CONFIG,
-        );
-        const result = await model.generateContent({
-            contents: [
-                {
-                    role: "user",
-                    parts: [
+        const execution = await this.generateContentWithFallback({
+            scope: "whatsapp",
+            primaryModelName: this.getWhatsappModelName(),
+            fallbackModelName: this.getWhatsappFallbackModelName(),
+            systemInstruction: this.buildWhatsappSystemPrompt(input.personaName),
+            generationConfig: GROCERY_JSON_GENERATION_CONFIG,
+            request: (model) =>
+                model.generateContent({
+                    contents: [
                         {
-                            text: this.buildWhatsappGroceryRuntimeContext(input),
+                            role: "user",
+                            parts: [
+                                {
+                                    text: this.buildWhatsappGroceryRuntimeContext(
+                                        input,
+                                    ),
+                                },
+                            ],
                         },
+                        ...input.history.map((message) => ({
+                            role: message.role as GeminiRole,
+                            parts: [{ text: message.content }],
+                        })),
                     ],
-                },
-                ...input.history.map((message) => ({
-                    role: message.role as GeminiRole,
-                    parts: [{ text: message.content }],
-                })),
-            ],
+                }),
         });
+        const result = execution.result;
         const rawText = result.response.text().trim();
 
         if (!rawText) {
@@ -790,7 +883,7 @@ export class AiAgentService {
         return {
             ...this.normalizeStructuredGroceryReply(rawText),
             usage: this.extractUsageSnapshot(
-                modelName,
+                execution.modelName,
                 result.response.usageMetadata,
             ),
         };
@@ -1500,33 +1593,11 @@ export class AiAgentService {
         return null;
     }
 
-    private getModel(personaName: string) {
-        return this.getGenerativeModel(
-            this.getModelName(),
-            this.buildSystemPrompt(personaName),
-        );
-    }
-
-    private getWhatsappModel(
-        personaName: string,
-        generationConfig?: GenerationConfig,
-    ) {
-        return this.getGenerativeModel(
-            this.getWhatsappModelName(),
-            this.buildWhatsappSystemPrompt(personaName),
-            generationConfig,
-        );
-    }
-
-    private getTranscriptionModel() {
-        return this.getGenerativeModel(this.getTranscriptionModelName());
-    }
-
     private getGenerativeModel(
         modelName: string,
         systemInstruction?: string,
         generationConfig?: GenerationConfig,
-    ) {
+    ): GenerativeModel {
         const apiKey = this.configService.get<string>("GEMINI_API_KEY")?.trim();
 
         if (!apiKey) {
@@ -1537,11 +1608,102 @@ export class AiAgentService {
             this.genAI = new GoogleGenerativeAI(apiKey);
         }
 
+        if (!this.hasLoggedAvailableModels) {
+            void this.logAvailableModelsOnce();
+        }
+
         return this.genAI.getGenerativeModel({
             model: modelName,
             ...(systemInstruction ? { systemInstruction } : {}),
             ...(generationConfig ? { generationConfig } : {}),
         });
+    }
+
+    private async logAvailableModelsOnce(): Promise<void> {
+        if (this.hasLoggedAvailableModels) {
+            return;
+        }
+
+        this.hasLoggedAvailableModels = true;
+
+        try {
+            const models = await this.listAvailableModels();
+            const generateContentModels = models
+                .filter((model) =>
+                    (model.supportedGenerationMethods ?? []).includes(
+                        "generateContent",
+                    ),
+                )
+                .map((model) => this.normalizeApiModelName(model.name))
+                .filter(Boolean)
+                .sort((left, right) => left.localeCompare(right));
+
+            this.logger.log(
+                `[gemini-models] modelos disponiveis para generateContent (${generateContentModels.length}): ${generateContentModels.join(", ")}`,
+            );
+
+            this.logConfiguredModelAvailability(generateContentModels);
+        } catch (error) {
+            this.hasLoggedAvailableModels = false;
+            this.logger.warn(
+                `[gemini-models] nao foi possivel listar os modelos da API: ${
+                    error instanceof Error ? error.message : String(error)
+                }`,
+            );
+        }
+    }
+
+    private async listAvailableModels(): Promise<GeminiApiModel[]> {
+        const apiKey = this.configService.get<string>("GEMINI_API_KEY")?.trim();
+
+        if (!apiKey) {
+            throw new Error("GEMINI_API_KEY is not configured");
+        }
+
+        const response = await axios.get<{ models?: GeminiApiModel[] }>(
+            "https://generativelanguage.googleapis.com/v1beta/models",
+            {
+                params: {
+                    key: apiKey,
+                },
+                timeout: 15_000,
+            },
+        );
+
+        return Array.isArray(response.data?.models) ? response.data.models : [];
+    }
+
+    private logConfiguredModelAvailability(availableModels: string[]): void {
+        const availableSet = new Set(availableModels);
+        const configuredModels = [
+            this.getPrimaryModelName(),
+            this.getFallbackModelName(),
+            this.getWhatsappModelName(),
+            this.getWhatsappFallbackModelName(),
+            this.getTranscriptionModelName(),
+            this.getTranscriptionFallbackModelName(),
+        ]
+            .filter(Boolean)
+            .map((modelName) => String(modelName));
+        const uniqueConfiguredModels = [...new Set(configuredModels)];
+
+        this.logger.log(
+            `[gemini-models] configurados no env: ${uniqueConfiguredModels.join(", ")}`,
+        );
+
+        const unavailableConfiguredModels = uniqueConfiguredModels.filter(
+            (modelName) => !availableSet.has(this.normalizeApiModelName(modelName)),
+        );
+
+        if (unavailableConfiguredModels.length) {
+            this.logger.warn(
+                `[gemini-models] modelos configurados indisponiveis para esta chave/API: ${unavailableConfiguredModels.join(", ")}`,
+            );
+        }
+    }
+
+    private normalizeApiModelName(value?: string | null): string {
+        return value?.replace(/^models\//, "").trim() || "";
     }
 
     private buildSystemPrompt(personaName: string): string {
@@ -1552,29 +1714,307 @@ export class AiAgentService {
         return `Your name is ${personaName}. ${GROCERY_SYSTEM_PROMPT}`;
     }
 
-    private getModelName(): string {
+    private getPrimaryModelName(): string {
         return (
+            this.configService.get<string>("GEMINI_MODEL_PRIMARY")?.trim() ||
             this.configService.get<string>("GEMINI_MODEL")?.trim() ||
             AI_MODEL_NAME
         );
     }
 
+    private getFallbackModelName(): string | null {
+        return this.normalizeFallbackModelName(
+            this.getPrimaryModelName(),
+            this.configService.get<string>("GEMINI_MODEL_FALLBACK")?.trim() ||
+                GEMINI_FALLBACK_MODEL_NAME,
+        );
+    }
+
     private getWhatsappModelName(): string {
         return (
+            this.configService
+                .get<string>("GEMINI_WHATSAPP_MODEL_PRIMARY")
+                ?.trim() ||
             this.configService.get<string>("GEMINI_WHATSAPP_MODEL")?.trim() ||
-            this.configService.get<string>("GEMINI_MODEL")?.trim() ||
+            this.getPrimaryModelName() ||
             WHATSAPP_GROCERY_MODEL_NAME
+        );
+    }
+
+    private getWhatsappFallbackModelName(): string | null {
+        return (
+            this.normalizeFallbackModelName(
+                this.getWhatsappModelName(),
+                this.configService
+                    .get<string>("GEMINI_WHATSAPP_MODEL_FALLBACK")
+                    ?.trim() ||
+                    this.configService.get<string>("GEMINI_MODEL_FALLBACK")?.trim() ||
+                    GEMINI_FALLBACK_MODEL_NAME,
+            )
         );
     }
 
     private getTranscriptionModelName(): string {
         return (
             this.configService
+                .get<string>("GEMINI_AUDIO_TRANSCRIPTION_MODEL_PRIMARY")
+                ?.trim() ||
+            this.configService
                 .get<string>("GEMINI_AUDIO_TRANSCRIPTION_MODEL")
                 ?.trim() ||
-            this.configService.get<string>("GEMINI_MODEL")?.trim() ||
+            this.getPrimaryModelName() ||
             WHATSAPP_AUDIO_TRANSCRIPTION_MODEL_NAME
         );
+    }
+
+    private getTranscriptionFallbackModelName(): string | null {
+        return this.normalizeFallbackModelName(
+            this.getTranscriptionModelName(),
+            this.configService
+                .get<string>("GEMINI_AUDIO_TRANSCRIPTION_MODEL_FALLBACK")
+                ?.trim() ||
+                this.configService.get<string>("GEMINI_MODEL_FALLBACK")?.trim() ||
+                GEMINI_FALLBACK_MODEL_NAME,
+        );
+    }
+
+    private normalizeFallbackModelName(
+        primaryModelName: string,
+        fallbackModelName?: string | null,
+    ): string | null {
+        const normalized = fallbackModelName?.trim() || null;
+
+        if (!normalized || normalized === primaryModelName) {
+            return null;
+        }
+
+        return normalized;
+    }
+
+    private getPrimaryCooldownMs(): number {
+        const value = Number(
+            this.configService.get<string>("GEMINI_PRIMARY_COOLDOWN_MS")?.trim() ||
+                GEMINI_PRIMARY_COOLDOWN_MS,
+        );
+
+        return Number.isFinite(value) && value > 0
+            ? Math.trunc(value)
+            : GEMINI_PRIMARY_COOLDOWN_MS;
+    }
+
+    private getPrimaryRecoverySuccessCount(): number {
+        const value = Number(
+            this.configService
+                .get<string>("GEMINI_PRIMARY_RECOVERY_SUCCESS_COUNT")
+                ?.trim() || GEMINI_PRIMARY_RECOVERY_SUCCESS_COUNT,
+        );
+
+        return Number.isFinite(value) && value > 0
+            ? Math.trunc(value)
+            : GEMINI_PRIMARY_RECOVERY_SUCCESS_COUNT;
+    }
+
+    private async generateContentWithFallback<T>(input: {
+        scope: AiModelScope;
+        primaryModelName: string;
+        fallbackModelName?: string | null;
+        systemInstruction?: string;
+        generationConfig?: GenerationConfig;
+        request: (model: GenerativeModel) => Promise<T>;
+    }): Promise<AiModelExecution<T>> {
+        const fallbackModelName = this.normalizeFallbackModelName(
+            input.primaryModelName,
+            input.fallbackModelName,
+        );
+        const state = await this.getCircuitState(
+            input.scope,
+            input.primaryModelName,
+        );
+        const now = Date.now();
+
+        if (state.openUntilMs > now && fallbackModelName) {
+            this.logger.debug(
+                `[gemini-circuit] primary em cooldown scope=${input.scope} model=${input.primaryModelName} openUntil=${state.openUntilMs}; usando fallback=${fallbackModelName}`,
+            );
+
+            const result = await input.request(
+                this.getGenerativeModel(
+                    fallbackModelName,
+                    input.systemInstruction,
+                    input.generationConfig,
+                ),
+            );
+
+            return {
+                result,
+                modelName: fallbackModelName,
+            };
+        }
+
+        try {
+            const result = await input.request(
+                this.getGenerativeModel(
+                    input.primaryModelName,
+                    input.systemInstruction,
+                    input.generationConfig,
+                ),
+            );
+
+            await this.registerPrimarySuccess(
+                input.scope,
+                input.primaryModelName,
+                state,
+            );
+
+            return {
+                result,
+                modelName: input.primaryModelName,
+            };
+        } catch (error) {
+            if (!fallbackModelName || !isAiServiceBusyError(error)) {
+                throw error;
+            }
+
+            await this.openPrimaryCircuit(
+                input.scope,
+                input.primaryModelName,
+                this.extractAiBusyReason(error),
+            );
+
+            const fallbackResult = await input.request(
+                this.getGenerativeModel(
+                    fallbackModelName,
+                    input.systemInstruction,
+                    input.generationConfig,
+                ),
+            );
+
+            return {
+                result: fallbackResult,
+                modelName: fallbackModelName,
+            };
+        }
+    }
+
+    private async getCircuitState(
+        scope: AiModelScope,
+        primaryModelName: string,
+    ): Promise<AiCircuitState> {
+        const key = this.buildCircuitKey(scope, primaryModelName);
+
+        try {
+            const raw = await this.redis.hgetall(key);
+            if (!Object.keys(raw).length) {
+                return {
+                    exists: false,
+                    openUntilMs: 0,
+                    recoverySuccessCount: 0,
+                };
+            }
+
+            return {
+                exists: true,
+                openUntilMs: Number(raw.openUntilMs ?? 0) || 0,
+                recoverySuccessCount:
+                    Number(raw.recoverySuccessCount ?? 0) || 0,
+            };
+        } catch (error) {
+            this.logger.debug(
+                `[gemini-circuit] falha ao consultar estado no Redis: ${
+                    error instanceof Error ? error.message : String(error)
+                }`,
+            );
+
+            return {
+                exists: false,
+                openUntilMs: 0,
+                recoverySuccessCount: 0,
+            };
+        }
+    }
+
+    private async registerPrimarySuccess(
+        scope: AiModelScope,
+        primaryModelName: string,
+        state: AiCircuitState,
+    ): Promise<void> {
+        if (!state.exists) {
+            return;
+        }
+
+        const now = Date.now();
+        if (state.openUntilMs > now) {
+            return;
+        }
+
+        const key = this.buildCircuitKey(scope, primaryModelName);
+        const nextSuccessCount = state.recoverySuccessCount + 1;
+        const targetSuccessCount = this.getPrimaryRecoverySuccessCount();
+
+        try {
+            if (nextSuccessCount >= targetSuccessCount) {
+                await this.redis.del(key);
+                this.logger.log(
+                    `[gemini-circuit] primary recuperado scope=${scope} model=${primaryModelName}; voltando ao modelo principal`,
+                );
+                return;
+            }
+
+            await this.redis.hset(key, {
+                openUntilMs: "0",
+                recoverySuccessCount: String(nextSuccessCount),
+            });
+            await this.redis.pexpire(key, this.getPrimaryCooldownMs() * 2);
+
+            this.logger.debug(
+                `[gemini-circuit] recuperacao em andamento scope=${scope} model=${primaryModelName} success=${nextSuccessCount}/${targetSuccessCount}`,
+            );
+        } catch (error) {
+            this.logger.debug(
+                `[gemini-circuit] falha ao registrar sucesso do primary: ${
+                    error instanceof Error ? error.message : String(error)
+                }`,
+            );
+        }
+    }
+
+    private async openPrimaryCircuit(
+        scope: AiModelScope,
+        primaryModelName: string,
+        reason: string,
+    ): Promise<void> {
+        const cooldownMs = this.getPrimaryCooldownMs();
+        const key = this.buildCircuitKey(scope, primaryModelName);
+
+        try {
+            await this.redis.hset(key, {
+                openUntilMs: String(Date.now() + cooldownMs),
+                recoverySuccessCount: "0",
+            });
+            await this.redis.pexpire(key, cooldownMs * 2);
+        } catch (error) {
+            this.logger.debug(
+                `[gemini-circuit] falha ao abrir circuito do primary: ${
+                    error instanceof Error ? error.message : String(error)
+                }`,
+            );
+        }
+
+        this.logger.warn(
+            `[gemini-circuit] primary indisponivel scope=${scope} model=${primaryModelName}; ativando cooldown de ${cooldownMs}ms. motivo=${reason}`,
+        );
+    }
+
+    private buildCircuitKey(
+        scope: AiModelScope,
+        primaryModelName: string,
+    ): string {
+        const safeModelName = primaryModelName.replace(/[^a-zA-Z0-9:_-]/g, "_");
+        return `${GEMINI_CIRCUIT_KEY_PREFIX}:${scope}:${safeModelName}`;
+    }
+
+    private extractAiBusyReason(error: unknown): string {
+        return error instanceof Error ? error.message : String(error);
     }
 
     private buildRuntimeContext(

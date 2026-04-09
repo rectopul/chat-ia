@@ -8,7 +8,7 @@ import { MtprotoProvider } from "../../telegram/providers/mtproto.provider";
 import { ChatActionService } from "../../telegram/services/chat-action.service";
 import { TemplateService } from "../../telegram/services/template.service";
 import { AiAgentCommerceService } from "./ai-agent-commerce.service";
-import { extractAiErrorMessage, isAiQuotaError } from "./ai-error.utils";
+import { extractAiErrorMessage, isAiRetryableError } from "./ai-error.utils";
 import {
     AI_RESPONSE_JOB_NAME,
     AI_RESPONSE_QUEUE_NAME,
@@ -98,14 +98,14 @@ export class AiAgentProcessor extends WorkerHost {
             const maxAttempts =
                 typeof job.opts.attempts === "number" ? job.opts.attempts : 1;
 
-            if (isAiQuotaError(error)) {
+            if (isAiRetryableError(error)) {
                 if (attempt === 1) {
                     this.logger.warn(
-                        `[process] Cota da IA indisponivel para telegramId=${job.data.telegramId}; retry automatico ativo (${attempt}/${maxAttempts})`,
+                        `[process] IA temporariamente indisponivel para telegramId=${job.data.telegramId}; retry automatico ativo (${attempt}/${maxAttempts})`,
                     );
                 } else if (attempt >= maxAttempts) {
                     this.logger.error(
-                        `[process] Cota da IA permaneceu indisponivel para telegramId=${job.data.telegramId} apos ${attempt} tentativas`,
+                        `[process] IA permaneceu indisponivel para telegramId=${job.data.telegramId} apos ${attempt} tentativas`,
                     );
                 }
                 throw error;
@@ -145,7 +145,7 @@ export class AiAgentProcessor extends WorkerHost {
             );
         }
 
-        let businessConnectionId =
+        const businessConnectionId =
             (await this.botApi.resolveConnectionForChat(data.botId, data.chatId)) ??
             data.businessConnectionId;
 
@@ -294,7 +294,7 @@ export class AiAgentProcessor extends WorkerHost {
         );
     }
 
-    private isBusinessPeerInvalidError(error: any): boolean {
+    private isBusinessPeerInvalidError(error: unknown): boolean {
         const message = extractAiErrorMessage(error).toUpperCase();
         return message.includes("BUSINESS_PEER_INVALID");
     }

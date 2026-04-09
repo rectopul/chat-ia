@@ -14,6 +14,7 @@ import {
 import { Job } from "bullmq";
 import { WhatsappHandoverService } from "../../application/handover/whatsapp-handover.service";
 import { WhatsappSenderService } from "../../messaging/whatsapp-sender.service";
+import { WhatsappIncomingDebounceService } from "../services/whatsapp-incoming-debounce.service";
 import { WhatsappQueueService } from "../services/whatsapp-queue.service";
 import {
     WHATSAPP_INCOMING_JOB_NAME,
@@ -26,6 +27,7 @@ import { DeliveryOrderService } from "../../../modules/delivery/delivery-order.s
 import {
     extractAiErrorMessage,
     isAiQuotaError,
+    isAiServiceBusyError,
 } from "../../../modules/ai-agent/ai-error.utils";
 import { AiAgentRepository } from "../../../modules/ai-agent/ai-agent.repository";
 import {
@@ -46,6 +48,8 @@ type CustomerLocation = {
 const HANDOVER_KEYWORDS = ["atendente", "problema"];
 const LONG_REPLY_THRESHOLD = 240;
 const SPLIT_REPLY_DELAY_MS = 2000;
+const AI_BUSY_RETRY_DELAY_MS = 15_000;
+const AI_BUSY_MAX_RETRIES = 3;
 
 @Processor(WHATSAPP_INCOMING_QUEUE_NAME, { concurrency: 3 })
 export class WhatsappIncomingProcessor extends WorkerHost {
@@ -56,6 +60,7 @@ export class WhatsappIncomingProcessor extends WorkerHost {
         private readonly aiAgentService: AiAgentService,
         private readonly deliveryOrderService: DeliveryOrderService,
         private readonly whatsappHandoverService: WhatsappHandoverService,
+        private readonly whatsappIncomingDebounceService: WhatsappIncomingDebounceService,
         private readonly whatsappQueueService: WhatsappQueueService,
         private readonly whatsappSenderService: WhatsappSenderService,
         private readonly subscriptionService: SubscriptionService,
@@ -68,12 +73,22 @@ export class WhatsappIncomingProcessor extends WorkerHost {
             throw new Error(`Unsupported WhatsApp job received: ${job.name}`);
         }
 
-        const text = job.data.text?.trim();
-        const incomingMessageType = this.toChatMessageType(job.data.messageType);
+        const data =
+            await this.whatsappIncomingDebounceService.consumeDebouncedMessage(
+                job.data,
+            );
+
+        if (!data) {
+            await job.updateProgress(100);
+            return;
+        }
+
+        const text = data.text?.trim();
+        const incomingMessageType = this.toChatMessageType(data.messageType);
         const hasAudioInput =
             incomingMessageType === ChatMessageType.AUDIO &&
-            Boolean(job.data.mediaUrl);
-        const location = this.extractLocation(job.data);
+            Boolean(data.mediaUrl);
+        const location = this.extractLocation(data);
         const handoverKeywords = this.extractHandoverKeywords(text);
 
         if (!text && !hasAudioInput && !location) {
@@ -86,12 +101,12 @@ export class WhatsappIncomingProcessor extends WorkerHost {
 
             const accessContext =
                 await this.aiAgentRepository.getWhatsappInstanceAccessContext(
-                    job.data.instanceId,
+                    data.instanceId,
                 );
 
             if (!accessContext) {
                 this.logger.warn(
-                    `[process] WhatsApp instance nao encontrada instanceId=${job.data.instanceId}`,
+                    `[process] WhatsApp instance nao encontrada instanceId=${data.instanceId}`,
                 );
                 await job.updateProgress(100);
                 return;
@@ -102,7 +117,7 @@ export class WhatsappIncomingProcessor extends WorkerHost {
                 accessContext.subscriptionStatus !== SubscriptionStatus.ACTIVE
             ) {
                 this.logger.debug(
-                    `[process] IA ignorada para instanceId=${job.data.instanceId} chatId=${job.data.chatId} hasActiveAccess=${accessContext.hasActiveAccess} subscriptionStatus=${accessContext.subscriptionStatus ?? "NONE"}`,
+                    `[process] IA ignorada para instanceId=${data.instanceId} chatId=${data.chatId} hasActiveAccess=${accessContext.hasActiveAccess} subscriptionStatus=${accessContext.subscriptionStatus ?? "NONE"}`,
                 );
                 await job.updateProgress(100);
                 return;
@@ -118,7 +133,7 @@ export class WhatsappIncomingProcessor extends WorkerHost {
                     error instanceof UnauthorizedException
                 ) {
                     this.logger.debug(
-                        `[process] IA bloqueada por limite/plano instanceId=${job.data.instanceId} ownerUserId=${accessContext.ownerUserId} reason=${error.message}`,
+                        `[process] IA bloqueada por limite/plano instanceId=${data.instanceId} ownerUserId=${accessContext.ownerUserId} reason=${error.message}`,
                     );
                     await job.updateProgress(100);
                     return;
@@ -130,8 +145,8 @@ export class WhatsappIncomingProcessor extends WorkerHost {
             if (handoverKeywords.length) {
                 await this.whatsappHandoverService.openHandover({
                     userId: accessContext.ownerUserId,
-                    instanceId: job.data.instanceId,
-                    chatId: job.data.chatId,
+                    instanceId: data.instanceId,
+                    chatId: data.chatId,
                     triggerText: text || undefined,
                     lastCustomerMessage: text || undefined,
                     triggerKeywords: handoverKeywords,
@@ -141,22 +156,22 @@ export class WhatsappIncomingProcessor extends WorkerHost {
                     "Claro! Vou chamar um atendente para te ajudar por aqui.";
 
                 await this.whatsappQueueService.enqueueOutgoingMessage({
-                    instanceId: job.data.instanceId,
-                    chatId: job.data.chatId,
+                    instanceId: data.instanceId,
+                    chatId: data.chatId,
                     text: handoverReply,
                     messageType: "TEXT",
                     payload: {
                         source: "handover",
                         handoverKeywords,
                         incomingJobId: job.id ?? null,
-                        replyToMessageId: this.extractIncomingMessageId(job.data),
+                        replyToMessageId: this.extractIncomingMessageId(data),
                         replyToText: text || null,
                     },
                 });
 
                 await this.aiAgentService.saveWhatsappModelMessage(
-                    job.data.instanceId,
-                    job.data.chatId,
+                    data.instanceId,
+                    data.chatId,
                     handoverReply,
                     ChatMessageType.TEXT,
                 );
@@ -167,22 +182,22 @@ export class WhatsappIncomingProcessor extends WorkerHost {
 
             const hasOpenHandover =
                 await this.whatsappHandoverService.hasOpenHandover(
-                    job.data.instanceId,
-                    job.data.chatId,
+                    data.instanceId,
+                    data.chatId,
                 );
 
             if (
                 !hasOpenHandover &&
-                this.shouldSchedulePreAiTyping(job.data, text, hasAudioInput)
+                this.shouldSchedulePreAiTyping(data, text, hasAudioInput)
             ) {
                 await this.whatsappSenderService.sendComposingIndicatorForIncomingMessage(
-                    job.data.instanceId,
-                    job.data.chatId,
+                    data.instanceId,
+                    data.chatId,
                 );
 
                 await this.whatsappQueueService.enqueueIncomingMessage(
                     {
-                        ...job.data,
+                        ...data,
                         processingStage: "respond",
                     },
                     {
@@ -191,7 +206,7 @@ export class WhatsappIncomingProcessor extends WorkerHost {
                 );
 
                 this.logger.debug(
-                    `[process] typing antecipado agendado instanceId=${job.data.instanceId} chatId=${job.data.chatId} delayMs=${WHATSAPP_PRE_AI_TYPING_DELAY_MS}`,
+                    `[process] typing antecipado agendado instanceId=${data.instanceId} chatId=${data.chatId} delayMs=${WHATSAPP_PRE_AI_TYPING_DELAY_MS}`,
                 );
                 await job.updateProgress(100);
                 return;
@@ -199,8 +214,8 @@ export class WhatsappIncomingProcessor extends WorkerHost {
 
             if (location) {
                 const locationResult = await this.handleLocationInput({
-                    instanceId: job.data.instanceId,
-                    chatId: job.data.chatId,
+                    instanceId: data.instanceId,
+                    chatId: data.chatId,
                     ownerUserId: accessContext.ownerUserId,
                     location,
                 });
@@ -212,22 +227,22 @@ export class WhatsappIncomingProcessor extends WorkerHost {
                         )}. Se quiser, continuo montando seu pedido por aqui.`;
 
                         await this.whatsappQueueService.enqueueOutgoingMessage({
-                            instanceId: job.data.instanceId,
-                            chatId: job.data.chatId,
+                            instanceId: data.instanceId,
+                            chatId: data.chatId,
                             text: locationReply,
                             messageType: "TEXT",
                             payload: {
                                 source: "delivery-location",
                                 incomingJobId: job.id ?? null,
                                 replyToMessageId:
-                                    this.extractIncomingMessageId(job.data),
+                                    this.extractIncomingMessageId(data),
                                 replyToText: text || null,
                             },
                         });
 
                         await this.aiAgentService.saveWhatsappModelMessage(
-                            job.data.instanceId,
-                            job.data.chatId,
+                            data.instanceId,
+                            data.chatId,
                             locationReply,
                             ChatMessageType.TEXT,
                         );
@@ -240,7 +255,7 @@ export class WhatsappIncomingProcessor extends WorkerHost {
 
             if (hasOpenHandover) {
                 this.logger.debug(
-                    `[process] atendimento humano ativo para instanceId=${job.data.instanceId} chatId=${job.data.chatId}; bot em silencio`,
+                    `[process] atendimento humano ativo para instanceId=${data.instanceId} chatId=${data.chatId}; bot em silencio`,
                 );
                 await job.updateProgress(100);
                 return;
@@ -248,12 +263,12 @@ export class WhatsappIncomingProcessor extends WorkerHost {
 
             const reply: AiAgentReply =
                 await this.aiAgentService.generateWhatsappResponse({
-                    instanceId: job.data.instanceId,
-                    chatId: job.data.chatId,
+                    instanceId: data.instanceId,
+                    chatId: data.chatId,
                     ownerUserId: accessContext.ownerUserId,
                     personaName: accessContext.personaName,
                     messageText: text || undefined,
-                    mediaUrl: job.data.mediaUrl ?? null,
+                    mediaUrl: data.mediaUrl ?? null,
                     messageType: incomingMessageType,
                 });
 
@@ -269,8 +284,8 @@ export class WhatsappIncomingProcessor extends WorkerHost {
                 for (const [index, chunk] of replyChunks.entries()) {
                     await this.whatsappQueueService.enqueueOutgoingMessage(
                         {
-                            instanceId: job.data.instanceId,
-                            chatId: job.data.chatId,
+                            instanceId: data.instanceId,
+                            chatId: data.chatId,
                             text: chunk,
                             messageType: "TEXT",
                             previewTemplateIds:
@@ -283,7 +298,7 @@ export class WhatsappIncomingProcessor extends WorkerHost {
                                 chunkIndex: index + 1,
                                 totalChunks: replyChunks.length,
                                 replyToMessageId:
-                                    this.extractIncomingMessageId(job.data),
+                                    this.extractIncomingMessageId(data),
                                 replyToText: text || null,
                             },
                             skipTypingSimulation: true,
@@ -294,8 +309,8 @@ export class WhatsappIncomingProcessor extends WorkerHost {
                     );
 
                     await this.aiAgentService.saveWhatsappModelMessage(
-                        job.data.instanceId,
-                        job.data.chatId,
+                        data.instanceId,
+                        data.chatId,
                         chunk,
                         ChatMessageType.TEXT,
                         undefined,
@@ -304,23 +319,23 @@ export class WhatsappIncomingProcessor extends WorkerHost {
                 }
             } else {
                 await this.whatsappQueueService.enqueueOutgoingMessage({
-                    instanceId: job.data.instanceId,
-                    chatId: job.data.chatId,
+                    instanceId: data.instanceId,
+                    chatId: data.chatId,
                     text: reply.text,
                     messageType: suggestedMediaType,
                     previewTemplateIds: reply.previewTemplateIds,
                     payload: {
                         source: "ai-agent",
                         incomingJobId: job.id ?? null,
-                        replyToMessageId: this.extractIncomingMessageId(job.data),
+                        replyToMessageId: this.extractIncomingMessageId(data),
                         replyToText: text || null,
                     },
                     skipTypingSimulation: true,
                 });
 
                 await this.aiAgentService.saveWhatsappModelMessage(
-                    job.data.instanceId,
-                    job.data.chatId,
+                    data.instanceId,
+                    data.chatId,
                     reply.text,
                     this.toChatMessageType(suggestedMediaType),
                     undefined,
@@ -332,14 +347,40 @@ export class WhatsappIncomingProcessor extends WorkerHost {
         } catch (error) {
             if (isAiQuotaError(error)) {
                 this.logger.debug(
-                    `[process] Quota do Gemini indisponivel para instanceId=${job.data.instanceId} chatId=${job.data.chatId}; seguindo sem ruido`,
+                    `[process] Quota do Gemini indisponivel para instanceId=${data.instanceId} chatId=${data.chatId}; seguindo sem ruido`,
                 );
                 await job.updateProgress(100);
                 return;
             }
 
+            if (isAiServiceBusyError(error)) {
+                const retryCount = this.extractAiBusyRetryCount(data);
+
+                if (retryCount < AI_BUSY_MAX_RETRIES) {
+                    await this.whatsappQueueService.enqueueIncomingMessage(
+                        {
+                            ...data,
+                            processingStage: "respond",
+                            payload: {
+                                ...this.asRecord(data.payload),
+                                aiBusyRetryCount: retryCount + 1,
+                            },
+                        },
+                        {
+                            delay: AI_BUSY_RETRY_DELAY_MS,
+                        },
+                    );
+
+                    this.logger.warn(
+                        `[process] Gemini temporariamente indisponivel para instanceId=${data.instanceId} chatId=${data.chatId}; retry agendado (${retryCount + 1}/${AI_BUSY_MAX_RETRIES})`,
+                    );
+                    await job.updateProgress(100);
+                    return;
+                }
+            }
+
             this.logger.error(
-                `[process] Falha ao processar WhatsApp instanceId=${job.data.instanceId} chatId=${job.data.chatId}`,
+                `[process] Falha ao processar WhatsApp instanceId=${data.instanceId} chatId=${data.chatId}`,
                 error instanceof Error
                     ? error.stack
                     : extractAiErrorMessage(error),
@@ -509,6 +550,15 @@ export class WhatsappIncomingProcessor extends WorkerHost {
             typeof payload.messageId === "string" ? payload.messageId.trim() : "";
 
         return messageId || null;
+    }
+
+    private extractAiBusyRetryCount(data: WhatsappIncomingJobData): number {
+        const payload = this.asRecord(data.payload);
+        const retryCount = Number(payload.aiBusyRetryCount ?? 0);
+
+        return Number.isFinite(retryCount) && retryCount >= 0
+            ? Math.trunc(retryCount)
+            : 0;
     }
 
     private normalizeText(value: string): string {

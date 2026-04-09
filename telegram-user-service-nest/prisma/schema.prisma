@@ -351,6 +351,7 @@ model Product {
   ownerUserId    String?
   title          String
   description    String?
+  imageUrl       String?
   priceCents     Int
   stockQuantity  Int?
   category       String?
