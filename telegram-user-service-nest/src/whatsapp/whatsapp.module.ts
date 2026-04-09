@@ -20,6 +20,7 @@ import { WhatsappSenderService } from "./messaging/whatsapp-sender.service";
 import { WhatsappIncomingProcessor } from "./queue/processors/whatsapp-incoming.processor";
 import { WhatsappMediaProcessor } from "./queue/processors/whatsapp-media.processor";
 import { WhatsappOutgoingProcessor } from "./queue/processors/whatsapp-outgoing.processor";
+import { WhatsappIncomingDebounceService } from "./queue/services/whatsapp-incoming-debounce.service";
 import { WhatsappQueueService } from "./queue/services/whatsapp-queue.service";
 import { WhatsappEventsGateway } from "./realtime/whatsapp-events.gateway";
 import { WhatsappEventsService } from "./realtime/whatsapp-events.service";
@@ -46,6 +47,7 @@ import { WhatsappEventsService } from "./realtime/whatsapp-events.service";
         MediaHandlerService,
         WhatsappInstanceService,
         WhatsappQueueService,
+        WhatsappIncomingDebounceService,
         WhatsappHandoverService,
         EvolutionWebhookService,
         WhatsappEventsGateway,

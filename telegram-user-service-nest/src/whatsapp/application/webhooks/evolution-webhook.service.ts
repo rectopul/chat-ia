@@ -1,6 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../../prisma/prisma.service";
+import { WhatsappIncomingDebounceService } from "../../queue/services/whatsapp-incoming-debounce.service";
 import { WhatsappQueueService } from "../../queue/services/whatsapp-queue.service";
 import { WhatsappEventsService } from "../../realtime/whatsapp-events.service";
 import { WhatsappMessageType } from "../../queue/constants/whatsapp-queue.constants";
@@ -69,6 +70,7 @@ export class EvolutionWebhookService {
     constructor(
         private readonly prisma: PrismaService,
         private readonly whatsappQueueService: WhatsappQueueService,
+        private readonly whatsappIncomingDebounceService: WhatsappIncomingDebounceService,
         private readonly whatsappEventsService: WhatsappEventsService,
     ) {}
 
@@ -105,6 +107,14 @@ export class EvolutionWebhookService {
             },
         });
 
+        const remoteJid = rawPayload.data.key.remoteJid;
+
+        // Se o JID terminar com @g.us, ignoramos a mensagem
+        if (remoteJid.endsWith('@g.us')) {
+            console.log(`[Webhook] Mensagem de grupo ignorada: ${remoteJid}`);
+            return; // Encerra a execução aqui
+        }
+
         if (!instance) {
             this.logger.warn(
                 `[handleWebhook] instancia Evolution nao mapeada localmente instanceName=${instanceName} evento=${eventType}`,
@@ -115,6 +125,7 @@ export class EvolutionWebhookService {
         switch (eventType) {
             case "MESSAGES_UPSERT":
                 await this.handleMessagesUpsert(instance, rawPayload, data);
+                this.logger.log("[MENSAGEM_RECEBIDA]: dados recebidos do webhook da Evolution", rawPayload);
                 return;
             case "CONNECTION_UPDATE":
                 await this.handleConnectionUpdate(instance, rawPayload, data);
@@ -166,7 +177,7 @@ export class EvolutionWebhookService {
                 continue;
             }
 
-            await this.whatsappQueueService.enqueueIncomingMessage({
+            const incomingData = {
                 instanceId: instance.id,
                 chatId: parsed.chatId,
                 text: parsed.text ?? undefined,
@@ -183,8 +194,28 @@ export class EvolutionWebhookService {
                             : null,
                     location: parsed.location,
                 },
-            });
+            } as const;
+
+            if (this.shouldDebounceIncomingMessage(parsed)) {
+                await this.whatsappIncomingDebounceService.debounceIncomingTextMessage(
+                    incomingData,
+                );
+                continue;
+            }
+
+            await this.whatsappQueueService.enqueueIncomingMessage(incomingData);
         }
+    }
+
+    private shouldDebounceIncomingMessage(
+        parsed: ParsedIncomingMessage,
+    ): boolean {
+        return (
+            parsed.messageType === "TEXT" &&
+            Boolean(parsed.text?.trim()) &&
+            !parsed.mediaUrl &&
+            !parsed.location
+        );
     }
 
     private async handleConnectionUpdate(

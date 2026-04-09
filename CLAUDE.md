@@ -115,3 +115,11 @@ Principais entidades do sistema:
 - **FFmpeg** (Processamento de Áudio)
 - **Sharp** (Processamento de Imagem)
 - **Axios** (Integração HTTP)
+
+---
+
+## 🧭 Convenções de Implementação
+
+- Em Next.js/App Router, **nunca** colocar `server actions` no mesmo arquivo de componentes React.
+- Sempre separar ações de servidor em arquivos dedicados, como `actions.ts`, `mutations.ts` ou outro arquivo server-only ao lado do componente.
+- Componentes de UI devem importar essas ações separadas, mantendo o arquivo do componente focado apenas em renderização, estado local e interação.
