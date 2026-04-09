@@ -8,6 +8,13 @@ import { Loader2, QrCode, RefreshCcw, Smartphone } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/ui/dialog";
 
 type QRConnectionProps = {
     initialStatus: string | null;
@@ -26,6 +33,7 @@ const POLLING_INTERVAL_MS = 5000;
 export default function QRConnection({ initialStatus }: QRConnectionProps) {
     const router = useRouter();
     const pollingRef = useRef<NodeJS.Timeout | null>(null);
+    const [dialogOpen, setDialogOpen] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
     const [status, setStatus] = useState(initialStatus?.toLowerCase() ?? null);
     const [qrCodeBase64, setQrCodeBase64] = useState<string | null>(null);
@@ -61,13 +69,14 @@ export default function QRConnection({ initialStatus }: QRConnectionProps) {
                 throw new Error("Resposta invalida ao consultar o QR Code.");
             }
 
-            setStatus(payload.status);
+            setStatus(payload.status.toLowerCase());
             setQrCodeBase64(payload.qrCodeBase64);
             setPairingCode(payload.pairingCode);
             setInstanceName(payload.instanceName);
 
             if (payload.status.toLowerCase() === "open") {
                 clearPolling();
+                setDialogOpen(false);
                 toast.success("WhatsApp conectado com sucesso.");
                 router.push("/dashboard");
                 router.refresh();
@@ -123,6 +132,22 @@ export default function QRConnection({ initialStatus }: QRConnectionProps) {
         }
     }
 
+    async function handleOpenDialog() {
+        setDialogOpen(true);
+
+        if (isConnected) {
+            return;
+        }
+
+        if (isConnecting) {
+            await pollQrCode();
+            startPolling();
+            return;
+        }
+
+        await handleConnect();
+    }
+
     useEffect(() => {
         if (status === "connecting") {
             void pollQrCode();
@@ -136,96 +161,162 @@ export default function QRConnection({ initialStatus }: QRConnectionProps) {
     const isConnecting = status === "connecting";
 
     return (
-        <Card className="border-none shadow-sm">
-            <CardHeader className="flex flex-row items-start justify-between gap-4">
-                <div className="space-y-1">
-                    <CardTitle className="flex items-center gap-2">
-                        <QrCode className="h-5 w-5 text-primary" />
-                        Pareamento por QR Code
-                    </CardTitle>
-                    <p className="text-sm text-slate-500">
-                        Gere o QR da Evolution, escaneie no celular da loja e
-                        aguarde a abertura da sessao.
-                    </p>
-                </div>
-                <Badge variant={isConnected ? "default" : "outline"}>
-                    {isConnected
-                        ? "Conectado"
-                        : isConnecting
-                          ? "Aguardando leitura"
-                          : "Pronto para conectar"}
-                </Badge>
-            </CardHeader>
-            <CardContent className="space-y-4">
-                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-6">
-                    {qrCodeBase64 ? (
-                        <div className="flex flex-col items-center gap-4 text-center">
-                            <Image
-                                src={qrCodeBase64}
-                                alt="QR Code do WhatsApp"
-                                width={320}
-                                height={320}
-                                className="rounded-xl border border-slate-200 bg-white p-3"
-                                unoptimized
-                            />
-                            {pairingCode && (
-                                <p className="text-xs text-slate-500">
-                                    Codigo de pareamento:{" "}
-                                    <strong className="text-slate-700">
-                                        {pairingCode}
-                                    </strong>
-                                </p>
-                            )}
-                        </div>
-                    ) : (
-                        <div className="flex min-h-72 flex-col items-center justify-center gap-3 text-center">
-                            <div className="rounded-full bg-white p-4 text-slate-500 shadow-sm">
-                                <Smartphone className="h-6 w-6" />
-                            </div>
-                            <div className="space-y-1">
-                                <p className="text-lg font-semibold text-slate-900">
-                                    Nenhum QR carregado ainda
-                                </p>
-                                <p className="max-w-md text-sm text-slate-500">
-                                    Clique em conectar para solicitar o QR Code
-                                    da Evolution e iniciar o pareamento.
-                                </p>
-                            </div>
-                        </div>
-                    )}
-                </div>
+        <>
+            <Card className="border-none shadow-sm">
+                <CardHeader className="flex flex-row items-start justify-between gap-4 pb-3">
+                    <div className="space-y-1">
+                        <CardTitle className="flex items-center gap-2 text-base">
+                            <QrCode className="h-5 w-5 text-primary" />
+                            Pareamento por QR Code
+                        </CardTitle>
+                        <p className="text-sm text-slate-500">
+                            Abra o modal para gerar e escanear o QR com o celular da loja.
+                        </p>
+                    </div>
+                    <Badge variant={isConnected ? "default" : "outline"}>
+                        {isConnected
+                            ? "Conectado"
+                            : isConnecting
+                              ? "Aguardando leitura"
+                              : "Pronto para conectar"}
+                    </Badge>
+                </CardHeader>
+                <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                        {instanceName ? (
+                            <>
+                                Instancia ativa:{" "}
+                                <strong className="text-slate-900">
+                                    {instanceName}
+                                </strong>
+                            </>
+                        ) : (
+                            "Clique em conectar para abrir o QR Code em um modal."
+                        )}
+                    </div>
 
-                <div className="flex flex-wrap items-center gap-3">
                     <Button
                         type="button"
-                        onClick={handleConnect}
-                        disabled={isLoading || isConnected}
+                        onClick={handleOpenDialog}
+                        disabled={isConnected || (isLoading && !isConnecting)}
                     >
                         {isLoading ? (
                             <>
                                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                                 Gerando QR...
                             </>
-                        ) : isConnecting ? (
+                        ) : isConnected ? (
+                            "WhatsApp conectado"
+                        ) : isConnecting || qrCodeBase64 ? (
                             <>
                                 <RefreshCcw className="mr-2 h-4 w-4" />
-                                Atualizar QR
+                                Abrir QR Code
                             </>
                         ) : (
                             "Conectar WhatsApp"
                         )}
                     </Button>
+                </CardContent>
+            </Card>
 
-                    {instanceName && (
-                        <p className="text-sm text-slate-500">
-                            Instancia:{" "}
-                            <strong className="text-slate-700">
-                                {instanceName}
-                            </strong>
-                        </p>
-                    )}
-                </div>
-            </CardContent>
-        </Card>
+            <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+                <DialogContent className="max-w-xl">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2">
+                            <QrCode className="h-5 w-5 text-primary" />
+                            Escaneie o QR Code
+                        </DialogTitle>
+                        <DialogDescription>
+                            Use o WhatsApp do celular da loja para concluir o pareamento.
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    <div className="space-y-4">
+                        <div className="flex flex-wrap items-center gap-2">
+                            <Badge variant={isConnected ? "default" : "outline"}>
+                                {isConnected
+                                    ? "Conectado"
+                                    : isConnecting
+                                      ? "Aguardando leitura"
+                                      : "Preparando QR"}
+                            </Badge>
+                            {instanceName ? (
+                                <Badge variant="outline">{instanceName}</Badge>
+                            ) : null}
+                        </div>
+
+                        <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-5">
+                            {qrCodeBase64 ? (
+                                <div className="flex flex-col items-center gap-4 text-center">
+                                    <Image
+                                        src={qrCodeBase64}
+                                        alt="QR Code do WhatsApp"
+                                        width={260}
+                                        height={260}
+                                        className="rounded-xl border border-slate-200 bg-white p-3"
+                                        unoptimized
+                                    />
+                                    {pairingCode ? (
+                                        <p className="text-xs text-slate-500">
+                                            Codigo de pareamento:{" "}
+                                            <strong className="text-slate-700">
+                                                {pairingCode}
+                                            </strong>
+                                        </p>
+                                    ) : null}
+                                </div>
+                            ) : (
+                                <div className="flex min-h-72 flex-col items-center justify-center gap-3 text-center">
+                                    <div className="rounded-full bg-white p-4 text-slate-500 shadow-sm">
+                                        {isLoading || isConnecting ? (
+                                            <Loader2 className="h-6 w-6 animate-spin" />
+                                        ) : (
+                                            <Smartphone className="h-6 w-6" />
+                                        )}
+                                    </div>
+                                    <div className="space-y-1">
+                                        <p className="text-base font-semibold text-slate-900">
+                                            {isLoading || isConnecting
+                                                ? "Gerando QR Code"
+                                                : "Nenhum QR carregado ainda"}
+                                        </p>
+                                        <p className="max-w-md text-sm text-slate-500">
+                                            {isLoading || isConnecting
+                                                ? "Aguarde alguns segundos enquanto o sistema prepara o pareamento."
+                                                : "Clique em conectar para iniciar o pareamento com a Evolution."}
+                                        </p>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        {!isConnected ? (
+                            <div className="flex flex-wrap items-center gap-3">
+                                <Button
+                                    type="button"
+                                    onClick={handleConnect}
+                                    disabled={isLoading}
+                                >
+                                    {isLoading ? (
+                                        <>
+                                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                            Atualizando QR...
+                                        </>
+                                    ) : (
+                                        <>
+                                            <RefreshCcw className="mr-2 h-4 w-4" />
+                                            Atualizar QR
+                                        </>
+                                    )}
+                                </Button>
+                                <p className="text-xs text-slate-500">
+                                    O status e consultado automaticamente a cada 5 segundos.
+                                </p>
+                            </div>
+                        ) : null}
+                    </div>
+                </DialogContent>
+            </Dialog>
+        </>
     );
 }

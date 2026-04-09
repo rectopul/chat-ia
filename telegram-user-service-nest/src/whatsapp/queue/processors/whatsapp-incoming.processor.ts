@@ -19,8 +19,8 @@ import { WhatsappQueueService } from "../services/whatsapp-queue.service";
 import {
     WHATSAPP_INCOMING_JOB_NAME,
     WHATSAPP_INCOMING_QUEUE_NAME,
-    WHATSAPP_PRE_AI_TYPING_DELAY_MS,
     WhatsappMessageType,
+    getWhatsappPreAiTypingDelayMs,
 } from "../constants/whatsapp-queue.constants";
 import { WhatsappIncomingJobData } from "../types/whatsapp-jobs.types";
 import { DeliveryOrderService } from "../../../modules/delivery/delivery-order.service";
@@ -190,6 +190,8 @@ export class WhatsappIncomingProcessor extends WorkerHost {
                 !hasOpenHandover &&
                 this.shouldSchedulePreAiTyping(data, text, hasAudioInput)
             ) {
+                const preAiTypingDelayMs = getWhatsappPreAiTypingDelayMs();
+
                 await this.whatsappSenderService.sendComposingIndicatorForIncomingMessage(
                     data.instanceId,
                     data.chatId,
@@ -201,12 +203,12 @@ export class WhatsappIncomingProcessor extends WorkerHost {
                         processingStage: "respond",
                     },
                     {
-                        delay: WHATSAPP_PRE_AI_TYPING_DELAY_MS,
+                        delay: preAiTypingDelayMs,
                     },
                 );
 
                 this.logger.debug(
-                    `[process] typing antecipado agendado instanceId=${data.instanceId} chatId=${data.chatId} delayMs=${WHATSAPP_PRE_AI_TYPING_DELAY_MS}`,
+                    `[process] typing antecipado agendado instanceId=${data.instanceId} chatId=${data.chatId} delayMs=${preAiTypingDelayMs}`,
                 );
                 await job.updateProgress(100);
                 return;

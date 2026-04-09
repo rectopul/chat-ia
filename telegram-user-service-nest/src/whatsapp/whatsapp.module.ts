@@ -3,6 +3,7 @@ import { Module } from "@nestjs/common";
 import { AiAgentModule } from "../modules/ai-agent/ai-agent.module";
 import { DeliveryModule } from "../modules/delivery/delivery.module";
 import { EvolutionModule } from "../modules/evolution/evolution.module";
+import { OperatingHoursModule } from "../modules/operating-hours/operating-hours.module";
 import { SubscriptionModule } from "../modules/subscription/subscription.module";
 import { PrismaModule } from "../prisma/prisma.module";
 import {
@@ -40,6 +41,7 @@ import { WhatsappEventsService } from "./realtime/whatsapp-events.service";
         AiAgentModule,
         DeliveryModule,
         EvolutionModule,
+        OperatingHoursModule,
         SubscriptionModule,
     ],
     controllers: [WhatsappController, EvolutionWebhookController],

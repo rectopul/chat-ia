@@ -1,21 +1,65 @@
 export const runtime = "nodejs";
-import { PrismaClient } from "@prisma/client";
+import { createRequire } from "module";
+import type { PrismaClient as PrismaClientType } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Pool } from "pg";
 
-const globalForPrisma = global as unknown as { prisma: PrismaClient };
+const require = createRequire(import.meta.url);
 
-const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-});
+function clearPrismaModuleCache() {
+    if (process.env.NODE_ENV === "production") {
+        return;
+    }
 
-const adapter = new PrismaPg(pool);
+    for (const cacheKey of Object.keys(require.cache)) {
+        if (
+            cacheKey.includes("/@prisma/client/") ||
+            cacheKey.includes("/.prisma/client/")
+        ) {
+            delete require.cache[cacheKey];
+        }
+    }
+}
 
-export const prisma =
-    globalForPrisma.prisma ||
-    new PrismaClient({
+clearPrismaModuleCache();
+
+const prismaModule = require("@prisma/client") as typeof import("@prisma/client");
+const PrismaClient = prismaModule.PrismaClient;
+const prismaSchemaSignature = JSON.stringify(
+    prismaModule.Prisma?.dmmf?.datamodel?.models ?? [],
+);
+
+const globalForPrisma = global as unknown as {
+    prisma?: PrismaClientType;
+    prismaPool?: Pool;
+    prismaSchemaSignature?: string;
+};
+
+function createPrismaClient() {
+    const pool = new Pool({
+        connectionString: process.env.DATABASE_URL,
+    });
+
+    const adapter = new PrismaPg(pool);
+    const prisma = new PrismaClient({
         adapter,
         log: ["error", "info", "warn"],
     });
 
-if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
+    globalForPrisma.prismaPool = pool;
+    globalForPrisma.prismaSchemaSignature = prismaSchemaSignature;
+
+    return prisma;
+}
+
+const shouldReuseClient =
+    Boolean(globalForPrisma.prisma) &&
+    globalForPrisma.prismaSchemaSignature === prismaSchemaSignature;
+
+if (!shouldReuseClient) {
+    void globalForPrisma.prisma?.$disconnect().catch(() => undefined);
+    void globalForPrisma.prismaPool?.end().catch(() => undefined);
+    globalForPrisma.prisma = createPrismaClient();
+}
+
+export const prisma = globalForPrisma.prisma as PrismaClientType;

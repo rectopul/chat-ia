@@ -1,5 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
-import { Prisma } from "@prisma/client";
+import { ChatMessageRole, ChatMessageType, Prisma } from "@prisma/client";
+import { EvolutionService } from "../../../modules/evolution/evolution.service";
+import { OperatingHoursService } from "../../../modules/operating-hours/operating-hours.service";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { WhatsappIncomingDebounceService } from "../../queue/services/whatsapp-incoming-debounce.service";
 import { WhatsappQueueService } from "../../queue/services/whatsapp-queue.service";
@@ -69,6 +71,8 @@ export class EvolutionWebhookService {
 
     constructor(
         private readonly prisma: PrismaService,
+        private readonly evolutionService: EvolutionService,
+        private readonly operatingHoursService: OperatingHoursService,
         private readonly whatsappQueueService: WhatsappQueueService,
         private readonly whatsappIncomingDebounceService: WhatsappIncomingDebounceService,
         private readonly whatsappEventsService: WhatsappEventsService,
@@ -145,6 +149,7 @@ export class EvolutionWebhookService {
         instance: {
             id: string;
             userId: string;
+            instanceName: string;
         },
         rawPayload: EvolutionWebhookPayload,
         data: EvolutionWebhookPayload,
@@ -174,6 +179,19 @@ export class EvolutionWebhookService {
             });
 
             if (!parsed.text && !parsed.mediaUrl && !parsed.location) {
+                continue;
+            }
+
+            const operatingHours = await this.operatingHoursService.isStoreOpen(
+                instance.userId,
+            );
+
+            if (!operatingHours.isOpen) {
+                await this.sendClosedStoreAutoReply(
+                    instance,
+                    parsed,
+                    operatingHours.message,
+                );
                 continue;
             }
 
@@ -216,6 +234,42 @@ export class EvolutionWebhookService {
             !parsed.mediaUrl &&
             !parsed.location
         );
+    }
+
+    private async sendClosedStoreAutoReply(
+        instance: {
+            id: string;
+            userId: string;
+            instanceName: string;
+        },
+        parsed: ParsedIncomingMessage,
+        message: string,
+    ): Promise<void> {
+        const trimmedMessage = message.trim();
+
+        if (!trimmedMessage || !parsed.chatId) {
+            return;
+        }
+
+        await this.evolutionService.sendText(instance.instanceName, {
+            number: parsed.chatId,
+            text: trimmedMessage,
+        });
+
+        await this.prisma.chatMessage.create({
+            data: {
+                botId: null,
+                telegramId: this.buildWhatsappConversationKey(
+                    instance.id,
+                    parsed.chatId,
+                ),
+                role: ChatMessageRole.model,
+                content: trimmedMessage,
+                messageType: ChatMessageType.TEXT,
+                aiModel: "system:operating-hours-auto-reply",
+                mediaUrl: null,
+            },
+        });
     }
 
     private async handleConnectionUpdate(
@@ -528,6 +582,13 @@ export class EvolutionWebhookService {
         }
 
         return null;
+    }
+
+    private buildWhatsappConversationKey(
+        instanceId: string,
+        chatId: string,
+    ): string {
+        return `whatsapp:${instanceId}:${chatId}`;
     }
 
     private mapConnectionStateToStatus(state: string | null): string | null {

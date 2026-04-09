@@ -1,0 +1,2 @@
+ALTER TABLE "User"
+ADD COLUMN "manualStoreClosed" BOOLEAN NOT NULL DEFAULT false;

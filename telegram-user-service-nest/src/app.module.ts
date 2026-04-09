@@ -23,6 +23,7 @@ import { DeliveryModule } from "./modules/delivery/delivery.module";
 import { AdminModule } from "./modules/admin/admin.module";
 import { OrdersModule } from "./modules/orders/orders.module";
 import { EvolutionModule } from "./modules/evolution/evolution.module";
+import { OperatingHoursModule } from "./modules/operating-hours/operating-hours.module";
 
 @Module({
     imports: [
@@ -86,6 +87,7 @@ import { EvolutionModule } from "./modules/evolution/evolution.module";
         OrdersModule,
         AdminModule,
         EvolutionModule,
+        OperatingHoursModule,
         SyncPayModule,
         TemplateModule,
         WhatsappModule,

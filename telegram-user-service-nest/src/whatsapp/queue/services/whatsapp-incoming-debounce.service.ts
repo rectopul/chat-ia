@@ -4,9 +4,9 @@ import IORedis, { Redis } from "ioredis";
 import { Queue } from "bullmq";
 import { WhatsappInstanceService } from "../../application/instances/whatsapp-instance.service";
 import {
-    WHATSAPP_INCOMING_DEBOUNCE_DELAY_MS,
     WHATSAPP_INCOMING_JOB_NAME,
     WHATSAPP_INCOMING_QUEUE_NAME,
+    getWhatsappIncomingDebounceDelayMs,
 } from "../constants/whatsapp-queue.constants";
 import { WhatsappIncomingJobData } from "../types/whatsapp-jobs.types";
 
@@ -85,6 +85,9 @@ export class WhatsappIncomingDebounceService implements OnModuleDestroy {
         const debounceKey = this.buildDebounceKey(data.instanceId, data.chatId);
         const buffer = await this.loadBuffer(debounceKey);
         const nextBuffer = this.mergeBuffer(buffer, data, text);
+        const debounceJobNonce = `${Date.now()}-${Math.random()
+            .toString(36)
+            .slice(2, 10)}`;
 
         await this.redis.set(
             debounceKey,
@@ -112,6 +115,7 @@ export class WhatsappIncomingDebounceService implements OnModuleDestroy {
                     data.instanceId,
                     data.chatId,
                     nextBuffer.version,
+                    debounceJobNonce,
                 ),
                 delay: debounceDelayMs,
                 removeOnComplete: { count: 100 },
@@ -162,8 +166,9 @@ export class WhatsappIncomingDebounceService implements OnModuleDestroy {
         instanceId: string,
         chatId: string,
         version: number,
+        nonce: string,
     ): string {
-        return `whatsapp-debounce__${instanceId}__${chatId}__v${version}`.replace(
+        return `whatsapp-debounce__${instanceId}__${chatId}__v${version}__${nonce}`.replace(
             /[:\s]/g,
             "_",
         );
@@ -292,13 +297,6 @@ export class WhatsappIncomingDebounceService implements OnModuleDestroy {
     }
 
     private getDebounceDelayMs(): number {
-        const configured = Number(
-            process.env.WHATSAPP_INCOMING_DEBOUNCE_MS ??
-                WHATSAPP_INCOMING_DEBOUNCE_DELAY_MS,
-        );
-
-        return Number.isFinite(configured) && configured >= 0
-            ? Math.trunc(configured)
-            : WHATSAPP_INCOMING_DEBOUNCE_DELAY_MS;
+        return getWhatsappIncomingDebounceDelayMs();
     }
 }
