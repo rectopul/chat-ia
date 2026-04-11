@@ -8,6 +8,7 @@ export interface WhatsappIncomingJobData {
     chatId: string;
     text?: string;
     mediaUrl?: string | null;
+    mediaMimeType?: string | null;
     messageType?: WhatsappMessageType;
     processingStage?: WhatsappIncomingProcessingStage;
     debounceKey?: string;

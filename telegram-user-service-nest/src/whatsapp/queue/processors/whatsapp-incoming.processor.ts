@@ -266,11 +266,14 @@ export class WhatsappIncomingProcessor extends WorkerHost {
             const reply: AiAgentReply =
                 await this.aiAgentService.generateWhatsappResponse({
                     instanceId: data.instanceId,
+                    instanceName: accessContext.instanceName,
                     chatId: data.chatId,
                     ownerUserId: accessContext.ownerUserId,
                     personaName: accessContext.personaName,
+                    messageId: this.extractIncomingMessageId(data),
                     messageText: text || undefined,
                     mediaUrl: data.mediaUrl ?? null,
+                    mediaMimeType: data.mediaMimeType ?? null,
                     messageType: incomingMessageType,
                 });
 

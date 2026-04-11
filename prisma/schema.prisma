@@ -61,6 +61,8 @@ model User {
   orders            Order[]            @relation("UserOrders")
   whatsappHandovers WhatsappHandover[]
   operatingHours    OperatingHour[]    @relation("SubscriberOperatingHours")
+  tags              Tag[]              @relation("SubscriberTags")
+  productTags       ProductTags[]      @relation("SubscriberProductTags")
 }
 
 model OperatingHour {
@@ -364,29 +366,58 @@ enum ProductType {
   SUBSCRIPTION
 }
 
+model Tag {
+  id           String @id @default(uuid())
+  name         String
+  subscriberId String
+
+  subscriber  User          @relation("SubscriberTags", fields: [subscriberId], references: [id], onDelete: Cascade)
+  productTags ProductTags[]
+
+  @@unique([subscriberId, name])
+  @@index([subscriberId])
+}
+
 model Product {
-  id             String      @id @default(cuid())
-  ownerUserId    String?
-  title          String
-  description    String?
-  imageUrl       String?
-  priceCents     Int
-  stockQuantity  Int?
-  category       String?
-  currency       String      @default("BRL")
-  isActive       Boolean     @default(true)
-  productType    ProductType @default(ONE_TIME)
-  subscriberDays Int?
-  createdAt      DateTime    @default(now())
-  updatedAt      DateTime    @updatedAt
+  id                    String      @id @default(cuid())
+  ownerUserId           String?
+  title                 String
+  description           String?
+  imageUrl              String?
+  priceCents            Int
+  promotionalPriceCents Int?
+  stockQuantity         Int?
+  category              String?
+  currency              String      @default("BRL")
+  isActive              Boolean     @default(true)
+  productType           ProductType @default(ONE_TIME)
+  subscriberDays        Int?
+  createdAt             DateTime    @default(now())
+  updatedAt             DateTime    @updatedAt
 
   ownerUser       User?            @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
   sales           Sale[]
   discountConfigs DiscountConfig[]
   orderItems      OrderItem[]
+  productTags     ProductTags[]
 
   @@index([ownerUserId])
   @@index([ownerUserId, category, isActive])
+}
+
+model ProductTags {
+  productId    String
+  tagId        String
+  subscriberId String
+
+  product    Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  tag        Tag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  subscriber User    @relation("SubscriberProductTags", fields: [subscriberId], references: [id], onDelete: Cascade)
+
+  @@id([productId, tagId])
+  @@index([subscriberId, productId])
+  @@index([subscriberId, tagId])
+  @@index([tagId])
 }
 
 enum OrderStatus {

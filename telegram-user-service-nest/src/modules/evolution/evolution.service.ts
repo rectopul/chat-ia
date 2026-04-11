@@ -304,6 +304,36 @@ export class EvolutionService {
         });
     }
 
+    async getBase64FromMediaMessage(
+        instanceName: string,
+        input: {
+            messageId: string;
+            convertToMp4?: boolean;
+        },
+    ): Promise<unknown> {
+        const normalizedName = this.normalizeInstanceName(instanceName);
+        const normalizedMessageId = input.messageId.trim();
+
+        if (!normalizedMessageId) {
+            throw new BadRequestException("messageId must be provided");
+        }
+
+        const response = await this.request<unknown>({
+            method: "POST",
+            url: `/chat/getBase64FromMediaMessage/${encodeURIComponent(normalizedName)}`,
+            data: {
+                message: {
+                    key: {
+                        id: normalizedMessageId,
+                    },
+                },
+                convertToMp4: input.convertToMp4 ?? false,
+            },
+        });
+
+        return response.data;
+    }
+
     isNotFoundError(error: unknown): boolean {
         return this.isAxiosStatus(error, 404);
     }

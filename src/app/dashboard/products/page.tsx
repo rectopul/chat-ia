@@ -1,11 +1,12 @@
 import { auth } from "@/auth";
-import { ProductType } from "@prisma/client";
+import { Prisma, ProductType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { redirect } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ProductFormDialog } from "@/components/dashboard/products/product-form-dialog";
 import { ProductsDataTable } from "@/components/dashboard/products/products-data-table";
+import { ProductsToolbar } from "@/components/dashboard/products/products-toolbar";
 import {
     Layers3,
     Package2,
@@ -13,12 +14,31 @@ import {
     Sparkles,
     Warehouse,
 } from "lucide-react";
+import {
+    buildProductsOrderBy,
+    buildProductsPageHref,
+    parseProductSortField,
+    parseSortDirection,
+} from "./query-params";
 
 type SearchParams = Promise<{
     page?: string;
+    q?: string;
+    sort?: string;
+    dir?: string;
 }>;
 
 const PAGE_SIZE = 10;
+
+type ProductRow = Prisma.ProductGetPayload<{
+    include: {
+        productTags: {
+            include: {
+                tag: true;
+            };
+        };
+    };
+}>;
 
 function parsePage(value?: string) {
     const parsed = Number(value);
@@ -45,41 +65,91 @@ export default async function UserProductsPage({
     const userId = session.user.id;
     const currentPage = parsePage(params.page);
     const skip = (currentPage - 1) * PAGE_SIZE;
+    const searchQuery = params.q?.trim() || "";
+    const sortField = parseProductSortField(params.sort);
+    const sortDirection = parseSortDirection(params.dir);
 
-    const where = {
+    const baseWhere = {
         ownerUserId: userId,
     } as const;
+    const productTableWhere: Prisma.ProductWhereInput = searchQuery
+        ? {
+              ...baseWhere,
+              OR: [
+                  {
+                      title: {
+                          contains: searchQuery,
+                          mode: Prisma.QueryMode.insensitive,
+                      },
+                  },
+                  {
+                      description: {
+                          contains: searchQuery,
+                          mode: Prisma.QueryMode.insensitive,
+                      },
+                  },
+                  {
+                      category: {
+                          contains: searchQuery,
+                          mode: Prisma.QueryMode.insensitive,
+                      },
+                  },
+                  {
+                      productTags: {
+                          some: {
+                              tag: {
+                                  name: {
+                                      contains: searchQuery,
+                                      mode: Prisma.QueryMode.insensitive,
+                                  },
+                              },
+                          },
+                      },
+                  },
+              ],
+          }
+        : baseWhere;
 
     const [
         products,
-        totalProducts,
+        filteredTotalProducts,
+        totalCatalogProducts,
         deliveryProductsCount,
         subscriptionProductsCount,
         lowStockCount,
         categoryRows,
+        tagRows,
     ] = await Promise.all([
         prisma.product.findMany({
-            where,
-            orderBy: [{ createdAt: "desc" }],
+            where: productTableWhere,
+            include: {
+                productTags: {
+                    include: {
+                        tag: true,
+                    },
+                },
+            },
+            orderBy: buildProductsOrderBy(sortField, sortDirection),
             skip,
             take: PAGE_SIZE,
         }),
-        prisma.product.count({ where }),
+        prisma.product.count({ where: productTableWhere }),
+        prisma.product.count({ where: baseWhere }),
         prisma.product.count({
             where: {
-                ...where,
+                ...baseWhere,
                 productType: ProductType.ONE_TIME,
             },
         }),
         prisma.product.count({
             where: {
-                ...where,
+                ...baseWhere,
                 productType: ProductType.SUBSCRIPTION,
             },
         }),
         prisma.product.count({
             where: {
-                ...where,
+                ...baseWhere,
                 stockQuantity: {
                     not: null,
                     lte: 5,
@@ -88,7 +158,7 @@ export default async function UserProductsPage({
         }),
         prisma.product.findMany({
             where: {
-                ...where,
+                ...baseWhere,
                 category: {
                     not: null,
                 },
@@ -101,16 +171,46 @@ export default async function UserProductsPage({
                 category: "asc",
             },
         }),
+        prisma.tag.findMany({
+            where: {
+                subscriberId: userId,
+            },
+            select: {
+                id: true,
+                name: true,
+                _count: {
+                    select: {
+                        productTags: true,
+                    },
+                },
+            },
+            orderBy: {
+                name: "asc",
+            },
+        }),
     ]);
 
-    const totalPages = Math.max(1, Math.ceil(totalProducts / PAGE_SIZE));
+    const totalPages = Math.max(1, Math.ceil(filteredTotalProducts / PAGE_SIZE));
 
-    if (totalProducts > 0 && currentPage > totalPages) {
-        redirect(`/dashboard/products?page=${totalPages}`);
+    if (filteredTotalProducts > 0 && currentPage > totalPages) {
+        redirect(
+            buildProductsPageHref({
+                page: totalPages,
+                query: searchQuery,
+                sortField,
+                sortDirection,
+            }),
+        );
     }
+    const productRows = products as ProductRow[];
     const categories = categoryRows
         .map((row) => row.category?.trim() || "")
         .filter(Boolean);
+    const availableTags = tagRows.map((tag) => ({
+        id: tag.id,
+        name: tag.name,
+        productCount: tag._count.productTags,
+    }));
 
     return (
         <div className="space-y-8">
@@ -127,7 +227,10 @@ export default async function UserProductsPage({
                     </p>
                 </div>
 
-                <ProductFormDialog categories={categories} />
+                <ProductFormDialog
+                    categories={categories}
+                    availableTags={availableTags}
+                />
             </div>
 
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -139,7 +242,7 @@ export default async function UserProductsPage({
                         </CardTitle>
                     </CardHeader>
                     <CardContent className="pt-0 text-3xl font-bold text-slate-900">
-                        {totalProducts}
+                        {totalCatalogProducts}
                     </CardContent>
                 </Card>
 
@@ -206,12 +309,35 @@ export default async function UserProductsPage({
                 </CardContent>
             </Card>
 
+            <Card className="border-none shadow-sm">
+                <CardContent className="flex flex-col gap-4 py-5 lg:flex-row lg:items-center lg:justify-between">
+                    <div className="w-full max-w-xl">
+                        <ProductsToolbar initialQuery={searchQuery} />
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                        <Badge variant="outline">
+                            {filteredTotalProducts} resultado(s)
+                        </Badge>
+                        {searchQuery ? (
+                            <Badge variant="secondary">
+                                Busca: {searchQuery}
+                            </Badge>
+                        ) : null}
+                    </div>
+                </CardContent>
+            </Card>
+
             <ProductsDataTable
-                products={products}
+                products={productRows}
+                categories={categories}
+                availableTags={availableTags}
                 currentPage={Math.min(currentPage, totalPages)}
                 totalPages={totalPages}
-                totalProducts={totalProducts}
+                totalProducts={filteredTotalProducts}
                 pageSize={PAGE_SIZE}
+                searchQuery={searchQuery}
+                sortField={sortField}
+                sortDirection={sortDirection}
             />
         </div>
     );

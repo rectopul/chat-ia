@@ -1,6 +1,19 @@
 import { ProductType } from "@prisma/client";
 
-export type CreateProductFormState = {
+export type ProductFormValues = {
+    title: string;
+    description: string;
+    imageUrl: string;
+    category: string;
+    tags: string[];
+    price: string;
+    promotionalPrice: string;
+    stockQuantity: string;
+    productType: ProductType;
+    subscriberDays: string;
+};
+
+export type ProductFormState = {
     status: "idle" | "success" | "error";
     formError: string | null;
     fieldErrors: {
@@ -8,35 +21,35 @@ export type CreateProductFormState = {
         description?: string;
         imageUrl?: string;
         category?: string;
+        tags?: string;
         price?: string;
+        promotionalPrice?: string;
         stockQuantity?: string;
         productType?: string;
         subscriberDays?: string;
     };
-    values: {
-        title: string;
-        description: string;
-        imageUrl: string;
-        category: string;
-        price: string;
-        stockQuantity: string;
-        productType: ProductType;
-        subscriberDays: string;
-    };
+    values: ProductFormValues;
 };
 
-export const initialCreateProductFormState: CreateProductFormState = {
+export const initialProductFormValues: ProductFormValues = {
+    title: "",
+    description: "",
+    imageUrl: "",
+    category: "",
+    tags: [],
+    price: "",
+    promotionalPrice: "",
+    stockQuantity: "",
+    productType: ProductType.ONE_TIME,
+    subscriberDays: "",
+};
+
+export const initialProductFormState: ProductFormState = {
     status: "idle",
     formError: null,
     fieldErrors: {},
-    values: {
-        title: "",
-        description: "",
-        imageUrl: "",
-        category: "",
-        price: "",
-        stockQuantity: "",
-        productType: ProductType.ONE_TIME,
-        subscriberDays: "",
-    },
+    values: initialProductFormValues,
 };
+
+export type CreateProductFormState = ProductFormState;
+export const initialCreateProductFormState = initialProductFormState;
