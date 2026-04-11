@@ -1,11 +1,13 @@
 import Link from "next/link";
-import { Product, ProductType } from "@prisma/client";
+import { Prisma, ProductType } from "@prisma/client";
 import {
+    ArrowDown,
+    ArrowUp,
+    ArrowUpDown,
     ChevronLeft,
     ChevronRight,
     Image as ImageIcon,
     PackageSearch,
-    Trash2,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,16 +21,32 @@ import {
     TableRow,
 } from "@/components/ui/table";
 import {
-    deleteUserProductAction,
-    toggleUserProductActiveAction,
-} from "@/app/dashboard/products/actions";
+    ProductSortField,
+    SortDirection,
+    buildProductsPageHref,
+} from "@/app/dashboard/products/query-params";
+import { ProductRowActions } from "./product-row-actions";
+import { ProductTagOption } from "./product-tags-input";
 
 type ProductsDataTableProps = {
-    products: Product[];
+    products: Prisma.ProductGetPayload<{
+        include: {
+            productTags: {
+                include: {
+                    tag: true;
+                };
+            };
+        };
+    }>[];
+    categories: string[];
+    availableTags: ProductTagOption[];
     currentPage: number;
     totalPages: number;
     totalProducts: number;
     pageSize: number;
+    searchQuery: string;
+    sortField: ProductSortField;
+    sortDirection: SortDirection;
 };
 
 function formatMoney(valueCents: number) {
@@ -36,6 +54,14 @@ function formatMoney(valueCents: number) {
         minimumFractionDigits: 2,
         maximumFractionDigits: 2,
     })}`;
+}
+
+function hasPromotionalPrice(product: ProductsDataTableProps["products"][number]) {
+    return (
+        typeof product.promotionalPriceCents === "number" &&
+        product.promotionalPriceCents > 0 &&
+        product.promotionalPriceCents < product.priceCents
+    );
 }
 
 function formatStock(stockQuantity: number | null) {
@@ -58,8 +84,67 @@ function formatDate(date: Date) {
     }).format(date);
 }
 
-function buildPageHref(page: number) {
-    return `/dashboard/products?page=${page}`;
+function buildPageHref(input: {
+    page: number;
+    query: string;
+    sortField: ProductSortField;
+    sortDirection: SortDirection;
+}) {
+    return buildProductsPageHref(input);
+}
+
+function SortIndicator({
+    active,
+    direction,
+}: {
+    active: boolean;
+    direction: SortDirection;
+}) {
+    if (!active) {
+        return <ArrowUpDown className="h-3.5 w-3.5 text-slate-400" />;
+    }
+
+    return direction === "asc" ? (
+        <ArrowUp className="h-3.5 w-3.5 text-primary" />
+    ) : (
+        <ArrowDown className="h-3.5 w-3.5 text-primary" />
+    );
+}
+
+function SortableHead({
+    label,
+    field,
+    searchQuery,
+    currentSortField,
+    currentSortDirection,
+}: {
+    label: string;
+    field: ProductSortField;
+    searchQuery: string;
+    currentSortField: ProductSortField;
+    currentSortDirection: SortDirection;
+}) {
+    const isActive = currentSortField === field;
+    const nextDirection =
+        isActive && currentSortDirection === "asc" ? "desc" : "asc";
+    const href = buildProductsPageHref({
+        page: 1,
+        query: searchQuery,
+        sortField: field,
+        sortDirection: nextDirection,
+    });
+
+    return (
+        <TableHead>
+            <Link
+                href={href}
+                className="inline-flex items-center gap-1.5 text-slate-600 transition hover:text-slate-900"
+            >
+                <span>{label}</span>
+                <SortIndicator active={isActive} direction={currentSortDirection} />
+            </Link>
+        </TableHead>
+    );
 }
 
 function ProductImagePreview({
@@ -88,10 +173,15 @@ function ProductImagePreview({
 
 export function ProductsDataTable({
     products,
+    categories,
+    availableTags,
     currentPage,
     totalPages,
     totalProducts,
     pageSize,
+    searchQuery,
+    sortField,
+    sortDirection,
 }: ProductsDataTableProps) {
     if (!products.length) {
         return (
@@ -102,12 +192,23 @@ export function ProductsDataTable({
                     </div>
                     <div className="space-y-1">
                         <p className="text-lg font-semibold text-slate-900">
-                            Nenhum produto cadastrado ainda
+                            {searchQuery
+                                ? "Nenhum produto encontrado"
+                                : "Nenhum produto cadastrado ainda"}
                         </p>
                         <p className="max-w-md text-sm text-slate-500">
-                            Use o botao <span className="font-medium">Novo produto</span>{" "}
-                            para montar o catalogo da loja e alimentar o
-                            atendimento no WhatsApp.
+                            {searchQuery
+                                ? "Tente outro termo de busca ou ajuste a ordenacao para localizar o item desejado."
+                                : (
+                                      <>
+                                          Use o botao{" "}
+                                          <span className="font-medium">
+                                              Novo produto
+                                          </span>{" "}
+                                          para montar o catalogo da loja e alimentar o
+                                          atendimento no WhatsApp.
+                                      </>
+                                  )}
                         </p>
                     </div>
                 </CardContent>
@@ -137,13 +238,50 @@ export function ProductsDataTable({
                 <Table>
                     <TableHeader className="bg-slate-50/70">
                         <TableRow>
-                            <TableHead className="min-w-[280px]">Produto</TableHead>
-                            <TableHead>Categoria</TableHead>
+                            <SortableHead
+                                label="Produto"
+                                field="title"
+                                searchQuery={searchQuery}
+                                currentSortField={sortField}
+                                currentSortDirection={sortDirection}
+                            />
+                            <SortableHead
+                                label="Categoria"
+                                field="category"
+                                searchQuery={searchQuery}
+                                currentSortField={sortField}
+                                currentSortDirection={sortDirection}
+                            />
+                            <TableHead>Tags</TableHead>
                             <TableHead>Tipo</TableHead>
-                            <TableHead>Preco</TableHead>
-                            <TableHead>Estoque</TableHead>
-                            <TableHead>Status</TableHead>
-                            <TableHead>Criado em</TableHead>
+                            <SortableHead
+                                label="Preco"
+                                field="price"
+                                searchQuery={searchQuery}
+                                currentSortField={sortField}
+                                currentSortDirection={sortDirection}
+                            />
+                            <SortableHead
+                                label="Estoque"
+                                field="stock"
+                                searchQuery={searchQuery}
+                                currentSortField={sortField}
+                                currentSortDirection={sortDirection}
+                            />
+                            <SortableHead
+                                label="Status"
+                                field="status"
+                                searchQuery={searchQuery}
+                                currentSortField={sortField}
+                                currentSortDirection={sortDirection}
+                            />
+                            <SortableHead
+                                label="Criado em"
+                                field="createdAt"
+                                searchQuery={searchQuery}
+                                currentSortField={sortField}
+                                currentSortDirection={sortDirection}
+                            />
                             <TableHead className="text-right">Acoes</TableHead>
                         </TableRow>
                     </TableHeader>
@@ -172,6 +310,25 @@ export function ProductsDataTable({
                                         {product.category?.trim() || "Sem categoria"}
                                     </Badge>
                                 </TableCell>
+                                <TableCell className="align-top">
+                                    <div className="flex max-w-xs flex-wrap gap-1.5">
+                                        {product.productTags.length ? (
+                                            product.productTags.map((entry) => (
+                                                <Badge
+                                                    key={entry.tag.id}
+                                                    variant="outline"
+                                                    className="rounded-full"
+                                                >
+                                                    {entry.tag.name}
+                                                </Badge>
+                                            ))
+                                        ) : (
+                                            <span className="text-sm text-slate-400">
+                                                Sem tags
+                                            </span>
+                                        )}
+                                    </div>
+                                </TableCell>
                                 <TableCell>
                                     <div className="space-y-2">
                                         <Badge
@@ -196,8 +353,23 @@ export function ProductsDataTable({
                                             )}
                                     </div>
                                 </TableCell>
-                                <TableCell className="font-medium text-slate-900">
-                                    {formatMoney(product.priceCents)}
+                                <TableCell className="align-top">
+                                    {hasPromotionalPrice(product) ? (
+                                        <div className="space-y-1">
+                                            <p className="font-semibold text-emerald-700">
+                                                {formatMoney(
+                                                    product.promotionalPriceCents!,
+                                                )}
+                                            </p>
+                                            <p className="text-xs text-slate-400 line-through">
+                                                {formatMoney(product.priceCents)}
+                                            </p>
+                                        </div>
+                                    ) : (
+                                        <span className="font-medium text-slate-900">
+                                            {formatMoney(product.priceCents)}
+                                        </span>
+                                    )}
                                 </TableCell>
                                 <TableCell>
                                     <Badge
@@ -223,31 +395,12 @@ export function ProductsDataTable({
                                     {formatDate(product.createdAt)}
                                 </TableCell>
                                 <TableCell className="text-right">
-                                    <div className="flex justify-end gap-2">
-                                        <form
-                                            action={toggleUserProductActiveAction.bind(
-                                                null,
-                                                product.id,
-                                                product.isActive,
-                                            )}
-                                        >
-                                            <Button size="sm" variant="outline">
-                                                {product.isActive
-                                                    ? "Desativar"
-                                                    : "Ativar"}
-                                            </Button>
-                                        </form>
-                                        <form action={deleteUserProductAction}>
-                                            <input
-                                                type="hidden"
-                                                name="id"
-                                                value={product.id}
-                                            />
-                                            <Button size="sm" variant="outline">
-                                                <Trash2 className="h-4 w-4" />
-                                                Excluir
-                                            </Button>
-                                        </form>
+                                    <div className="flex justify-end">
+                                        <ProductRowActions
+                                            product={product}
+                                            categories={categories}
+                                            availableTags={availableTags}
+                                        />
                                     </div>
                                 </TableCell>
                             </TableRow>
@@ -268,7 +421,14 @@ export function ProductsDataTable({
                             </Button>
                         ) : (
                             <Button asChild variant="outline" size="sm">
-                                <Link href={buildPageHref(currentPage - 1)}>
+                                <Link
+                                    href={buildPageHref({
+                                        page: currentPage - 1,
+                                        query: searchQuery,
+                                        sortField,
+                                        sortDirection,
+                                    })}
+                                >
                                     <ChevronLeft className="h-4 w-4" />
                                     Anterior
                                 </Link>
@@ -282,7 +442,14 @@ export function ProductsDataTable({
                             </Button>
                         ) : (
                             <Button asChild variant="outline" size="sm">
-                                <Link href={buildPageHref(currentPage + 1)}>
+                                <Link
+                                    href={buildPageHref({
+                                        page: currentPage + 1,
+                                        query: searchQuery,
+                                        sortField,
+                                        sortDirection,
+                                    })}
+                                >
                                     Proxima
                                     <ChevronRight className="h-4 w-4" />
                                 </Link>

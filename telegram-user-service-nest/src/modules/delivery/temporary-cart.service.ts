@@ -11,6 +11,7 @@ import {
     DELIVERY_CART_TTL_SECONDS,
 } from "./delivery.constants";
 import { ProductService, SearchProductsInput } from "./product.service";
+import { getEffectiveProductPriceCents } from "./product-pricing";
 
 const IORedis = require("ioredis");
 
@@ -117,9 +118,10 @@ export class TemporaryCartService implements OnModuleDestroy {
         this.assertProductAvailability(product, nextQuantity);
 
         if (existingItem) {
+            const effectivePriceCents = getEffectiveProductPriceCents(product);
             existingItem.quantity = nextQuantity;
-            existingItem.unitPriceCents = product.priceCents;
-            existingItem.subtotalCents = product.priceCents * nextQuantity;
+            existingItem.unitPriceCents = effectivePriceCents;
+            existingItem.subtotalCents = effectivePriceCents * nextQuantity;
             existingItem.stockQuantity = product.stockQuantity;
             existingItem.category = product.category;
         } else {
@@ -166,8 +168,8 @@ export class TemporaryCartService implements OnModuleDestroy {
         }
 
         item.quantity = normalizedQuantity;
-        item.unitPriceCents = product.priceCents;
-        item.subtotalCents = product.priceCents * normalizedQuantity;
+        item.unitPriceCents = getEffectiveProductPriceCents(product);
+        item.subtotalCents = item.unitPriceCents * normalizedQuantity;
         item.stockQuantity = product.stockQuantity;
         item.category = product.category;
 
@@ -289,13 +291,15 @@ export class TemporaryCartService implements OnModuleDestroy {
     }
 
     private toCartItem(product: Product, quantity: number): TemporaryCartItem {
+        const effectivePriceCents = getEffectiveProductPriceCents(product);
+
         return {
             productId: product.id,
             title: product.title,
             category: product.category,
             quantity,
-            unitPriceCents: product.priceCents,
-            subtotalCents: product.priceCents * quantity,
+            unitPriceCents: effectivePriceCents,
+            subtotalCents: effectivePriceCents * quantity,
             stockQuantity: product.stockQuantity,
         };
     }

@@ -26,6 +26,7 @@ type ParsedIncomingMessage = {
     chatId: string | null;
     text: string | null;
     mediaUrl: string | null;
+    mediaMimeType: string | null;
     messageType: WhatsappMessageType;
     location:
         | {
@@ -200,6 +201,7 @@ export class EvolutionWebhookService {
                 chatId: parsed.chatId,
                 text: parsed.text ?? undefined,
                 mediaUrl: parsed.mediaUrl,
+                mediaMimeType: parsed.mediaMimeType,
                 messageType: parsed.messageType,
                 payload: {
                     source: "evolution-webhook",
@@ -391,6 +393,7 @@ export class EvolutionWebhookService {
         const message = this.asRecord(record.message);
         const text = this.extractMessageText(message);
         const mediaUrl = this.extractMediaUrl(message);
+        const mediaMimeType = this.extractMediaMimeType(message);
         const location = this.extractLocation(message);
         const messageType = this.detectMessageType(message, location);
 
@@ -398,6 +401,7 @@ export class EvolutionWebhookService {
             chatId: remoteJid,
             text,
             mediaUrl,
+            mediaMimeType,
             messageType,
             location,
             messageId: this.normalizeString(record.key?.id),
@@ -506,6 +510,26 @@ export class EvolutionWebhookService {
             const mediaUrl = this.normalizeString(candidate);
             if (mediaUrl) {
                 return mediaUrl;
+            }
+        }
+
+        return null;
+    }
+
+    private extractMediaMimeType(
+        message: EvolutionWebhookPayload,
+    ): string | null {
+        const candidates = [
+            message.audioMessage?.mimetype,
+            message.imageMessage?.mimetype,
+            message.videoMessage?.mimetype,
+            message.documentMessage?.mimetype,
+        ];
+
+        for (const candidate of candidates) {
+            const mimeType = this.normalizeMimeType(candidate);
+            if (mimeType) {
+                return mimeType;
             }
         }
 
@@ -664,6 +688,15 @@ export class EvolutionWebhookService {
             .replace(/^_+|_+$/g, "")
             .toUpperCase();
 
+        return normalized || null;
+    }
+
+    private normalizeMimeType(value: unknown): string | null {
+        if (typeof value !== "string") {
+            return null;
+        }
+
+        const normalized = value.split(";")[0]?.trim().toLowerCase();
         return normalized || null;
     }
 }

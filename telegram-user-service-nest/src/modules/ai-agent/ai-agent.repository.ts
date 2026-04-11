@@ -9,6 +9,7 @@ import {
     MessageTemplate,
     MessageTemplateMedia,
     BotAccount,
+    Prisma,
     Product,
     ProductType,
     Sale,
@@ -35,11 +36,22 @@ type CreateChatMessageInput = {
 
 export type WhatsappInstanceAccessContext = {
     instanceId: string;
+    instanceName: string;
     ownerUserId: string;
     personaName: string;
     subscriptionStatus: SubscriptionStatus | null;
     hasActiveAccess: boolean;
 };
+
+export type DeliveryCatalogProduct = Prisma.ProductGetPayload<{
+    include: {
+        productTags: {
+            include: {
+                tag: true;
+            };
+        };
+    };
+}>;
 
 @Injectable()
 export class AiAgentRepository {
@@ -125,12 +137,19 @@ export class AiAgentRepository {
 
     async getActiveDeliveryProductsForOwner(
         ownerUserId: string,
-    ): Promise<Product[]> {
+    ): Promise<DeliveryCatalogProduct[]> {
         return this.prisma.product.findMany({
             where: {
                 isActive: true,
                 ownerUserId,
                 productType: ProductType.ONE_TIME,
+            },
+            include: {
+                productTags: {
+                    include: {
+                        tag: true,
+                    },
+                },
             },
             orderBy: [{ category: "asc" }, { title: "asc" }],
         });
@@ -378,6 +397,7 @@ export class AiAgentRepository {
 
         return {
             instanceId: instance.id,
+            instanceName: instance.instanceName,
             ownerUserId: instance.userId,
             personaName: instance.instanceName.trim() || instance.user.name?.trim() || "Clara",
             subscriptionStatus: instance.user.subscription?.status ?? null,

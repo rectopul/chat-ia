@@ -28,6 +28,10 @@ import {
 import { Queue } from "bullmq";
 import { DeliveryOrderService } from "../delivery/delivery-order.service";
 import {
+    getEffectiveProductPriceCents,
+    hasValidPromotionalPrice,
+} from "../delivery/product-pricing";
+import {
     ProductSearchResult,
     ProductService,
 } from "../delivery/product.service";
@@ -36,9 +40,13 @@ import {
     TemporaryCartItem,
     TemporaryCartService,
 } from "../delivery/temporary-cart.service";
-import { AiAgentRepository } from "./ai-agent.repository";
+import {
+    AiAgentRepository,
+    DeliveryCatalogProduct,
+} from "./ai-agent.repository";
 import { SubscriptionService } from "../subscription/subscription.service";
 import { isAiServiceBusyError } from "./ai-error.utils";
+import { AiAudioService } from "./ai-audio.service";
 
 export const AI_RESPONSE_QUEUE_NAME = "ai-response";
 export const AI_RESPONSE_JOB_NAME = "generate-ai-response";
@@ -74,6 +82,8 @@ const GROCERY_SYSTEM_PROMPT = [
     "If the quantity is unclear, do not update the cart and ask a short follow-up question asking for the quantity.",
     "When the quantity is clear, prepare cart operations using only valid product IDs.",
     "If it feels natural, suggest one or two related products from the related suggestions list.",
+    "Utilize as tags dos produtos para fazer recomendacoes inteligentes e responder a buscas por caracteristicas (ex: se o cliente pedir algo 'saudavel' ou 'para churrasco', filtre pelas tags correspondentes).",
+    "When a product has a promotional price in the catalog, treat that as the current selling price.",
     "Return only valid JSON with replyText, cartOperations, and suggestedProductIds.",
 ].join(" ");
 
@@ -206,11 +216,14 @@ export interface AiDontSellRequest {
 
 export interface WhatsappAiRequest {
     instanceId: string;
+    instanceName?: string;
     chatId: string;
     ownerUserId: string;
     personaName: string;
+    messageId?: string | null;
     messageText?: string;
     mediaUrl?: string | null;
+    mediaMimeType?: string | null;
     messageType?: ChatMessageType;
 }
 
@@ -273,6 +286,7 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
     constructor(
         private readonly configService: ConfigService,
         private readonly repository: AiAgentRepository,
+        private readonly aiAudioService: AiAudioService,
         private readonly subscriptionService: SubscriptionService,
         private readonly productService: ProductService,
         private readonly temporaryCartService: TemporaryCartService,
@@ -779,7 +793,10 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
     ): Promise<WhatsappResolvedInput> {
         if (data.messageType === ChatMessageType.AUDIO && data.mediaUrl) {
             const transcription = await this.transcribeWhatsappAudio(
+                data.instanceName,
+                data.messageId,
                 data.mediaUrl,
+                data.mediaMimeType,
             );
             return {
                 messageText: transcription.transcript,
@@ -803,18 +820,28 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
         };
     }
 
-    private async transcribeWhatsappAudio(mediaUrl: string): Promise<{
+    private async transcribeWhatsappAudio(
+        instanceName: string | undefined,
+        messageId: string | null | undefined,
+        mediaUrl: string,
+        mimeTypeHint?: string | null,
+    ): Promise<{
         transcript: string;
         usage: AiUsageSnapshot | null;
     }> {
-        const audio = await this.fetchRemoteBinary(mediaUrl);
+        const audio = await this.aiAudioService.fetchWhatsappAudio({
+            instanceName: instanceName?.trim() || "unknown-instance",
+            messageId,
+            mediaUrl,
+            mimeTypeHint,
+        });
         const execution = await this.generateContentWithFallback({
             scope: "transcription",
             primaryModelName: this.getTranscriptionModelName(),
             fallbackModelName: this.getTranscriptionFallbackModelName(),
             request: (model) =>
                 model.generateContent([
-                    "Transcreva este audio em portugues do Brasil. Responda apenas com a transcricao limpa, sem aspas, sem comentarios e sem formatacao extra.",
+                    "Transcreva este audio em portugues do Brasil. Responda apenas com a transcricao limpa, sem aspas, sem comentarios e sem formatacao extra. Se o audio estiver indisponivel, corrompido, vazio ou ilegivel, responda exatamente com TRANSCRICAO_INDISPONIVEL.",
                     {
                         inlineData: {
                             data: audio.buffer.toString("base64"),
@@ -830,6 +857,10 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
             throw new Error("Gemini returned an empty audio transcription");
         }
 
+        if (this.isUnavailableWhatsappAudioTranscript(transcript)) {
+            throw new Error("WhatsApp audio transcription is unavailable");
+        }
+
         return {
             transcript,
             usage: this.extractUsageSnapshot(
@@ -839,38 +870,16 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
         };
     }
 
-    private async fetchRemoteBinary(
-        mediaUrl: string,
-    ): Promise<{ buffer: Buffer; mimeType: string }> {
-        const response = await axios.get<ArrayBuffer>(mediaUrl, {
-            responseType: "arraybuffer",
-            timeout: Number(
-                this.configService.get("WHATSAPP_MEDIA_DOWNLOAD_TIMEOUT_MS") ??
-                    15_000,
-            ),
-        });
-        const headerContentType = response.headers["content-type"];
-        const mimeType =
-            this.normalizeRemoteMimeType(headerContentType) ??
-            this.inferMimeTypeFromUrl(mediaUrl) ??
-            "audio/ogg";
-
-        return {
-            buffer: Buffer.from(response.data),
-            mimeType,
-        };
-    }
-
     private async generateWhatsappGroceryReply(input: {
         personaName: string;
         history: Array<{
             role: ChatMessageRole;
             content: string;
         }>;
-        catalogProducts: Product[];
+        catalogProducts: DeliveryCatalogProduct[];
         matchedProducts: ProductSearchResult[];
         currentCart: TemporaryCart;
-        relatedProducts: Product[];
+        relatedProducts: DeliveryCatalogProduct[];
     }): Promise<GroceryAiStructuredResponse> {
         const execution = await this.generateContentWithFallback({
             scope: "whatsapp",
@@ -916,10 +925,10 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
 
     private buildWhatsappGroceryRuntimeContext(input: {
         personaName: string;
-        catalogProducts: Product[];
+        catalogProducts: DeliveryCatalogProduct[];
         matchedProducts: ProductSearchResult[];
         currentCart: TemporaryCart;
-        relatedProducts: Product[];
+        relatedProducts: DeliveryCatalogProduct[];
     }): string {
         const catalogLines = input.catalogProducts.length
             ? input.catalogProducts
@@ -967,6 +976,7 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
             "- Se o cliente pedir mais de um item, voce pode enviar varias operacoes.",
             "- Se o cliente disser 'mais', prefira mode='add'. Caso contrario, use mode='set'.",
             "- Se o cliente responder apenas com confirmacoes curtas como 'sim', 'correto' ou 'isso mesmo', nao repita a mesma pergunta de quantidade.",
+            "- Use as tags dos produtos para entender caracteristicas como saudavel, churrasco, gelado, premium, integral ou zero acucar.",
             "- suggestedProductIds deve usar somente IDs reais do catalogo relacionado. Se nao fizer sentido, envie [].",
         ].join("\n");
     }
@@ -1205,12 +1215,12 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
     }
 
     private selectRelatedProducts(
-        catalogProducts: Product[],
-        anchorProducts: Product[],
+        catalogProducts: DeliveryCatalogProduct[],
+        anchorProducts: DeliveryCatalogProduct[],
         currentCart: TemporaryCart,
         suggestedProductIds: string[] = [],
-    ): Product[] {
-        const relatedProducts: Product[] = [];
+    ): DeliveryCatalogProduct[] {
+        const relatedProducts: DeliveryCatalogProduct[] = [];
         const excludedIds = new Set<string>([
             ...anchorProducts.map((product) => product.id),
             ...currentCart.items.map((item) => item.productId),
@@ -1218,7 +1228,7 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
         const catalogById = new Map(
             catalogProducts.map((product) => [product.id, product]),
         );
-        const pushProduct = (product?: Product | null) => {
+        const pushProduct = (product?: DeliveryCatalogProduct | null) => {
             if (!product || excludedIds.has(product.id) || !product.isActive) {
                 return;
             }
@@ -1247,6 +1257,7 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
                     sourceProduct.title,
                     sourceProduct.description ?? "",
                     sourceProduct.category ?? "",
+                    ...this.getDeliveryProductTagNames(sourceProduct),
                 ].join(" "),
             );
 
@@ -1277,6 +1288,7 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
                                 product.title,
                                 product.description ?? "",
                                 product.category ?? "",
+                                ...this.getDeliveryProductTagNames(product),
                             ].join(" "),
                         );
 
@@ -1296,17 +1308,17 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
     }
 
     private resolveMentionedProducts(
-        catalogProducts: Product[],
+        catalogProducts: DeliveryCatalogProduct[],
         matchedProducts: ProductSearchResult[],
-    ): Product[] {
+    ): DeliveryCatalogProduct[] {
         const matchedIds = new Set(matchedProducts.map((product) => product.id));
         return catalogProducts.filter((product) => matchedIds.has(product.id));
     }
 
     private resolveCartProducts(
-        catalogProducts: Product[],
+        catalogProducts: DeliveryCatalogProduct[],
         cart: TemporaryCart,
-    ): Product[] {
+    ): DeliveryCatalogProduct[] {
         const cartIds = new Set(cart.items.map((item) => item.productId));
         return catalogProducts.filter((product) => cartIds.has(product.id));
     }
@@ -1416,7 +1428,7 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
         throw new Error("Unterminated JSON object in model response");
     }
 
-    private buildCatalogLine(product: Product): string {
+    private buildCatalogLine(product: DeliveryCatalogProduct): string {
         const stockText =
             product.stockQuantity === null
                 ? "estoque: sob consulta"
@@ -1429,8 +1441,13 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
         const category = product.category?.trim()
             ? ` | categoria: ${product.category.trim()}`
             : "";
+        const tags = this.getDeliveryProductTagNames(product);
+        const effectivePriceCents = getEffectiveProductPriceCents(product);
+        const promotionalLabel = hasValidPromotionalPrice(product)
+            ? ` (de ${this.formatPrice(product.priceCents)})`
+            : "";
 
-        return `- id: ${product.id} | nome: ${product.title} | preco: ${this.formatPrice(product.priceCents)} | ${stockText}${category}${description}`;
+        return `- id: ${product.id} | nome: ${product.title} | preco: ${this.formatPrice(effectivePriceCents)}${promotionalLabel} [${tags.length ? tags.join(", ") : "sem tags"}] | ${stockText}${category}${description}`;
     }
 
     private buildSearchResultLine(product: ProductSearchResult): string {
@@ -1446,8 +1463,25 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
         const description = product.description?.trim()
             ? ` | descricao: ${product.description.trim()}`
             : "";
+        const tags = product.tags
+            .map((tag) => tag.trim())
+            .filter(Boolean);
+        const promotionalLabel =
+            typeof product.promotionalPriceCents === "number" &&
+            product.promotionalPriceCents > 0 &&
+            product.promotionalPriceCents < product.basePriceCents
+                ? ` (de ${this.formatPrice(product.basePriceCents)})`
+                : "";
 
-        return `- id: ${product.id} | nome: ${product.title} | preco: ${this.formatPrice(product.priceCents)} | ${stockText}${category}${description}`;
+        return `- id: ${product.id} | nome: ${product.title} | preco: ${this.formatPrice(product.priceCents)}${promotionalLabel} [${tags.length ? tags.join(", ") : "sem tags"}] | ${stockText}${category}${description}`;
+    }
+
+    private getDeliveryProductTagNames(
+        product: DeliveryCatalogProduct,
+    ): string[] {
+        return product.productTags
+            .map((entry) => entry.tag.name.trim())
+            .filter(Boolean);
     }
 
     private buildCartContext(cart: TemporaryCart): string {
@@ -1790,31 +1824,27 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
         ].some((keyword) => normalized.includes(keyword));
     }
 
-    private normalizeRemoteMimeType(value?: string | null): string | null {
-        const normalized = value?.split(";")[0]?.trim().toLowerCase();
-        return normalized || null;
-    }
+    private isUnavailableWhatsappAudioTranscript(transcript: string): boolean {
+        const normalized = this.normalizeText(transcript);
 
-    private inferMimeTypeFromUrl(mediaUrl: string): string | null {
-        const urlWithoutQuery = mediaUrl.split("?")[0]?.toLowerCase() ?? "";
-
-        if (urlWithoutQuery.endsWith(".ogg") || urlWithoutQuery.endsWith(".opus")) {
-            return "audio/ogg";
+        if (!normalized) {
+            return true;
         }
 
-        if (urlWithoutQuery.endsWith(".mp3")) {
-            return "audio/mpeg";
+        if (normalized === "transcricao_indisponivel") {
+            return true;
         }
 
-        if (urlWithoutQuery.endsWith(".wav")) {
-            return "audio/wav";
-        }
-
-        if (urlWithoutQuery.endsWith(".m4a")) {
-            return "audio/mp4";
-        }
-
-        return null;
+        return [
+            "nao tenho acesso a arquivos de audio",
+            "nao tenho acesso a servicos de transcricao",
+            "nao consigo transcrever",
+            "nao foi possivel transcrever",
+            "nao posso ouvir o audio",
+            "i do not have access to audio files",
+            "i cannot transcribe",
+            "i cant transcribe",
+        ].some((snippet) => normalized.includes(snippet));
     }
 
     private extractUsageSnapshot(
@@ -2305,14 +2335,19 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
         const productLines = products.length
             ? products
                   .map((product) => {
-                      const price = (product.priceCents / 100)
+                      const effectivePriceCents =
+                          getEffectiveProductPriceCents(product);
+                      const price = (effectivePriceCents / 100)
                           .toFixed(2)
                           .replace(".", ",");
                       const description = product.description?.trim()
                           ? ` | descricao: ${product.description.trim()}`
                           : "";
+                      const promotionalHint = hasValidPromotionalPrice(product)
+                          ? ` | preco original: ${this.formatPrice(product.priceCents)}`
+                          : "";
 
-                      return `- ${product.title} | preco: R$ ${price}${description}`;
+                      return `- ${product.title} | preco: R$ ${price}${promotionalHint}${description}`;
                   })
                   .join("\n")
             : "- Nenhum plano ativo no momento";

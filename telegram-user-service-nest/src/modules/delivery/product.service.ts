@@ -4,6 +4,7 @@ import {
 } from "@nestjs/common";
 import { Prisma, Product, ProductType } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
+import { getEffectiveProductPriceCents } from "./product-pricing";
 
 export type SearchProductsInput = {
     instanceId?: string;
@@ -19,11 +20,24 @@ export type ProductSearchResult = {
     title: string;
     description: string | null;
     category: string | null;
+    tags: string[];
+    basePriceCents: number;
+    promotionalPriceCents: number | null;
     priceCents: number;
     currency: string;
     stockQuantity: number | null;
     isAvailable: boolean;
 };
+
+type ProductWithTags = Prisma.ProductGetPayload<{
+    include: {
+        productTags: {
+            include: {
+                tag: true;
+            };
+        };
+    };
+}>;
 
 @Injectable()
 export class ProductService {
@@ -73,6 +87,18 @@ export class ProductService {
                             mode: Prisma.QueryMode.insensitive,
                         },
                     },
+                    {
+                        productTags: {
+                            some: {
+                                tag: {
+                                    name: {
+                                        contains: normalizedQuery,
+                                        mode: Prisma.QueryMode.insensitive,
+                                    },
+                                },
+                            },
+                        },
+                    },
                 ],
             });
         }
@@ -89,6 +115,13 @@ export class ProductService {
         const products = await this.prisma.product.findMany({
             where: {
                 AND: filters,
+            },
+            include: {
+                productTags: {
+                    include: {
+                        tag: true,
+                    },
+                },
             },
             orderBy: [
                 { category: "asc" },
@@ -156,13 +189,20 @@ export class ProductService {
         return Math.min(parsed, 50);
     }
 
-    private toSearchResult(product: Product): ProductSearchResult {
+    private toSearchResult(product: ProductWithTags): ProductSearchResult {
+        const effectivePriceCents = getEffectiveProductPriceCents(product);
+
         return {
             id: product.id,
             title: product.title,
             description: product.description,
             category: product.category,
-            priceCents: product.priceCents,
+            tags: product.productTags
+                .map((entry) => entry.tag.name.trim())
+                .filter(Boolean),
+            basePriceCents: product.priceCents,
+            promotionalPriceCents: product.promotionalPriceCents,
+            priceCents: effectivePriceCents,
             currency: product.currency,
             stockQuantity: product.stockQuantity,
             isAvailable:
