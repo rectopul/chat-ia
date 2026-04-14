@@ -1,4 +1,5 @@
 "use client";
+import Link from "next/link";
 import { useActionState, useEffect } from "react";
 import { Lock, Mail } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -86,13 +87,24 @@ export function LoginForm() {
                 </div>
             </CardContent>
             <CardFooter className="mt-4">
-                <Button
-                    type="submit"
-                    disabled={isPending}
-                    className="w-full h-11 font-bold uppercase tracking-widest bg-primary hover:bg-primary/90 transition-all shadow-lg shadow-primary/20"
-                >
-                    {isPending ? "Entrando..." : "Entrar no Painel"}
-                </Button>
+                <div className="w-full space-y-3">
+                    <Button
+                        type="submit"
+                        disabled={isPending}
+                        className="h-11 w-full bg-primary font-bold uppercase tracking-widest shadow-lg shadow-primary/20 transition-all hover:bg-primary/90"
+                    >
+                        {isPending ? "Entrando..." : "Entrar no Painel"}
+                    </Button>
+                    <p className="text-center text-sm text-slate-500">
+                        Ainda nao tem conta?{" "}
+                        <Link
+                            href="/register"
+                            className="font-medium text-primary underline-offset-4 hover:underline"
+                        >
+                            Criar cadastro
+                        </Link>
+                    </p>
+                </div>
             </CardFooter>
         </form>
     );

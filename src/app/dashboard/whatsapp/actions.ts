@@ -113,6 +113,46 @@ export async function updateManualStoreClosedAction(formData: FormData) {
     revalidatePath("/dashboard");
 }
 
+function parseMoneyInputToCents(value: FormDataEntryValue | null) {
+    const rawValue = String(value ?? "").trim();
+
+    if (!rawValue) {
+        return 0;
+    }
+
+    const sanitizedValue = rawValue.replace(/[^\d,.-]/g, "");
+    const normalizedValue = sanitizedValue.includes(",")
+        ? sanitizedValue.replace(/\./g, "").replace(",", ".")
+        : sanitizedValue;
+    const parsedValue = Number(normalizedValue);
+
+    if (!Number.isFinite(parsedValue) || parsedValue < 0) {
+        throw new Error("Informe um valor valido para a taxa de entrega.");
+    }
+
+    return Math.round(parsedValue * 100);
+}
+
+export async function updateDeliveryFeeAction(formData: FormData) {
+    const user = await requireSessionUser();
+    const deliveryFeeCents = parseMoneyInputToCents(
+        formData.get("deliveryFee"),
+    );
+
+    await prisma.user.update({
+        where: {
+            id: user.id,
+        },
+        data: {
+            deliveryFeeCents,
+        },
+    });
+
+    revalidatePath("/dashboard/whatsapp");
+    revalidatePath("/dashboard/orders");
+    revalidatePath("/dashboard");
+}
+
 function normalizeTime(value: FormDataEntryValue | null, fallback: string) {
     const normalizedValue = String(value ?? "").trim();
     return /^([01]\d|2[0-3]):([0-5]\d)$/.test(normalizedValue)

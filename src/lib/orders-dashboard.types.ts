@@ -21,6 +21,7 @@ export type DeliveryOrderCard = {
     customerWhatsappId: string;
     customerName: string | null;
     status: "PENDING" | "PREPARING" | "SHIPPED" | "DELIVERED";
+    deliveryFeeCents: number;
     totalCents: number;
     currency: string;
     deliveryAddress: string;

@@ -337,6 +337,29 @@ export default function OrderCardsDashboard({
 
                                     <div className="flex flex-col gap-4 border-t border-slate-100 pt-4 sm:flex-row sm:items-center sm:justify-between">
                                         <div>
+                                            {order.deliveryFeeCents > 0 ? (
+                                                <div className="mb-2 space-y-1 text-sm text-slate-500">
+                                                    <p>
+                                                        Itens:{" "}
+                                                        <span className="font-medium text-slate-700">
+                                                            {formatMoney(
+                                                                order.totalCents -
+                                                                    order.deliveryFeeCents,
+                                                                order.currency,
+                                                            )}
+                                                        </span>
+                                                    </p>
+                                                    <p>
+                                                        Taxa de entrega:{" "}
+                                                        <span className="font-medium text-slate-700">
+                                                            {formatMoney(
+                                                                order.deliveryFeeCents,
+                                                                order.currency,
+                                                            )}
+                                                        </span>
+                                                    </p>
+                                                </div>
+                                            ) : null}
                                             <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
                                                 Valor total
                                             </p>
