@@ -94,6 +94,7 @@ export class DeliveryOrderService {
             customerWhatsappId: input.whatsappId,
             customerName: customer?.displayName ?? existingOrder?.customerName ?? null,
             status: OrderStatus.PENDING,
+            deliveryFeeCents: cart.deliveryFeeCents,
             totalCents: cart.totalCents,
             currency: cart.currency,
             deliveryAddress,

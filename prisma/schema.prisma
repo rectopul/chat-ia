@@ -42,9 +42,12 @@ model User {
   id                     String           @id @default(cuid())
   name                   String?
   email                  String?          @unique
+  phone                  String?          @unique
   password               String?
+  termsAcceptedAt        DateTime?
   closedMessage          String?          @db.Text
   manualStoreClosed      Boolean          @default(false)
+  deliveryFeeCents       Int              @default(0)
   role                   UserRole         @default(CUSTOMER)
   accessStatus           UserAccessStatus @default(ACTIVE)
   aiMessageLimitOverride Int?
@@ -434,6 +437,7 @@ model Order {
   customerWhatsappId String
   customerName       String?
   status             OrderStatus @default(PENDING)
+  deliveryFeeCents   Int         @default(0)
   totalCents         Int
   currency           String      @default("BRL")
   deliveryAddress    String

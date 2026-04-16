@@ -18,6 +18,11 @@ type DebounceBuffer = {
     version: number;
 };
 
+type IncomingActivityState = {
+    token: string;
+    atMs: number;
+};
+
 @Injectable()
 export class WhatsappIncomingDebounceService implements OnModuleDestroy {
     private readonly logger = new Logger(WhatsappIncomingDebounceService.name);
@@ -158,8 +163,75 @@ export class WhatsappIncomingDebounceService implements OnModuleDestroy {
         };
     }
 
+    async markIncomingActivity(
+        instanceId: string,
+        chatId: string,
+        messageId?: string | null,
+    ): Promise<string> {
+        const token = this.buildIncomingActivityToken(messageId);
+        const state: IncomingActivityState = {
+            token,
+            atMs: Date.now(),
+        };
+
+        await this.redis.set(
+            this.buildIncomingActivityKey(instanceId, chatId),
+            JSON.stringify(state),
+            "PX",
+            Math.max(this.getDebounceDelayMs(), 5_000) * 24,
+        );
+
+        return token;
+    }
+
+    async shouldDispatchDeferredConfirmation(input: {
+        instanceId: string;
+        chatId: string;
+        expectedActivityToken: string;
+        minimumSilenceMs: number;
+    }): Promise<boolean> {
+        const raw = await this.redis.get(
+            this.buildIncomingActivityKey(input.instanceId, input.chatId),
+        );
+
+        if (!raw) {
+            return false;
+        }
+
+        try {
+            const parsed = JSON.parse(raw) as Partial<IncomingActivityState>;
+            const token =
+                typeof parsed.token === "string" ? parsed.token.trim() : "";
+            const atMs = Number(parsed.atMs ?? 0);
+
+            if (!token || token !== input.expectedActivityToken) {
+                return false;
+            }
+
+            if (!Number.isFinite(atMs) || atMs <= 0) {
+                return false;
+            }
+
+            return Date.now() - atMs >= input.minimumSilenceMs;
+        } catch (error) {
+            this.logger.warn(
+                `[shouldDispatchDeferredConfirmation] estado de atividade invalido instanceId=${input.instanceId} chatId=${input.chatId} motivo=${
+                    error instanceof Error ? error.message : String(error)
+                }`,
+            );
+            return false;
+        }
+    }
+
     private buildDebounceKey(instanceId: string, chatId: string): string {
         return `whatsapp:incoming:debounce:${instanceId}:${chatId}`;
+    }
+
+    private buildIncomingActivityKey(
+        instanceId: string,
+        chatId: string,
+    ): string {
+        return `whatsapp:incoming:activity:${instanceId}:${chatId}`;
     }
 
     private buildDebounceJobId(
@@ -298,5 +370,12 @@ export class WhatsappIncomingDebounceService implements OnModuleDestroy {
 
     private getDebounceDelayMs(): number {
         return getWhatsappIncomingDebounceDelayMs();
+    }
+
+    private buildIncomingActivityToken(messageId?: string | null): string {
+        const normalizedMessageId =
+            typeof messageId === "string" ? messageId.trim() : "";
+
+        return `${Date.now()}-${normalizedMessageId || Math.random().toString(36).slice(2, 10)}`;
     }
 }

@@ -82,15 +82,37 @@ const GROCERY_SYSTEM_PROMPT = [
     "If the quantity is unclear, do not update the cart and ask a short follow-up question asking for the quantity.",
     "When the quantity is clear, prepare cart operations using only valid product IDs.",
     "If it feels natural, suggest one or two related products from the related suggestions list.",
+    "If the user clearly wants to finish the purchase, close the order, or receive the delivery, set intent to FINALIZE_ORDER.",
+    "If intent is FINALIZE_ORDER and the cart already has items and the delivery address is filled, do not ask questions such as Posso finalizar.",
+    "When intent is FINALIZE_ORDER and the order is ready, reply assertively confirming that the order was sent to the kitchen or preparation.",
+    "If the user says ja falei para finalizar or equivalent, treat that as maximum priority to close the order immediately.",
+    "If the latest message came from audio transcription, prioritize the customer action over noisy transcription fragments, repeated words, or trailing garbage text.",
+    "Ignore transcription noise or repetitive fragments from consecutive audios when the customer intent is still clear.",
+    "If the history already shows that the customer confirmed the address and the order, and a new audio arrives with a confirmation tone, mark intent as FINALIZE_ORDER without asking for new validation.",
+    "When extracting a delivery address, remove confirmation or greeting terms such as sim, ta certo, ok, pode entregar, no endereco, and valeu.",
+    "The delivery address must contain only street name, number, neighborhood, and complement when available.",
+    "Example: user text='Sim, pode entregar na Rua X, 123, Centro' => cleaned address='Rua X, 123, Centro'.",
+    "When the runtime cart context includes a delivery fee, treat it as part of the order total.",
     "Utilize as tags dos produtos para fazer recomendacoes inteligentes e responder a buscas por caracteristicas (ex: se o cliente pedir algo 'saudavel' ou 'para churrasco', filtre pelas tags correspondentes).",
     "When a product has a promotional price in the catalog, treat that as the current selling price.",
-    "Return only valid JSON with replyText, cartOperations, and suggestedProductIds.",
+    "Return only valid JSON with intent, replyText, cartOperations, and suggestedProductIds.",
 ].join(" ");
 
 const GROCERY_RESPONSE_SCHEMA: ResponseSchema = {
     type: SchemaType.OBJECT,
-    required: ["replyText", "cartOperations", "suggestedProductIds"],
+    required: ["intent", "replyText", "cartOperations", "suggestedProductIds"],
     properties: {
+        intent: {
+            type: SchemaType.STRING,
+            enum: [
+                "ADD_TO_CART",
+                "REMOVE_FROM_CART",
+                "FINALIZE_ORDER",
+                "GENERAL_INQUIRY",
+            ],
+            description:
+                "Main customer intent for this turn.",
+        },
         replyText: {
             type: SchemaType.STRING,
             description:
@@ -197,6 +219,7 @@ export interface AiAgentReply {
     text: string;
     previewTemplateIds: string[];
     productIdToCharge?: string;
+    delayedConfirmationText?: string | null;
     usage?: AiUsageSnapshot | null;
 }
 
@@ -221,6 +244,7 @@ export interface WhatsappAiRequest {
     ownerUserId: string;
     personaName: string;
     messageId?: string | null;
+    debounceMessageCount?: number | null;
     messageText?: string;
     mediaUrl?: string | null;
     mediaMimeType?: string | null;
@@ -237,8 +261,15 @@ type GroceryCartOperation = {
     mode?: "set" | "add";
 };
 
+type GroceryIntent =
+    | "ADD_TO_CART"
+    | "REMOVE_FROM_CART"
+    | "FINALIZE_ORDER"
+    | "GENERAL_INQUIRY";
+
 type GroceryAiStructuredResponse = {
     replyText?: string;
+    intent?: GroceryIntent;
     cartOperations?: GroceryCartOperation[];
     suggestedProductIds?: string[];
     usage?: AiUsageSnapshot | null;
@@ -603,24 +634,6 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
         );
 
         if (currentCart.items.length > 0) {
-            const finalizedOrder = await this.maybeFinalizeWhatsappOrder({
-                messageText,
-                instanceId: data.instanceId,
-                chatId: data.chatId,
-                cart: currentCart,
-                latestAssistantMessage,
-            });
-
-            if (finalizedOrder) {
-                await this.temporaryCartService.clearCart(data.chatId);
-
-                return {
-                    text: this.buildOrderFinalizedReplyText(currentCart),
-                    previewTemplateIds: [],
-                    usage: null,
-                };
-            }
-
             const deterministicReply =
                 this.maybeBuildDeterministicWhatsappReply({
                     messageText,
@@ -646,7 +659,17 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
             matchedProducts,
             currentCart,
             relatedProducts,
+            originalMessageType: resolvedInput.originalMessageType,
+            latestAssistantMessage,
         });
+        const effectiveStructuredReply =
+            this.resolveWhatsappStructuredReplyIntent({
+                structuredReply,
+                messageText,
+                originalMessageType: resolvedInput.originalMessageType,
+                cart: currentCart,
+                latestAssistantMessage,
+            });
         let cartUpdateResult = {
             cart: currentCart,
             appliedOperations: [] as AppliedCartOperation[],
@@ -657,7 +680,7 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
                 data.chatId,
                 data.instanceId,
                 data.ownerUserId,
-                structuredReply.cartOperations ?? [],
+                effectiveStructuredReply.cartOperations ?? [],
                 messageText,
             );
         } catch (error) {
@@ -670,21 +693,55 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
             return {
                 text: this.buildCartUpdateFailureReply(error),
                 previewTemplateIds: [],
-                usage: structuredReply.usage ?? null,
+                usage: effectiveStructuredReply.usage ?? null,
             };
         }
 
+        if (effectiveStructuredReply.intent === "FINALIZE_ORDER") {
+            if (!cartUpdateResult.cart.items.length) {
+                return {
+                    text: "Ainda nao tenho itens no seu carrinho. Me diga o que voce quer pedir e a quantidade que eu separo pra voce.",
+                    previewTemplateIds: [],
+                    usage: effectiveStructuredReply.usage ?? null,
+                };
+            }
+
+            if (!cartUpdateResult.cart.deliveryAddress?.trim()) {
+                return {
+                    text: this.buildAddressRequestReplyText(cartUpdateResult.cart),
+                    previewTemplateIds: [],
+                    usage: effectiveStructuredReply.usage ?? null,
+                };
+            }
+        }
+
         const finalizedOrder = await this.maybeFinalizeWhatsappOrder({
-            messageText,
             instanceId: data.instanceId,
             chatId: data.chatId,
             cart: cartUpdateResult.cart,
-            latestAssistantMessage,
+            intent: effectiveStructuredReply.intent,
         });
 
         if (finalizedOrder) {
             await this.temporaryCartService.clearCart(data.chatId);
         }
+
+        const shouldDeferConfirmationQuestion =
+            this.shouldDeferCartConfirmationQuestion({
+                messageText,
+                latestAssistantMessage,
+                appliedOperations: cartUpdateResult.appliedOperations,
+            });
+        const shouldSkipConfirmationQuestion =
+            this.shouldSkipConfirmationQuestionForBatch({
+                messageText,
+                appliedOperations: cartUpdateResult.appliedOperations,
+                debounceMessageCount: data.debounceMessageCount ?? null,
+            }) || shouldDeferConfirmationQuestion;
+        const delayedConfirmationText =
+            !finalizedOrder && shouldDeferConfirmationQuestion
+                ? this.buildDelayedCartConfirmationText(cartUpdateResult.cart)
+                : null;
 
         const responseText = finalizedOrder
             ? this.buildOrderFinalizedReplyText(cartUpdateResult.cart)
@@ -692,25 +749,27 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
             fallbackReplyText: structuredReply.replyText,
             appliedOperations: cartUpdateResult.appliedOperations,
             cart: cartUpdateResult.cart,
+            skipConfirmationQuestion: shouldSkipConfirmationQuestion,
             relatedProducts: this.selectRelatedProducts(
                 products,
                 this.resolveMentionedProducts(products, matchedProducts),
                 cartUpdateResult.cart,
-                structuredReply.suggestedProductIds,
+                effectiveStructuredReply.suggestedProductIds,
             ),
         });
 
         this.logger.debug(
-            `[generateWhatsappResponse] instanceId=${data.instanceId} chatId=${data.chatId} history=${history.length} model=${structuredReply.usage?.modelName ?? this.getWhatsappModelName()}`,
+            `[generateWhatsappResponse] instanceId=${data.instanceId} chatId=${data.chatId} history=${history.length} model=${effectiveStructuredReply.usage?.modelName ?? this.getWhatsappModelName()}`,
         );
 
         return {
             text: responseText,
+            delayedConfirmationText,
             previewTemplateIds: this.selectPreviewTemplateIds(
                 messageText,
                 previewTemplates,
             ),
-            usage: structuredReply.usage ?? null,
+            usage: effectiveStructuredReply.usage ?? null,
         };
     }
 
@@ -880,6 +939,8 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
         matchedProducts: ProductSearchResult[];
         currentCart: TemporaryCart;
         relatedProducts: DeliveryCatalogProduct[];
+        originalMessageType: ChatMessageType;
+        latestAssistantMessage: string | null;
     }): Promise<GroceryAiStructuredResponse> {
         const execution = await this.generateContentWithFallback({
             scope: "whatsapp",
@@ -929,6 +990,8 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
         matchedProducts: ProductSearchResult[];
         currentCart: TemporaryCart;
         relatedProducts: DeliveryCatalogProduct[];
+        originalMessageType: ChatMessageType;
+        latestAssistantMessage: string | null;
     }): string {
         const catalogLines = input.catalogProducts.length
             ? input.catalogProducts
@@ -950,9 +1013,13 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
         return [
             "CONTEXTO_MERCEARIA",
             `Nome da loja ou atendente: ${input.personaName}`,
+            `Tipo da ultima mensagem do cliente: ${input.originalMessageType}`,
             "",
             "Carrinho temporario atual do cliente:",
             this.buildCartContext(input.currentCart),
+            "",
+            "Ultima resposta enviada pelo atendente:",
+            input.latestAssistantMessage?.trim() || "- Nenhuma resposta anterior.",
             "",
             "Produtos mais relacionados a ultima mensagem do cliente:",
             matchedProductLines,
@@ -964,10 +1031,11 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
             relatedProductLines,
             "",
             "FORMATO_DE_SAIDA_OBRIGATORIO",
-            '{"replyText":"...", "cartOperations":[{"productId":"...", "quantity":2, "mode":"set"}], "suggestedProductIds":["..."]}',
+            '{"intent":"ADD_TO_CART", "replyText":"...", "cartOperations":[{"productId":"...", "quantity":2, "mode":"set"}], "suggestedProductIds":["..."]}',
             "",
             "REGRAS",
             "- Responda somente com JSON valido.",
+            "- intent deve ser um destes valores: ADD_TO_CART, REMOVE_FROM_CART, FINALIZE_ORDER ou GENERAL_INQUIRY.",
             "- replyText deve ser cordial, curto e objetivo.",
             "- Sempre confirme quantidades quando o cliente pedir itens.",
             "- Se a quantidade estiver clara, preencha cartOperations com IDs reais do catalogo.",
@@ -976,9 +1044,51 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
             "- Se o cliente pedir mais de um item, voce pode enviar varias operacoes.",
             "- Se o cliente disser 'mais', prefira mode='add'. Caso contrario, use mode='set'.",
             "- Se o cliente responder apenas com confirmacoes curtas como 'sim', 'correto' ou 'isso mesmo', nao repita a mesma pergunta de quantidade.",
+            "- Se o cliente quiser claramente encerrar a compra, concluir o pedido ou receber a entrega, use intent='FINALIZE_ORDER'.",
+            "- Se intent='FINALIZE_ORDER' e o carrinho ja tiver itens e endereco, nao pergunte 'Posso finalizar?'; confirme que o pedido foi enviado para preparo.",
+            "- Se o cliente disser algo como 'ja falei para finalizar', trate isso como prioridade maxima para fechar o pedido imediatamente.",
             "- Use as tags dos produtos para entender caracteristicas como saudavel, churrasco, gelado, premium, integral ou zero acucar.",
             "- suggestedProductIds deve usar somente IDs reais do catalogo relacionado. Se nao fizer sentido, envie [].",
         ].join("\n");
+    }
+
+    private resolveWhatsappStructuredReplyIntent(input: {
+        structuredReply: GroceryAiStructuredResponse;
+        messageText: string;
+        originalMessageType: ChatMessageType;
+        cart: TemporaryCart;
+        latestAssistantMessage: string | null;
+    }): GroceryAiStructuredResponse {
+        if (
+            input.originalMessageType !== ChatMessageType.AUDIO ||
+            input.structuredReply.intent === "FINALIZE_ORDER"
+        ) {
+            return input.structuredReply;
+        }
+
+        if (
+            !input.cart.items.length ||
+            !input.cart.deliveryAddress?.trim()
+        ) {
+            return input.structuredReply;
+        }
+
+        const assistantAlreadyAtFinalizeStep =
+            this.didAssistantAskToFinalize(input.latestAssistantMessage) ||
+            this.didAssistantAskCartConfirmation(input.latestAssistantMessage);
+        const customerSoundsConfirmatory =
+            this.isSimpleCartConfirmationIntent(input.messageText) ||
+            this.isNoMoreItemsIntent(input.messageText) ||
+            this.hasStrongFinalizeCue(input.messageText);
+
+        if (!assistantAlreadyAtFinalizeStep || !customerSoundsConfirmatory) {
+            return input.structuredReply;
+        }
+
+        return {
+            ...input.structuredReply,
+            intent: "FINALIZE_ORDER",
+        };
     }
 
     private async updateCart(
@@ -1052,12 +1162,14 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
         fallbackReplyText?: string;
         appliedOperations: AppliedCartOperation[];
         cart: TemporaryCart;
+        skipConfirmationQuestion?: boolean;
         relatedProducts: Product[];
     }): string {
         if (input.appliedOperations.length > 0) {
             const confirmation = this.buildCartConfirmationText(
                 input.appliedOperations,
                 input.cart,
+                input.skipConfirmationQuestion,
             );
             const suggestion = input.relatedProducts.length
                 ? ` Se quiser, também posso incluir ${this.joinHumanList(
@@ -1078,6 +1190,7 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
     private buildCartConfirmationText(
         operations: AppliedCartOperation[],
         cart: TemporaryCart,
+        skipConfirmationQuestion: boolean = false,
     ): string {
         const appliedSummary = this.joinHumanList(
             operations.map(
@@ -1085,6 +1198,9 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
             ),
         );
         const cartSummary = this.buildCartItemsSummary(cart);
+        const confirmationQuestion = skipConfirmationQuestion
+            ? ""
+            : " Confirma pra mim se as quantidades estão certas?";
 
         if (
             cart.items.length > operations.length ||
@@ -1095,28 +1211,34 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
                     ),
             )
         ) {
-            return `Perfeito! Adicionei ${appliedSummary}. Seu carrinho agora está com ${cartSummary}. Confirma pra mim se as quantidades estão certas?`;
+            return `Perfeito! Adicionei ${appliedSummary}. Seu carrinho agora está com ${cartSummary}.${confirmationQuestion}`.trim();
         }
 
-        return `Perfeito! Separei ${appliedSummary}. Confirma pra mim se as quantidades estão certas?`;
+        return `Perfeito! Separei ${appliedSummary}.${confirmationQuestion}`.trim();
     }
 
     private buildCartConfirmedReplyText(cart: TemporaryCart): string {
         const cartSummary = this.buildCartItemsSummary(cart);
-        const totalText = this.formatPrice(cart.totalCents);
+        const totalsText = this.buildCartTotalsText(cart);
 
         if (cart.deliveryAddress?.trim()) {
-            return `Perfeito! Seu carrinho está com ${cartSummary}. Total parcial: ${totalText}. Entrega em ${cart.deliveryAddress}. Se estiver tudo certo, posso finalizar o pedido.`;
+            return `Perfeito! Seu carrinho está com ${cartSummary}. ${totalsText} Entrega em ${cart.deliveryAddress}. Se estiver tudo certo, posso finalizar o pedido.`;
         }
 
-        return `Perfeito! Seu carrinho está com ${cartSummary}. Total parcial: ${totalText}. Se quiser, posso adicionar mais itens ou você pode me mandar o endereço para entrega.`;
+        return `Perfeito! Seu carrinho está com ${cartSummary}. ${totalsText} Se quiser, posso adicionar mais itens ou você pode me mandar o endereço para entrega.`;
+    }
+
+    private buildDelayedCartConfirmationText(cart: TemporaryCart): string {
+        return `Seu carrinho agora está com ${this.buildCartItemsSummary(
+            cart,
+        )}. Confirma pra mim se as quantidades estão certas?`;
     }
 
     private buildAddressCapturedReplyText(cart: TemporaryCart): string {
         const cartSummary = this.buildCartItemsSummary(cart);
-        const totalText = this.formatPrice(cart.totalCents);
+        const totalsText = this.buildCartTotalsText(cart);
 
-        return `Endereco anotado: ${cart.deliveryAddress}. O pedido ficou em ${cartSummary}. Total parcial: ${totalText}. Posso finalizar o pedido?`;
+        return `Endereco anotado: ${cart.deliveryAddress}. O pedido ficou em ${cartSummary}. ${totalsText} Posso finalizar o pedido?`;
     }
 
     private buildReadyToFinalizeReplyText(cart: TemporaryCart): string {
@@ -1128,9 +1250,9 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
 
     private buildAddressRequestReplyText(cart: TemporaryCart): string {
         const cartSummary = this.buildCartItemsSummary(cart);
-        const totalText = this.formatPrice(cart.totalCents);
+        const totalsText = this.buildCartTotalsText(cart);
 
-        return `Perfeito! Fico com ${cartSummary}. Total parcial: ${totalText}. Agora me manda o endereco para entrega, por favor.`;
+        return `Perfeito! Fico com ${cartSummary}. ${totalsText} Agora me manda o endereco para entrega, por favor.`;
     }
 
     private buildCartUpdateFailureReply(error: unknown): string {
@@ -1145,24 +1267,16 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
     }
 
     private async maybeFinalizeWhatsappOrder(input: {
-        messageText: string;
         instanceId: string;
         chatId: string;
         cart: TemporaryCart;
-        latestAssistantMessage: string | null;
+        intent?: GroceryIntent;
     }) {
-        if (!input.cart.items.length || !input.cart.deliveryAddress?.trim()) {
-            return null;
-        }
-
-        const explicitConfirmation = this.isWhatsappOrderConfirmationIntent(
-            input.messageText,
-        );
-        const contextualConfirmation =
-            this.isSimpleCartConfirmationIntent(input.messageText) &&
-            this.didAssistantAskToFinalize(input.latestAssistantMessage);
-
-        if (!explicitConfirmation && !contextualConfirmation) {
+        if (
+            input.intent !== "FINALIZE_ORDER" ||
+            !input.cart.items.length ||
+            !input.cart.deliveryAddress?.trim()
+        ) {
             return null;
         }
 
@@ -1176,8 +1290,9 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
         const summary = this.joinHumanList(
             cart.items.map((item) => `${item.quantity}x ${item.title}`),
         );
+        const totalText = this.formatPrice(cart.totalCents);
 
-        return `Pedido confirmado! Separei ${summary} para entrega em ${cart.deliveryAddress}. Assim que sair com o motoboy eu te aviso por aqui.`;
+        return `Pedido confirmado! Enviei ${summary} para preparo e entrega em ${cart.deliveryAddress}. Total do pedido: ${totalText}. Assim que sair com o motoboy eu te aviso por aqui.`;
     }
 
     private normalizeCartOperations(
@@ -1331,12 +1446,14 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
                 string,
                 unknown
             >;
+            const intent = this.normalizeGroceryIntent(parsed.intent);
             const replyText =
                 typeof parsed.replyText === "string"
                     ? parsed.replyText.trim()
                     : rawText.trim();
 
             return {
+                intent,
                 replyText,
                 cartOperations: Array.isArray(parsed.cartOperations)
                     ? parsed.cartOperations
@@ -1364,6 +1481,7 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
             }
 
             return {
+                intent: "GENERAL_INQUIRY",
                 replyText: rawText.trim(),
                 cartOperations: [],
                 suggestedProductIds: [],
@@ -1426,6 +1544,25 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
         }
 
         throw new Error("Unterminated JSON object in model response");
+    }
+
+    private normalizeGroceryIntent(value: unknown): GroceryIntent {
+        if (typeof value !== "string") {
+            return "GENERAL_INQUIRY";
+        }
+
+        const normalized = value.trim().toUpperCase();
+
+        if (
+            normalized === "ADD_TO_CART" ||
+            normalized === "REMOVE_FROM_CART" ||
+            normalized === "FINALIZE_ORDER" ||
+            normalized === "GENERAL_INQUIRY"
+        ) {
+            return normalized;
+        }
+
+        return "GENERAL_INQUIRY";
     }
 
     private buildCatalogLine(product: DeliveryCatalogProduct): string {
@@ -1491,7 +1628,7 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
 
         return [
             ...cart.items.map((item) => this.buildCartItemLine(item)),
-            `- Total parcial: ${this.formatPrice(cart.totalCents)}`,
+            ...this.buildCartTotalsContextLines(cart),
             cart.deliveryAddress
                 ? `- Endereco de entrega: ${cart.deliveryAddress}`
                 : "- Endereco de entrega: nao informado",
@@ -1500,6 +1637,26 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
 
     private buildCartItemLine(item: TemporaryCartItem): string {
         return `- ${item.quantity}x ${item.title} | subtotal: ${this.formatPrice(item.subtotalCents)}`;
+    }
+
+    private buildCartTotalsContextLines(cart: TemporaryCart): string[] {
+        if (cart.deliveryFeeCents > 0) {
+            return [
+                `- Subtotal dos itens: ${this.formatPrice(cart.subtotalCents)}`,
+                `- Taxa de entrega: ${this.formatPrice(cart.deliveryFeeCents)}`,
+                `- Total parcial: ${this.formatPrice(cart.totalCents)}`,
+            ];
+        }
+
+        return [`- Total parcial: ${this.formatPrice(cart.totalCents)}`];
+    }
+
+    private buildCartTotalsText(cart: TemporaryCart): string {
+        if (cart.deliveryFeeCents > 0) {
+            return `Subtotal dos itens: ${this.formatPrice(cart.subtotalCents)}. Taxa de entrega: ${this.formatPrice(cart.deliveryFeeCents)}. Total parcial: ${this.formatPrice(cart.totalCents)}.`;
+        }
+
+        return `Total parcial: ${this.formatPrice(cart.totalCents)}.`;
     }
 
     private buildCartItemsSummary(cart: TemporaryCart): string {
@@ -1546,8 +1703,39 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
             return null;
         }
 
-        if (input.addressJustCaptured && input.cart.deliveryAddress?.trim()) {
+        const readyToFinalize =
+            Boolean(input.cart.deliveryAddress?.trim()) &&
+            (this.hasStrongFinalizeCue(input.messageText) ||
+                ((this.isSimpleCartConfirmationIntent(input.messageText) ||
+                    this.isNoMoreItemsIntent(input.messageText)) &&
+                    (this.didAssistantAskCartConfirmation(
+                        input.latestAssistantMessage,
+                    ) ||
+                        this.didAssistantAskToFinalize(
+                            input.latestAssistantMessage,
+                        ))));
+
+        if (readyToFinalize) {
+            return null;
+        }
+
+        if (
+            input.addressJustCaptured &&
+            input.cart.deliveryAddress?.trim() &&
+            !this.hasStrongFinalizeCue(input.messageText)
+        ) {
             return this.buildAddressCapturedReplyText(input.cart);
+        }
+
+        if (
+            this.isNoMoreItemsIntent(input.messageText) &&
+            this.didAssistantAskCartConfirmation(input.latestAssistantMessage)
+        ) {
+            if (input.cart.deliveryAddress?.trim()) {
+                return this.buildReadyToFinalizeReplyText(input.cart);
+            }
+
+            return this.buildAddressRequestReplyText(input.cart);
         }
 
         if (this.isSimpleCartConfirmationIntent(input.messageText)) {
@@ -1568,17 +1756,111 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
         return null;
     }
 
-    private isWhatsappOrderConfirmationIntent(messageText: string): boolean {
-        const normalized = this.normalizeText(messageText);
+    private hasStrongFinalizeCue(messageText: string): boolean {
+        const normalized = this.normalizeText(messageText)
+            .replace(/[!?.,]/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
 
         return [
+            "ja falei para finalizar",
+            "ja falei pra finalizar",
+            "finaliza",
+            "finalizar",
+            "fechar pedido",
+            "pode fechar",
+            "quero finalizar",
+            "concluir pedido",
+            "ja pode mandar",
+            "pode mandar",
+            "pode entregar",
+            "manda pra mim",
+        ].some((keyword) => normalized.includes(keyword));
+    }
+
+    private shouldSkipConfirmationQuestionForBatch(input: {
+        messageText: string;
+        appliedOperations: AppliedCartOperation[];
+        debounceMessageCount: number | null;
+    }): boolean {
+        if (!input.appliedOperations.length) {
+            return false;
+        }
+
+        const messageSegments = input.messageText
+            .split(/\n+/)
+            .map((segment) => segment.trim())
+            .filter(Boolean);
+        const debounceMessageCount = Math.max(
+            input.debounceMessageCount ?? 1,
+            messageSegments.length,
+        );
+
+        if (debounceMessageCount <= 1) {
+            return false;
+        }
+
+        const latestSegment =
+            messageSegments[messageSegments.length - 1] ?? input.messageText;
+
+        if (
+            this.isSimpleCartConfirmationIntent(latestSegment) ||
+            this.isNoMoreItemsIntent(latestSegment) ||
+            this.isWhatsappOrderConfirmationIntent(latestSegment)
+        ) {
+            return false;
+        }
+
+        return true;
+    }
+
+    private shouldDeferCartConfirmationQuestion(input: {
+        messageText: string;
+        latestAssistantMessage: string | null;
+        appliedOperations: AppliedCartOperation[];
+    }): boolean {
+        if (!input.appliedOperations.length) {
+            return false;
+        }
+
+        if (!this.didAssistantAskCartConfirmation(input.latestAssistantMessage)) {
+            return false;
+        }
+
+        if (
+            this.isSimpleCartConfirmationIntent(input.messageText) ||
+            this.isNoMoreItemsIntent(input.messageText) ||
+            this.isWhatsappOrderConfirmationIntent(input.messageText)
+        ) {
+            return false;
+        }
+
+        return true;
+    }
+
+    private isWhatsappOrderConfirmationIntent(messageText: string): boolean {
+        const normalized = this.normalizeText(messageText)
+            .replace(/[!?.,]/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+
+        return [
+            "fecha ai",
             "pode fechar",
             "fechar pedido",
             "fecha meu pedido",
             "pode finalizar",
+            "encerra o pedido",
             "finaliza",
             "pedido confirmado",
             "confirmo",
+            "manda pra mim",
+            "fechou",
+            "eh isso",
+            "terminamos",
+            "concluir pedido",
+            "quero finalizar",
+            "ja pode mandar",
             "isso mesmo",
             "ta certo",
             "esta certo",
@@ -1594,7 +1876,7 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
             .replace(/\s+/g, " ")
             .trim();
 
-        if (!normalized || normalized.length > 24) {
+        if (!normalized || normalized.length > 80) {
             return false;
         }
 
@@ -1611,7 +1893,17 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
             "ok",
             "perfeito",
             "confirmo",
-        ].includes(normalized);
+            "ta certo sim",
+            "esta certo sim",
+            "sim so isso",
+            "sim so isso mesmo",
+            "sim so isto",
+            "sim so isto mesmo",
+        ].includes(normalized)
+            ? true
+            : /^(sim|correto|isso mesmo|ta certo|esta certo|certo|ok|perfeito|confirmo)\b/.test(
+                  normalized,
+              );
     }
 
     private isNoMoreItemsIntent(messageText: string): boolean {
@@ -1620,7 +1912,7 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
             .replace(/\s+/g, " ")
             .trim();
 
-        if (!normalized || normalized.length > 40) {
+        if (!normalized || normalized.length > 80) {
             return false;
         }
 
@@ -1635,7 +1927,27 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
             "somente isso",
             "apenas isso",
             "nada mais",
-        ].includes(normalized);
+            "sim so isso",
+            "sim so isso mesmo",
+            "sim so isto",
+            "sim so isto mesmo",
+        ].includes(normalized)
+            ? true
+            : /(nao so isso|nao so isto|so isso|so isto|somente isso|apenas isso|nada mais)\b/.test(
+                  normalized,
+              );
+    }
+
+    private didAssistantAskCartConfirmation(
+        latestAssistantMessage: string | null,
+    ): boolean {
+        if (!latestAssistantMessage?.trim()) {
+            return false;
+        }
+
+        return this.normalizeText(latestAssistantMessage).includes(
+            "confirma pra mim se as quantidades estao certas",
+        );
     }
 
     private getLatestAssistantMessageContent(
@@ -1763,14 +2075,6 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
             return null;
         }
 
-        if (
-            this.isSimpleCartConfirmationIntent(compact) ||
-            this.isWhatsappOrderConfirmationIntent(compact) ||
-            this.isNoMoreItemsIntent(compact)
-        ) {
-            return null;
-        }
-
         const hasAddressKeyword = [
             "rua",
             "avenida",
@@ -1786,6 +2090,7 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
             "bloco",
             "quadra",
             "lote",
+            "endereco",
             "numero",
             "n ",
         ].some((keyword) => normalized.includes(keyword));
@@ -1805,7 +2110,38 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
             return null;
         }
 
-        return compact;
+        let cleaned = compact;
+        let previousValue = "";
+
+        while (cleaned !== previousValue) {
+            previousValue = cleaned;
+            cleaned = cleaned
+                .replace(
+                    /^(sim|nao|não|ok|perfeito|correto|isso mesmo|ta certo|tá certo|esta certo|está certo|valeu|obrigado|obrigada|oi|ola|olá|bom dia|boa tarde|boa noite)\b[\s,!.:-]*/i,
+                    "",
+                )
+                .replace(
+                    /^(so isso|só isso|so isso mesmo|só isso mesmo|so isto|só isto|somente isso|apenas isso|nada mais)\b[\s,!.:-]*/i,
+                    "",
+                )
+                .replace(
+                    /^(pode entregar|pode enviar|entrega|manda pra mim|ja pode mandar|já pode mandar|pode mandar)\b[\s,!.:-]*/i,
+                    "",
+                )
+                .replace(
+                    /^(no endereco|no endereço|para o endereco|para o endereço|meu endereco e|meu endereço e|endereco|endereço)\b[\s,!.:-]*/i,
+                    "",
+                )
+                .replace(
+                    /^(na rua|na avenida|na av|na travessa|na alameda|na estrada|na rodovia)\b[\s,!.:-]*/i,
+                    (match) => match.replace(/^na\s+/i, ""),
+                )
+                .trim();
+        }
+
+        cleaned = cleaned.replace(/^[,.;:\-]+/g, "").replace(/[.]{2,}$/g, ".").replace(/[ ,.;:\-]+$/g, "").trim();
+
+        return cleaned.length >= 6 ? cleaned : compact;
     }
 
     private isIncrementCartIntent(messageText: string): boolean {

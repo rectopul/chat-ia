@@ -58,6 +58,7 @@ export type OrderDashboardCard = {
     customerWhatsappId: string;
     customerName: string | null;
     status: OrderStatus;
+    deliveryFeeCents: number;
     totalCents: number;
     currency: string;
     deliveryAddress: string;
@@ -80,6 +81,7 @@ export function mapOrderToDashboardCard(
         customerWhatsappId: order.customerWhatsappId,
         customerName: order.customerName ?? null,
         status: order.status,
+        deliveryFeeCents: order.deliveryFeeCents,
         totalCents: order.totalCents,
         currency: order.currency,
         deliveryAddress: order.deliveryAddress,

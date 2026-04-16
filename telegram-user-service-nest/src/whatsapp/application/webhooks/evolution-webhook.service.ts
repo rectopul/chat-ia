@@ -171,6 +171,13 @@ export class EvolutionWebhookService {
                 continue;
             }
 
+            const incomingActivityToken =
+                await this.whatsappIncomingDebounceService.markIncomingActivity(
+                    instance.id,
+                    parsed.chatId,
+                    parsed.messageId,
+                );
+
             await this.upsertWhatsappCustomer({
                 ownerUserId: instance.userId,
                 instanceId: instance.id,
@@ -212,6 +219,7 @@ export class EvolutionWebhookService {
                         message.messageTimestamp !== undefined
                             ? String(message.messageTimestamp)
                             : null,
+                    incomingActivityToken,
                     location: parsed.location,
                 },
             } as const;

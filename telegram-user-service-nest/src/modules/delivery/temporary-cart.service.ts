@@ -6,6 +6,7 @@ import {
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { Product } from "@prisma/client";
+import { PrismaService } from "../../prisma/prisma.service";
 import {
     DELIVERY_CART_KEY_PREFIX,
     DELIVERY_CART_TTL_SECONDS,
@@ -30,6 +31,8 @@ export type TemporaryCart = {
     instanceId: string | null;
     ownerUserId: string | null;
     items: TemporaryCartItem[];
+    subtotalCents: number;
+    deliveryFeeCents: number;
     totalCents: number;
     currency: string;
     deliveryAddress: string | null;
@@ -45,6 +48,7 @@ export class TemporaryCartService implements OnModuleDestroy {
 
     constructor(
         private readonly configService: ConfigService,
+        private readonly prisma: PrismaService,
         private readonly productService: ProductService,
     ) {
         if (process.env.REDIS_URL) {
@@ -130,7 +134,7 @@ export class TemporaryCartService implements OnModuleDestroy {
 
         return this.saveCart(
             normalizedWhatsappId,
-            this.recalculateCart({
+            await this.recalculateCart({
                 ...cart,
                 instanceId: cart.instanceId ?? input.instanceId ?? null,
                 ownerUserId: cart.ownerUserId ?? product.ownerUserId ?? null,
@@ -175,7 +179,7 @@ export class TemporaryCartService implements OnModuleDestroy {
 
         return this.saveCart(
             normalizedWhatsappId,
-            this.recalculateCart(cart),
+            await this.recalculateCart(cart),
         );
     }
 
@@ -188,7 +192,7 @@ export class TemporaryCartService implements OnModuleDestroy {
 
         return this.saveCart(
             normalizedWhatsappId,
-            this.recalculateCart({
+            await this.recalculateCart({
                 ...cart,
                 items: cart.items.filter((item) => item.productId !== productId),
             }),
@@ -203,7 +207,7 @@ export class TemporaryCartService implements OnModuleDestroy {
         const cart = await this.getCart(normalizedWhatsappId);
 
         return this.saveCart(normalizedWhatsappId, {
-            ...cart,
+            ...(await this.recalculateCart(cart)),
             deliveryAddress: deliveryAddress.trim(),
         });
     }
@@ -264,6 +268,8 @@ export class TemporaryCartService implements OnModuleDestroy {
             instanceId: null,
             ownerUserId: null,
             items: [],
+            subtotalCents: 0,
+            deliveryFeeCents: 0,
             totalCents: 0,
             currency: "BRL",
             deliveryAddress: null,
@@ -273,21 +279,43 @@ export class TemporaryCartService implements OnModuleDestroy {
         };
     }
 
-    private recalculateCart(cart: TemporaryCart): TemporaryCart {
+    private async recalculateCart(cart: TemporaryCart): Promise<TemporaryCart> {
         const items = cart.items.map((item) => ({
             ...item,
             subtotalCents: item.unitPriceCents * item.quantity,
         }));
-        const totalCents = items.reduce(
+        const subtotalCents = items.reduce(
             (sum, item) => sum + item.subtotalCents,
             0,
         );
+        const configuredDeliveryFeeCents = await this.resolveDeliveryFeeCents(
+            cart.ownerUserId,
+        );
+        const deliveryFeeCents = items.length ? configuredDeliveryFeeCents : 0;
+        const totalCents = subtotalCents + deliveryFeeCents;
 
         return {
             ...cart,
             items,
+            subtotalCents,
+            deliveryFeeCents,
             totalCents,
         };
+    }
+
+    private async resolveDeliveryFeeCents(
+        ownerUserId: string | null,
+    ): Promise<number> {
+        if (!ownerUserId) {
+            return 0;
+        }
+
+        const owner = await this.prisma.user.findUnique({
+            where: { id: ownerUserId },
+            select: { deliveryFeeCents: true },
+        });
+
+        return Math.max(0, owner?.deliveryFeeCents ?? 0);
     }
 
     private toCartItem(product: Product, quantity: number): TemporaryCartItem {

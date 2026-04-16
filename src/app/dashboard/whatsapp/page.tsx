@@ -2,6 +2,7 @@ import { auth } from "@/auth";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import QRConnection from "@/components/dashboard/qr-connection";
+import DeliveryFeeForm from "@/components/dashboard/whatsapp/delivery-fee-form";
 import ManualStoreStatusForm from "@/components/dashboard/whatsapp/manual-store-status-form";
 import OperatingHoursForm from "@/components/dashboard/whatsapp/operating-hours-form";
 import { Badge } from "@/components/ui/badge";
@@ -32,6 +33,7 @@ import {
 } from "lucide-react";
 import {
     deleteWhatsappInstanceAction,
+    updateDeliveryFeeAction,
     updateManualStoreClosedAction,
     updateOperatingHoursAction,
     updateWhatsappClosedMessageAction,
@@ -56,6 +58,17 @@ function statusTone(status: string) {
     }
 
     return "border-slate-200 bg-slate-100 text-slate-700";
+}
+
+function formatCurrency(valueCents: number) {
+    return new Intl.NumberFormat("pt-BR", {
+        style: "currency",
+        currency: "BRL",
+    }).format(valueCents / 100);
+}
+
+function formatCurrencyInput(valueCents: number) {
+    return (valueCents / 100).toFixed(2).replace(".", ",");
 }
 
 export default async function DashboardWhatsappPage() {
@@ -87,6 +100,7 @@ export default async function DashboardWhatsappPage() {
         select: {
             closedMessage: true,
             manualStoreClosed: true,
+            deliveryFeeCents: true,
             operatingHours: {
                 orderBy: {
                     dayOfWeek: "asc",
@@ -137,6 +151,9 @@ export default async function DashboardWhatsappPage() {
         instances[0] ??
         null;
     const manualStoreClosed = userSettings?.manualStoreClosed ?? false;
+    const deliveryFeeCents = userSettings?.deliveryFeeCents ?? 0;
+    const deliveryFeeLabel =
+        deliveryFeeCents > 0 ? formatCurrency(deliveryFeeCents) : "Sem taxa";
 
     return (
         <div className="space-y-5">
@@ -283,7 +300,15 @@ export default async function DashboardWhatsappPage() {
                                     action={updateManualStoreClosedAction}
                                 />
 
-                                <div className="grid gap-3 sm:grid-cols-2">
+                                <DeliveryFeeForm
+                                    defaultValue={formatCurrencyInput(
+                                        deliveryFeeCents,
+                                    )}
+                                    currentFeeLabel={deliveryFeeLabel}
+                                    action={updateDeliveryFeeAction}
+                                />
+
+                                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                                     <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
                                         <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
                                             Mensagem padrao
@@ -300,6 +325,14 @@ export default async function DashboardWhatsappPage() {
                                         </p>
                                         <p className="mt-1 text-sm font-medium text-slate-900">
                                             {operatingTimezone}
+                                        </p>
+                                    </div>
+                                    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                                        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
+                                            Taxa de entrega
+                                        </p>
+                                        <p className="mt-1 text-sm font-medium text-slate-900">
+                                            {deliveryFeeLabel}
                                         </p>
                                     </div>
                                 </div>

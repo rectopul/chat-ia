@@ -50,6 +50,7 @@ const LONG_REPLY_THRESHOLD = 240;
 const SPLIT_REPLY_DELAY_MS = 2000;
 const AI_BUSY_RETRY_DELAY_MS = 15_000;
 const AI_BUSY_MAX_RETRIES = 3;
+const DEFERRED_CART_CONFIRMATION_DELAY_MS = 5_000;
 
 @Processor(WHATSAPP_INCOMING_QUEUE_NAME, { concurrency: 3 })
 export class WhatsappIncomingProcessor extends WorkerHost {
@@ -271,6 +272,8 @@ export class WhatsappIncomingProcessor extends WorkerHost {
                     ownerUserId: accessContext.ownerUserId,
                     personaName: accessContext.personaName,
                     messageId: this.extractIncomingMessageId(data),
+                    debounceMessageCount:
+                        this.extractDebounceMessageCount(data),
                     messageText: text || undefined,
                     mediaUrl: data.mediaUrl ?? null,
                     mediaMimeType: data.mediaMimeType ?? null,
@@ -346,6 +349,33 @@ export class WhatsappIncomingProcessor extends WorkerHost {
                     undefined,
                     reply.usage,
                 );
+            }
+
+            if (reply.delayedConfirmationText?.trim()) {
+                const incomingActivityToken =
+                    this.extractIncomingActivityToken(data);
+
+                if (incomingActivityToken) {
+                    await this.whatsappQueueService.enqueueOutgoingMessage(
+                        {
+                            instanceId: data.instanceId,
+                            chatId: data.chatId,
+                            text: reply.delayedConfirmationText.trim(),
+                            messageType: "TEXT",
+                            payload: {
+                                source: "delayed-cart-confirmation",
+                                incomingJobId: job.id ?? null,
+                                expectedIncomingActivityToken:
+                                    incomingActivityToken,
+                                minimumSilenceMs:
+                                    DEFERRED_CART_CONFIRMATION_DELAY_MS,
+                            },
+                        },
+                        {
+                            delay: DEFERRED_CART_CONFIRMATION_DELAY_MS,
+                        },
+                    );
+                }
             }
 
             await job.updateProgress(100);
@@ -564,6 +594,34 @@ export class WhatsappIncomingProcessor extends WorkerHost {
         return Number.isFinite(retryCount) && retryCount >= 0
             ? Math.trunc(retryCount)
             : 0;
+    }
+
+    private extractIncomingActivityToken(
+        data: WhatsappIncomingJobData,
+    ): string | null {
+        const payload = this.asRecord(data.payload);
+        const token =
+            typeof payload.incomingActivityToken === "string"
+                ? payload.incomingActivityToken.trim()
+                : "";
+
+        return token || null;
+    }
+
+    private extractDebounceMessageCount(
+        data: WhatsappIncomingJobData,
+    ): number | null {
+        const payload = this.asRecord(data.payload);
+        const debounceMessageCount = Number(payload.debounceMessageCount ?? 0);
+
+        if (
+            Number.isFinite(debounceMessageCount) &&
+            debounceMessageCount > 1
+        ) {
+            return Math.trunc(debounceMessageCount);
+        }
+
+        return null;
     }
 
     private normalizeText(value: string): string {
