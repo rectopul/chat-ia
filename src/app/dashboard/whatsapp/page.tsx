@@ -1,10 +1,16 @@
 import { auth } from "@/auth";
 import { redirect } from "next/navigation";
+import {
+    BusinessProfile,
+    DeliveryType,
+    PaymentMethod,
+} from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import AssistantProfileForm from "@/components/dashboard/whatsapp/assistant-profile-form";
 import QRConnection from "@/components/dashboard/qr-connection";
-import DeliveryFeeForm from "@/components/dashboard/whatsapp/delivery-fee-form";
 import ManualStoreStatusForm from "@/components/dashboard/whatsapp/manual-store-status-form";
 import OperatingHoursForm from "@/components/dashboard/whatsapp/operating-hours-form";
+import StoreCheckoutSettingsForm from "@/components/dashboard/whatsapp/store-checkout-settings-form";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -33,9 +39,10 @@ import {
 } from "lucide-react";
 import {
     deleteWhatsappInstanceAction,
-    updateDeliveryFeeAction,
+    updateAssistantProfileAction,
     updateManualStoreClosedAction,
     updateOperatingHoursAction,
+    updateStoreCheckoutSettingsAction,
     updateWhatsappClosedMessageAction,
 } from "./actions";
 import {
@@ -45,6 +52,11 @@ import {
     OperatingHourFormRow,
     WEEKDAY_OPTIONS,
 } from "./operating-hours";
+import {
+    getBusinessProfileLabel,
+    getDeliveryTypeLabel,
+    getPaymentMethodLabel,
+} from "./checkout-options";
 
 function statusTone(status: string) {
     const normalized = status.toUpperCase();
@@ -98,9 +110,14 @@ export default async function DashboardWhatsappPage() {
     const userSettings = await prisma.user.findUnique({
         where: { id: session.user.id },
         select: {
+            assistantName: true,
+            businessProfile: true,
             closedMessage: true,
             manualStoreClosed: true,
             deliveryFeeCents: true,
+            storeAddress: true,
+            acceptedPaymentMethods: true,
+            availableDeliveryTypes: true,
             operatingHours: {
                 orderBy: {
                     dayOfWeek: "asc",
@@ -154,6 +171,33 @@ export default async function DashboardWhatsappPage() {
     const deliveryFeeCents = userSettings?.deliveryFeeCents ?? 0;
     const deliveryFeeLabel =
         deliveryFeeCents > 0 ? formatCurrency(deliveryFeeCents) : "Sem taxa";
+    const assistantName = userSettings?.assistantName?.trim() || "Clara";
+    const businessProfile =
+        userSettings?.businessProfile ?? BusinessProfile.GROCERY;
+    const businessProfileLabel = getBusinessProfileLabel(businessProfile);
+    const storeAddress = userSettings?.storeAddress?.trim() ?? "";
+    const savedAcceptedPaymentMethods =
+        userSettings?.acceptedPaymentMethods ?? [];
+    const savedAvailableDeliveryTypes =
+        userSettings?.availableDeliveryTypes ?? [];
+    const acceptedPaymentMethods = savedAcceptedPaymentMethods.length
+        ? savedAcceptedPaymentMethods
+        : [PaymentMethod.PIX_ONLINE, PaymentMethod.CASH];
+    const availableDeliveryTypes = savedAvailableDeliveryTypes.length
+        ? savedAvailableDeliveryTypes
+        : [DeliveryType.DELIVERY];
+    const paymentMethodsLabel = savedAcceptedPaymentMethods.length
+        ? savedAcceptedPaymentMethods.map(getPaymentMethodLabel).join(", ")
+        : "Ainda nao configurado";
+    const deliveryTypesLabel = savedAvailableDeliveryTypes.length
+        ? savedAvailableDeliveryTypes.map(getDeliveryTypeLabel).join(", ")
+        : "Ainda nao configurado";
+    const isStoreSetupReady = Boolean(
+        assistantName.trim() &&
+            storeAddress &&
+            savedAcceptedPaymentMethods.length &&
+            savedAvailableDeliveryTypes.length,
+    );
 
     return (
         <div className="space-y-5">
@@ -237,34 +281,78 @@ export default async function DashboardWhatsappPage() {
             <div className="grid gap-4 xl:grid-cols-[minmax(0,1.02fr)_minmax(360px,0.98fr)]">
                 <div className="space-y-4">
                     <Card className="border-none shadow-sm">
-                        <CardContent className="grid gap-3 p-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
-                            <div className="space-y-1">
-                                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-                                    Instancia principal
-                                </p>
-                                <p className="font-semibold text-slate-900">
-                                    {managedInstanceName}
-                                </p>
-                                <p className="text-sm text-slate-500">
-                                    O webhook tecnico continua configurado
-                                    automaticamente no back-end.
-                                </p>
+                        <CardContent className="grid gap-4 p-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                            <div className="space-y-3">
+                                <div className="space-y-1">
+                                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+                                        Instancia principal
+                                    </p>
+                                    <p className="font-semibold text-slate-900">
+                                        {managedInstanceName}
+                                    </p>
+                                    <p className="text-sm text-slate-500">
+                                        O webhook tecnico continua configurado
+                                        automaticamente no back-end.
+                                    </p>
+                                </div>
+                                <div className="grid gap-2 sm:grid-cols-2">
+                                    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2">
+                                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                                            Prontidao da loja
+                                        </p>
+                                        <p className="mt-1 text-sm font-medium text-slate-900">
+                                            {isStoreSetupReady
+                                                ? "Loja pronta para vender"
+                                                : "Falta ajustar checkout"}
+                                        </p>
+                                    </div>
+                                    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2">
+                                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                                            Pagamentos
+                                        </p>
+                                        <p className="mt-1 text-sm font-medium text-slate-900">
+                                            {savedAcceptedPaymentMethods.length} metodo(s)
+                                        </p>
+                                    </div>
+                                </div>
                             </div>
-                            <div className="flex flex-wrap gap-2">
-                                <Badge variant="outline">
-                                    {connectedCount} on-line
+                            <div className="flex flex-wrap gap-2 sm:max-w-[220px] sm:justify-end">
+                                <Badge
+                                    variant={
+                                        isStoreSetupReady
+                                            ? "default"
+                                            : "secondary"
+                                    }
+                                >
+                                    {isStoreSetupReady
+                                        ? "Setup completo"
+                                        : "Setup pendente"}
                                 </Badge>
                                 <Badge variant="outline">
-                                    {disconnectedCount} pendente(s)
+                                    {deliveryTypesLabel}
                                 </Badge>
                                 <Badge variant="outline">
-                                    {totalHandovers} handover(s)
+                                    {deliveryFeeLabel}
                                 </Badge>
                             </div>
                         </CardContent>
                     </Card>
 
-                    <QRConnection initialStatus={primaryInstance?.status ?? null} />
+                    <QRConnection
+                        initialStatus={primaryInstance?.status ?? null}
+                        setupDefaults={{
+                            assistantName,
+                            businessProfile,
+                            storeAddress,
+                            deliveryFee: formatCurrencyInput(
+                                deliveryFeeCents,
+                            ),
+                            acceptedPaymentMethods,
+                            availableDeliveryTypes,
+                        }}
+                        assistantProfileAction={updateAssistantProfileAction}
+                        storeCheckoutAction={updateStoreCheckoutSettingsAction}
+                    />
                 </div>
 
                 <Card className="border-none shadow-sm">
@@ -300,23 +388,49 @@ export default async function DashboardWhatsappPage() {
                                     action={updateManualStoreClosedAction}
                                 />
 
-                                <DeliveryFeeForm
-                                    defaultValue={formatCurrencyInput(
+                                <AssistantProfileForm
+                                    defaultAssistantName={assistantName}
+                                    defaultBusinessProfile={businessProfile}
+                                    action={updateAssistantProfileAction}
+                                />
+
+                                <StoreCheckoutSettingsForm
+                                    defaultStoreAddress={storeAddress}
+                                    defaultDeliveryFee={formatCurrencyInput(
                                         deliveryFeeCents,
                                     )}
-                                    currentFeeLabel={deliveryFeeLabel}
-                                    action={updateDeliveryFeeAction}
+                                    defaultAcceptedPaymentMethods={
+                                        acceptedPaymentMethods
+                                    }
+                                    defaultAvailableDeliveryTypes={
+                                        availableDeliveryTypes
+                                    }
+                                    action={updateStoreCheckoutSettingsAction}
                                 />
 
                                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                                     <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
                                         <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
-                                            Mensagem padrao
+                                            Atendente
+                                        </p>
+                                        <p className="mt-1 text-sm font-medium text-slate-900">
+                                            {assistantName}
+                                        </p>
+                                    </div>
+                                    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                                        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
+                                            Perfil
+                                        </p>
+                                        <p className="mt-1 text-sm font-medium text-slate-900">
+                                            {businessProfileLabel}
+                                        </p>
+                                    </div>
+                                    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                                        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
+                                            Endereco da loja
                                         </p>
                                         <p className="mt-1 text-sm text-slate-600">
-                                            {userSettings?.closedMessage?.trim()
-                                                ? "Personalizada pelo assinante"
-                                                : "Usando mensagem padrao do sistema"}
+                                            {storeAddress || "Ainda nao configurado"}
                                         </p>
                                     </div>
                                     <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
@@ -333,6 +447,32 @@ export default async function DashboardWhatsappPage() {
                                         </p>
                                         <p className="mt-1 text-sm font-medium text-slate-900">
                                             {deliveryFeeLabel}
+                                        </p>
+                                    </div>
+                                    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                                        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
+                                            Pagamentos aceitos
+                                        </p>
+                                        <p className="mt-1 text-sm text-slate-600">
+                                            {paymentMethodsLabel}
+                                        </p>
+                                    </div>
+                                    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 lg:col-span-2">
+                                        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
+                                            Modalidades ativas
+                                        </p>
+                                        <p className="mt-1 text-sm text-slate-600">
+                                            {deliveryTypesLabel}
+                                        </p>
+                                    </div>
+                                    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                                        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
+                                            Mensagem padrao
+                                        </p>
+                                        <p className="mt-1 text-sm text-slate-600">
+                                            {userSettings?.closedMessage?.trim()
+                                                ? "Personalizada pelo assinante"
+                                                : "Usando mensagem padrao do sistema"}
                                         </p>
                                     </div>
                                 </div>

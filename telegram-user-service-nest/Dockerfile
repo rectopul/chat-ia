@@ -39,7 +39,10 @@ COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/prisma.config.ts ./prisma.config.ts
 
 COPY telegram-user-service-nest/entrypoint.sh ./entrypoint.sh
-RUN sed -i 's/\r//' ./entrypoint.sh && chmod +x ./entrypoint.sh
+COPY telegram-user-service-nest/entrypoint.compose.sh ./entrypoint.compose.sh
+RUN sed -i 's/\r//' ./entrypoint.sh \
+    && sed -i 's/\r//' ./entrypoint.compose.sh \
+    && chmod +x ./entrypoint.sh ./entrypoint.compose.sh
 
 EXPOSE 3001
 

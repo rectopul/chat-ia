@@ -1,7 +1,7 @@
 import axios from "axios";
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { Order, OrderStatus } from "@prisma/client";
+import { DeliveryType, Order, OrderStatus, PaymentMethod } from "@prisma/client";
 import { OrderEventsService } from "../order-events/order-events.service";
 import {
     orderRealtimeInclude,
@@ -57,8 +57,11 @@ export class DeliveryOrderService {
 
     async syncPendingOrderFromCart(input: SyncOrderInput): Promise<Order> {
         const cart = await this.temporaryCartService.getCart(input.whatsappId);
+        const deliveryType = cart.deliveryType ?? DeliveryType.DELIVERY;
         const deliveryAddress =
-            input.deliveryAddress?.trim() || cart.deliveryAddress?.trim();
+            deliveryType === DeliveryType.PICKUP
+                ? "Retirada no local"
+                : input.deliveryAddress?.trim() || cart.deliveryAddress?.trim();
 
         if (!deliveryAddress) {
             throw new Error(
@@ -94,6 +97,15 @@ export class DeliveryOrderService {
             customerWhatsappId: input.whatsappId,
             customerName: customer?.displayName ?? existingOrder?.customerName ?? null,
             status: OrderStatus.PENDING,
+            paymentMethod:
+                cart.paymentMethod ?? existingOrder?.paymentMethod ?? null,
+            paymentStatus: this.resolvePaymentStatus(
+                cart.paymentMethod ?? existingOrder?.paymentMethod ?? null,
+                existingOrder?.paymentStatus ?? null,
+            ),
+            deliveryType,
+            changeAmount: cart.changeAmount ?? null,
+            pixPayload: existingOrder?.pixPayload ?? null,
             deliveryFeeCents: cart.deliveryFeeCents,
             totalCents: cart.totalCents,
             currency: cart.currency,
@@ -179,6 +191,48 @@ export class DeliveryOrderService {
         this.orderEventsService.emitOrderFinalized(finalizedOrder);
 
         return finalizedOrder;
+    }
+
+    async setPendingOrderPixPayload(input: {
+        instanceId: string;
+        whatsappId: string;
+        pixPayload: string;
+    }): Promise<void> {
+        const order = await this.prisma.order.findFirst({
+            where: {
+                whatsappInstanceId: input.instanceId,
+                customerWhatsappId: input.whatsappId,
+                status: OrderStatus.PENDING,
+            },
+            orderBy: { createdAt: "desc" },
+            select: { id: true },
+        });
+
+        if (!order) {
+            return;
+        }
+
+        await this.prisma.order.update({
+            where: { id: order.id },
+            data: {
+                pixPayload: input.pixPayload.trim(),
+            },
+        });
+    }
+
+    private resolvePaymentStatus(
+        paymentMethod: PaymentMethod | null,
+        existingStatus: string | null,
+    ): string {
+        if (paymentMethod === PaymentMethod.PIX_ONLINE) {
+            return existingStatus?.trim() || "PENDING";
+        }
+
+        if (paymentMethod) {
+            return "PAY_ON_DELIVERY";
+        }
+
+        return existingStatus?.trim() || "PENDING";
     }
 
     private async reverseGeocode(

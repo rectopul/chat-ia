@@ -1,6 +1,11 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import {
+    BusinessProfile,
+    DeliveryType,
+    PaymentMethod,
+} from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireSessionUser } from "@/lib/server-session";
 import {
@@ -145,6 +150,101 @@ export async function updateDeliveryFeeAction(formData: FormData) {
         },
         data: {
             deliveryFeeCents,
+        },
+    });
+
+    revalidatePath("/dashboard/whatsapp");
+    revalidatePath("/dashboard/orders");
+    revalidatePath("/dashboard");
+}
+
+function parseEnumListValue<T extends string>(
+    values: FormDataEntryValue[],
+    allowedValues: readonly T[],
+    errorMessage: string,
+) {
+    const normalizedValues = values
+        .map((value) => String(value ?? "").trim())
+        .filter(Boolean) as T[];
+
+    if (!normalizedValues.length) {
+        throw new Error(errorMessage);
+    }
+
+    const uniqueValues = [...new Set(normalizedValues)];
+
+    if (!uniqueValues.every((value) => allowedValues.includes(value))) {
+        throw new Error(errorMessage);
+    }
+
+    return uniqueValues;
+}
+
+export async function updateAssistantProfileAction(formData: FormData) {
+    const user = await requireSessionUser();
+    const assistantName = String(formData.get("assistantName") ?? "").trim();
+    const businessProfile = String(
+        formData.get("businessProfile") ?? "",
+    ).trim() as BusinessProfile;
+
+    if (!Object.values(BusinessProfile).includes(businessProfile)) {
+        throw new Error("Selecione um perfil de negocio valido.");
+    }
+
+    if (assistantName.length > 80) {
+        throw new Error("O nome do atendente deve ter ate 80 caracteres.");
+    }
+
+    await prisma.user.update({
+        where: {
+            id: user.id,
+        },
+        data: {
+            assistantName: assistantName || null,
+            businessProfile,
+        },
+    });
+
+    revalidatePath("/dashboard/whatsapp");
+    revalidatePath("/dashboard");
+}
+
+export async function updateStoreCheckoutSettingsAction(formData: FormData) {
+    const user = await requireSessionUser();
+    const storeAddress = String(formData.get("storeAddress") ?? "").trim();
+    const deliveryFeeCents = parseMoneyInputToCents(
+        formData.get("deliveryFee"),
+    );
+    const acceptedPaymentMethods = parseEnumListValue(
+        formData.getAll("acceptedPaymentMethods"),
+        Object.values(PaymentMethod),
+        "Selecione pelo menos um metodo de pagamento aceito.",
+    );
+    const availableDeliveryTypes = parseEnumListValue(
+        formData.getAll("availableDeliveryTypes"),
+        Object.values(DeliveryType),
+        "Selecione pelo menos uma modalidade de atendimento.",
+    );
+
+    if (storeAddress.length < 8) {
+        throw new Error(
+            "Informe um endereco valido para a loja com rua, numero e referencia basica.",
+        );
+    }
+
+    if (storeAddress.length > 220) {
+        throw new Error("O endereco da loja deve ter ate 220 caracteres.");
+    }
+
+    await prisma.user.update({
+        where: {
+            id: user.id,
+        },
+        data: {
+            storeAddress,
+            deliveryFeeCents,
+            acceptedPaymentMethods,
+            availableDeliveryTypes,
         },
     });
 

@@ -45,9 +45,14 @@ model User {
   phone                  String?          @unique
   password               String?
   termsAcceptedAt        DateTime?
+  assistantName          String?
+  businessProfile        BusinessProfile  @default(GROCERY)
   closedMessage          String?          @db.Text
   manualStoreClosed      Boolean          @default(false)
   deliveryFeeCents       Int              @default(0)
+  storeAddress           String?          @db.Text
+  acceptedPaymentMethods PaymentMethod[]  @default([])
+  availableDeliveryTypes DeliveryType[]   @default([DELIVERY])
   role                   UserRole         @default(CUSTOMER)
   accessStatus           UserAccessStatus @default(ACTIVE)
   aiMessageLimitOverride Int?
@@ -184,21 +189,43 @@ model Transaction {
   @@index([userId, createdAt])
 }
 
+enum BusinessProfile {
+  GROCERY
+  RESTAURANT
+  SNACK_BAR
+  EVENT
+}
+
+enum PaymentMethod {
+  PIX_ONLINE
+  PIX_DELIVERY
+  CARD_DELIVERY
+  CASH
+}
+
+enum DeliveryType {
+  DELIVERY
+  PICKUP
+}
+
 model BotAccount {
-  id               String   @id @default(cuid())
-  ownerUserId      String?
-  name             String
-  token            String?  @unique
-  webhookSecret    String?
-  apiId            Int?
-  apiHash          String?
-  businessBotToken String?
-  phoneNumber      String?  @unique
-  session          String?  @db.Text
-  isUserAccount    Boolean  @default(false)
-  isActive         Boolean  @default(true)
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  id                     String          @id @default(cuid())
+  businessProfile        BusinessProfile @default(GROCERY)
+  acceptedPaymentMethods PaymentMethod[] @default([])
+  availableDeliveryTypes DeliveryType[]  @default([DELIVERY])
+  ownerUserId            String?
+  name                   String
+  token                  String?         @unique
+  webhookSecret          String?
+  apiId                  Int?
+  apiHash                String?
+  businessBotToken       String?
+  phoneNumber            String?         @unique
+  session                String?         @db.Text
+  isUserAccount          Boolean         @default(false)
+  isActive               Boolean         @default(true)
+  createdAt              DateTime        @default(now())
+  updatedAt              DateTime        @updatedAt
 
   ownerUser         User?                 @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
   users             TelegramUser[]
@@ -431,19 +458,24 @@ enum OrderStatus {
 }
 
 model Order {
-  id                 String      @id @default(cuid())
+  id                 String         @id @default(cuid())
   ownerUserId        String?
   whatsappInstanceId String?
   customerWhatsappId String
   customerName       String?
-  status             OrderStatus @default(PENDING)
-  deliveryFeeCents   Int         @default(0)
+  status             OrderStatus    @default(PENDING)
+  paymentMethod      PaymentMethod?
+  paymentStatus      String         @default("PENDING")
+  deliveryType       DeliveryType?
+  changeAmount       Float?
+  pixPayload         String?        @db.Text
+  deliveryFeeCents   Int            @default(0)
   totalCents         Int
-  currency           String      @default("BRL")
+  currency           String         @default("BRL")
   deliveryAddress    String
   notes              String?
-  createdAt          DateTime    @default(now())
-  updatedAt          DateTime    @updatedAt
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
 
   ownerUser        User?             @relation("UserOrders", fields: [ownerUserId], references: [id], onDelete: SetNull)
   whatsappInstance WhatsappInstance? @relation(fields: [whatsappInstanceId], references: [id], onDelete: SetNull)

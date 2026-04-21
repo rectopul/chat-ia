@@ -271,6 +271,7 @@ export class WhatsappIncomingProcessor extends WorkerHost {
                     chatId: data.chatId,
                     ownerUserId: accessContext.ownerUserId,
                     personaName: accessContext.personaName,
+                    businessProfile: accessContext.businessProfile,
                     messageId: this.extractIncomingMessageId(data),
                     debounceMessageCount:
                         this.extractDebounceMessageCount(data),

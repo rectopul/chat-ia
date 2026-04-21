@@ -1,14 +1,15 @@
 import { Injectable } from "@nestjs/common";
 import {
+    BusinessProfile,
     ChatMessage,
     ChatMessageType,
     ChatMessageRole,
+    DeliveryType,
     MediaType,
     MessageDirection,
-    MessageLog,
     MessageTemplate,
     MessageTemplateMedia,
-    BotAccount,
+    PaymentMethod,
     Prisma,
     Product,
     ProductType,
@@ -39,6 +40,7 @@ export type WhatsappInstanceAccessContext = {
     instanceName: string;
     ownerUserId: string;
     personaName: string;
+    businessProfile: BusinessProfile;
     subscriptionStatus: SubscriptionStatus | null;
     hasActiveAccess: boolean;
 };
@@ -52,6 +54,25 @@ export type DeliveryCatalogProduct = Prisma.ProductGetPayload<{
         };
     };
 }>;
+
+export type BotAccountWithOwnerSettings = Prisma.BotAccountGetPayload<{
+    include: {
+        ownerUser: {
+            select: {
+                name: true;
+                assistantName: true;
+                businessProfile: true;
+            };
+        };
+    };
+}>;
+
+export type OwnerCheckoutSettings = {
+    establishmentName: string;
+    establishmentAddress: string | null;
+    acceptedPaymentMethods: PaymentMethod[];
+    availableDeliveryTypes: DeliveryType[];
+};
 
 @Injectable()
 export class AiAgentRepository {
@@ -155,10 +176,67 @@ export class AiAgentRepository {
         });
     }
 
-    async getBotAccount(botId: string): Promise<BotAccount | null> {
+    async getBotAccount(botId: string): Promise<BotAccountWithOwnerSettings | null> {
         return this.prisma.botAccount.findUnique({
             where: { id: botId },
+            include: {
+                ownerUser: {
+                    select: {
+                        name: true,
+                        assistantName: true,
+                        businessProfile: true,
+                    },
+                },
+            },
         });
+    }
+
+    async getOwnerCheckoutSettings(
+        ownerUserId: string,
+    ): Promise<OwnerCheckoutSettings> {
+        const [botAccount, ownerUser] = await Promise.all([
+            this.prisma.botAccount.findFirst({
+                where: {
+                    ownerUserId,
+                    isActive: true,
+                },
+                orderBy: { createdAt: "asc" },
+                select: {
+                    name: true,
+                    acceptedPaymentMethods: true,
+                    availableDeliveryTypes: true,
+                },
+            }),
+            this.prisma.user.findUnique({
+                where: { id: ownerUserId },
+                select: {
+                    name: true,
+                    storeAddress: true,
+                    acceptedPaymentMethods: true,
+                    availableDeliveryTypes: true,
+                },
+            }),
+        ]);
+
+        return {
+            establishmentName:
+                botAccount?.name?.trim() ||
+                ownerUser?.name?.trim() ||
+                "estabelecimento",
+            establishmentAddress: ownerUser?.storeAddress?.trim() || null,
+            acceptedPaymentMethods:
+                ownerUser?.acceptedPaymentMethods?.length
+                    ? ownerUser.acceptedPaymentMethods
+                    : botAccount?.acceptedPaymentMethods?.length
+                      ? botAccount.acceptedPaymentMethods
+                    : [PaymentMethod.PIX_ONLINE],
+            availableDeliveryTypes:
+                ownerUser?.availableDeliveryTypes?.length
+                    ? ownerUser.availableDeliveryTypes
+                    : botAccount?.availableDeliveryTypes?.length
+                      ? botAccount.availableDeliveryTypes
+                    : [DeliveryType.DELIVERY],
+        };
     }
 
     async getActivePreviewTemplates(): Promise<
@@ -372,7 +450,7 @@ export class AiAgentRepository {
                 referenceId: data.referenceId,
                 status: "PENDING",
                 provider: "SYNCPAY",
-                rawPayload: data.rawPayload as any,
+                rawPayload: data.rawPayload as Prisma.InputJsonValue,
             },
         });
     }
@@ -399,7 +477,12 @@ export class AiAgentRepository {
             instanceId: instance.id,
             instanceName: instance.instanceName,
             ownerUserId: instance.userId,
-            personaName: instance.instanceName.trim() || instance.user.name?.trim() || "Clara",
+            personaName:
+                instance.user.assistantName?.trim() ||
+                instance.instanceName.trim() ||
+                instance.user.name?.trim() ||
+                "Clara",
+            businessProfile: instance.user.businessProfile,
             subscriptionStatus: instance.user.subscription?.status ?? null,
             hasActiveAccess: this.hasUserActiveAccess(
                 instance.user.role,

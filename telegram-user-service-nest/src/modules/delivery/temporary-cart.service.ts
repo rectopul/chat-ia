@@ -5,7 +5,7 @@ import {
     OnModuleDestroy,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { Product } from "@prisma/client";
+import { DeliveryType, PaymentMethod, Product } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import {
     DELIVERY_CART_KEY_PREFIX,
@@ -35,6 +35,9 @@ export type TemporaryCart = {
     deliveryFeeCents: number;
     totalCents: number;
     currency: string;
+    deliveryType: DeliveryType | null;
+    paymentMethod: PaymentMethod | null;
+    changeAmount: number | null;
     deliveryAddress: string | null;
     notes: string | null;
     createdAt: string;
@@ -212,6 +215,39 @@ export class TemporaryCartService implements OnModuleDestroy {
         });
     }
 
+    async setCheckoutContext(
+        whatsappId: string,
+        input: {
+            deliveryType?: DeliveryType | null;
+            paymentMethod?: PaymentMethod | null;
+            changeAmount?: number | null;
+        },
+    ): Promise<TemporaryCart> {
+        const normalizedWhatsappId = this.normalizeWhatsappId(whatsappId);
+        const cart = await this.getCart(normalizedWhatsappId);
+        const nextPaymentMethod =
+            input.paymentMethod === undefined
+                ? cart.paymentMethod
+                : input.paymentMethod;
+        const nextChangeAmount =
+            input.changeAmount === undefined
+                ? cart.changeAmount
+                : this.normalizeChangeAmount(input.changeAmount);
+
+        return this.saveCart(normalizedWhatsappId, {
+            ...(await this.recalculateCart(cart)),
+            deliveryType:
+                input.deliveryType === undefined
+                    ? cart.deliveryType
+                    : input.deliveryType,
+            paymentMethod: nextPaymentMethod,
+            changeAmount:
+                nextPaymentMethod === PaymentMethod.CASH
+                    ? nextChangeAmount
+                    : null,
+        });
+    }
+
     async clearCart(whatsappId: string): Promise<void> {
         await this.redis.del(this.cartKey(this.normalizeWhatsappId(whatsappId)));
     }
@@ -272,6 +308,9 @@ export class TemporaryCartService implements OnModuleDestroy {
             deliveryFeeCents: 0,
             totalCents: 0,
             currency: "BRL",
+            deliveryType: null,
+            paymentMethod: null,
+            changeAmount: null,
             deliveryAddress: null,
             notes: null,
             createdAt: now,
@@ -300,6 +339,9 @@ export class TemporaryCartService implements OnModuleDestroy {
             subtotalCents,
             deliveryFeeCents,
             totalCents,
+            deliveryType: cart.deliveryType ?? null,
+            paymentMethod: cart.paymentMethod ?? null,
+            changeAmount: cart.changeAmount ?? null,
         };
     }
 
@@ -397,6 +439,14 @@ export class TemporaryCartService implements OnModuleDestroy {
         }
 
         return normalized;
+    }
+
+    private normalizeChangeAmount(value: number | null): number | null {
+        if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+            return null;
+        }
+
+        return Math.round(value * 100) / 100;
     }
 
     private cartKey(whatsappId: string): string {

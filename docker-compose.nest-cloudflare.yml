@@ -1,0 +1,26 @@
+services:
+  nest:
+    build:
+      context: .
+      dockerfile: telegram-user-service-nest/Dockerfile
+    container_name: telebot-nest-cloudflare
+    restart: unless-stopped
+    stop_grace_period: 30s
+    env_file:
+      - ./telegram-user-service-nest/.env
+    environment:
+      PORT: ${NEST_DOCKER_PORT:-3001}
+    entrypoint: ["./entrypoint.compose.sh"]
+    network_mode: host
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: telebot-cloudflared
+    restart: unless-stopped
+    depends_on:
+      - nest
+    env_file:
+      - ./.env.docker.nest-cloudflare
+    entrypoint: ["/bin/sh", "-lc"]
+    command: 'cloudflared tunnel --no-autoupdate run --token "$$CLOUDFLARE_TUNNEL_TOKEN"'
+    network_mode: host

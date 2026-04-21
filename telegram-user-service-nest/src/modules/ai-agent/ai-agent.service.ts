@@ -10,12 +10,15 @@ import axios from "axios";
 import IORedis, { Redis } from "ioredis";
 import {
     BotAccount,
+    BusinessProfile,
     ChatMessageType,
     ChatMessageRole,
+    DeliveryType,
     MediaType,
     MessageDirection,
     MessageTemplate,
     MessageTemplateMedia,
+    PaymentMethod,
     Product,
 } from "@prisma/client";
 import {
@@ -42,11 +45,14 @@ import {
 } from "../delivery/temporary-cart.service";
 import {
     AiAgentRepository,
+    BotAccountWithOwnerSettings,
     DeliveryCatalogProduct,
+    OwnerCheckoutSettings,
 } from "./ai-agent.repository";
 import { SubscriptionService } from "../subscription/subscription.service";
 import { isAiServiceBusyError } from "./ai-error.utils";
 import { AiAudioService } from "./ai-audio.service";
+import { SyncPayService } from "../../syncpay/syncpay.service";
 
 export const AI_RESPONSE_QUEUE_NAME = "ai-response";
 export const AI_RESPONSE_JOB_NAME = "generate-ai-response";
@@ -58,18 +64,16 @@ const GEMINI_FALLBACK_MODEL_NAME = "gemini-2.0-flash";
 const GEMINI_PRIMARY_COOLDOWN_MS = 300_000;
 const GEMINI_PRIMARY_RECOVERY_SUCCESS_COUNT = 4;
 const GEMINI_CIRCUIT_KEY_PREFIX = "ai:gemini:circuit";
-const AI_SYSTEM_PROMPT = [
-    "Your name is Clara.",
+const BUSINESS_SYSTEM_PROMPT = [
     "Answer in Brazilian Portuguese.",
-    "You are a sales assistant and the face of a premium creator profile.",
-    "Use a warm, confident, seductive, playful tone, but avoid graphic or explicit sexual descriptions.",
-    "Your goal is to convert the conversation into interest in the available plans and previews.",
-    "Only mention products and previews that exist in the runtime catalog provided to you.",
-    "Never invent prices, plan names, benefits, files, or promises that are not in the catalog.",
-    "If the user asks for plans, prices, packs, access, or options, clearly list the available plans from the catalog.",
-    "If the user clearly chooses one available plan or asks for PIX for a specific plan, confirm warmly and say you are sending the PIX copy-and-paste now.",
-    "If the user asks for a preview, sample, photo, video, audio, or to see more, you may mention that you are sending a preview when one is available.",
-    "Keep answers short, engaging, and sales-oriented.",
+    "You are the main sales assistant for a Brazilian business.",
+    "Use the runtime catalog and the business profile instructions to decide how to sell.",
+    "Only mention products, services, menus, packages, or media examples that exist in the runtime catalog provided to you.",
+    "Never invent prices, ingredients, stock, package details, benefits, files, budgets, deadlines, or promises that are not in the runtime context.",
+    "If the customer asks for options, present only the real options from the runtime catalog.",
+    "If the customer clearly chooses a real item or service, confirm naturally and guide the next step without inventing payment data.",
+    "If the customer asks for photos, videos, audio, samples, menu images, or examples, only say you are sending them when compatible media exists in the runtime context.",
+    "Keep answers concise, clear, and sales-oriented.",
 ].join(" ");
 
 const GROCERY_SYSTEM_PROMPT = [
@@ -83,19 +87,23 @@ const GROCERY_SYSTEM_PROMPT = [
     "When the quantity is clear, prepare cart operations using only valid product IDs.",
     "If it feels natural, suggest one or two related products from the related suggestions list.",
     "If the user clearly wants to finish the purchase, close the order, or receive the delivery, set intent to FINALIZE_ORDER.",
-    "If intent is FINALIZE_ORDER and the cart already has items and the delivery address is filled, do not ask questions such as Posso finalizar.",
+    "If intent is FINALIZE_ORDER and the cart already has items and the fulfillment info is filled, do not ask questions such as Posso finalizar.",
     "When intent is FINALIZE_ORDER and the order is ready, reply assertively confirming that the order was sent to the kitchen or preparation.",
     "If the user says ja falei para finalizar or equivalent, treat that as maximum priority to close the order immediately.",
+    "Explain local payment options clearly: pagamento na entrega means the courier brings the card machine or the Pix QR code at handoff, and pagamento online means a Pix code generated now for immediate confirmation.",
+    "If pickup is selected, ask whether the customer prefers to pay now with PIX_ONLINE or to pay directly at the counter when picking up, whenever both options are available in the runtime checkout settings.",
+    "Understand that expressions such as receber no local, pagar no local, no balcao, na entrega, com o entregador, or pagar ao retirar refer to physical payment at handoff.",
+    "When deliveryType is DELIVERY, always confirm the delivery address before treating the order as ready to finalize.",
     "If the latest message came from audio transcription, prioritize the customer action over noisy transcription fragments, repeated words, or trailing garbage text.",
     "Ignore transcription noise or repetitive fragments from consecutive audios when the customer intent is still clear.",
-    "If the history already shows that the customer confirmed the address and the order, and a new audio arrives with a confirmation tone, mark intent as FINALIZE_ORDER without asking for new validation.",
+    "If the history already shows that the customer confirmed the fulfillment info and the order, and a new audio arrives with a confirmation tone, mark intent as FINALIZE_ORDER without asking for new validation.",
     "When extracting a delivery address, remove confirmation or greeting terms such as sim, ta certo, ok, pode entregar, no endereco, and valeu.",
     "The delivery address must contain only street name, number, neighborhood, and complement when available.",
     "Example: user text='Sim, pode entregar na Rua X, 123, Centro' => cleaned address='Rua X, 123, Centro'.",
     "When the runtime cart context includes a delivery fee, treat it as part of the order total.",
     "Utilize as tags dos produtos para fazer recomendacoes inteligentes e responder a buscas por caracteristicas (ex: se o cliente pedir algo 'saudavel' ou 'para churrasco', filtre pelas tags correspondentes).",
     "When a product has a promotional price in the catalog, treat that as the current selling price.",
-    "Return only valid JSON with intent, replyText, cartOperations, and suggestedProductIds.",
+    "Return only valid JSON with intent, replyText, paymentMethod, wantsChange, changeFor, deliveryType, cartOperations, and suggestedProductIds.",
 ].join(" ");
 
 const GROCERY_RESPONSE_SCHEMA: ResponseSchema = {
@@ -107,6 +115,7 @@ const GROCERY_RESPONSE_SCHEMA: ResponseSchema = {
             enum: [
                 "ADD_TO_CART",
                 "REMOVE_FROM_CART",
+                "SELECT_PAYMENT_METHOD",
                 "FINALIZE_ORDER",
                 "GENERAL_INQUIRY",
             ],
@@ -117,6 +126,33 @@ const GROCERY_RESPONSE_SCHEMA: ResponseSchema = {
             type: SchemaType.STRING,
             description:
                 "Short reply in Brazilian Portuguese to be sent to the customer.",
+        },
+        paymentMethod: {
+            type: SchemaType.STRING,
+            enum: [
+                "PIX_ONLINE",
+                "PIX_DELIVERY",
+                "CARD_DELIVERY",
+                "CASH",
+            ],
+            description:
+                "Optional checkout payment method selected by the customer.",
+        },
+        wantsChange: {
+            type: SchemaType.BOOLEAN,
+            description:
+                "Set to true when the customer says they need change for cash payment.",
+        },
+        changeFor: {
+            type: SchemaType.NUMBER,
+            description:
+                "Optional amount the customer will hand over so the system can calculate change.",
+        },
+        deliveryType: {
+            type: SchemaType.STRING,
+            enum: ["DELIVERY", "PICKUP"],
+            description:
+                "Delivery flow selected by the customer.",
         },
         cartOperations: {
             type: SchemaType.ARRAY,
@@ -243,6 +279,7 @@ export interface WhatsappAiRequest {
     chatId: string;
     ownerUserId: string;
     personaName: string;
+    businessProfile?: BusinessProfile;
     messageId?: string | null;
     debounceMessageCount?: number | null;
     messageText?: string;
@@ -255,6 +292,17 @@ type PreviewTemplate = MessageTemplate & {
     mediaItems: MessageTemplateMedia[];
 };
 
+type BusinessProfilePromptConfig = {
+    profileLabel: string;
+    toneInstruction: string;
+    systemInstructions: string[];
+    runtimeCatalogTitle: string;
+    emptyCatalogText: string;
+    runtimeMediaTitle: string;
+    emptyMediaText: string;
+    runtimeInstructions: string[];
+};
+
 type GroceryCartOperation = {
     productId: string;
     quantity: number;
@@ -264,12 +312,18 @@ type GroceryCartOperation = {
 type GroceryIntent =
     | "ADD_TO_CART"
     | "REMOVE_FROM_CART"
+    | "ASK_DELIVERY_TYPE"
+    | "SELECT_PAYMENT_METHOD"
     | "FINALIZE_ORDER"
     | "GENERAL_INQUIRY";
 
 type GroceryAiStructuredResponse = {
     replyText?: string;
     intent?: GroceryIntent;
+    paymentMethod?: PaymentMethod;
+    wantsChange?: boolean;
+    changeFor?: number;
+    deliveryType?: DeliveryType;
     cartOperations?: GroceryCartOperation[];
     suggestedProductIds?: string[];
     usage?: AiUsageSnapshot | null;
@@ -307,6 +361,16 @@ type GeminiApiModel = {
     supportedGenerationMethods?: string[];
 };
 
+type CheckoutDecision =
+    | {
+          finalizeNow: false;
+          text: string;
+      }
+    | {
+          finalizeNow: true;
+          text: string;
+      };
+
 @Injectable()
 export class AiAgentService implements OnModuleDestroy, OnModuleInit {
     private readonly logger = new Logger(AiAgentService.name);
@@ -322,6 +386,7 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
         private readonly productService: ProductService,
         private readonly temporaryCartService: TemporaryCartService,
         private readonly deliveryOrderService: DeliveryOrderService,
+        private readonly syncPayService: SyncPayService,
         @InjectQueue(AI_RESPONSE_QUEUE_NAME)
         private readonly aiResponseQueue: Queue<AiResponseJobData>,
     ) {
@@ -429,11 +494,15 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
         }
 
         const personaName = this.getPersonaName(botAccount);
+        const businessProfile = this.getBusinessProfile(botAccount);
         const execution = await this.generateContentWithFallback({
             scope: "default",
             primaryModelName: this.getPrimaryModelName(),
             fallbackModelName: this.getFallbackModelName(),
-            systemInstruction: this.buildSystemPrompt(personaName),
+            systemInstruction: this.buildSystemPrompt(
+                personaName,
+                businessProfile,
+            ),
             request: (model) =>
                 model.generateContent({
                     contents: [
@@ -445,6 +514,7 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
                                         personaName,
                                         products,
                                         previewTemplates,
+                                        businessProfile,
                                     ),
                                 },
                             ],
@@ -506,11 +576,15 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
             ]);
 
         const personaName = this.getPersonaName(botAccount);
+        const businessProfile = this.getBusinessProfile(botAccount);
         const execution = await this.generateContentWithFallback({
             scope: "default",
             primaryModelName: this.getPrimaryModelName(),
             fallbackModelName: this.getFallbackModelName(),
-            systemInstruction: this.buildSystemPrompt(personaName),
+            systemInstruction: this.buildSystemPrompt(
+                personaName,
+                businessProfile,
+            ),
             request: (model) =>
                 model.generateContent({
                     contents: [
@@ -522,6 +596,7 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
                                         personaName,
                                         products,
                                         previewTemplates,
+                                        businessProfile,
                                     ),
                                 },
                                 {
@@ -595,7 +670,14 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
             totalTokenCount: resolvedInput.usage?.totalTokenCount ?? null,
         });
 
-        const [history, products, previewTemplates, initialCart, matchedProducts] =
+        const [
+            history,
+            products,
+            previewTemplates,
+            initialCart,
+            matchedProducts,
+            checkoutSettings,
+        ] =
             await Promise.all([
                 this.repository.getConversationMessages(conversationKey, 10),
                 this.repository.getActiveDeliveryProductsForOwner(
@@ -612,6 +694,7 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
                     onlyAvailable: false,
                     limit: 12,
                 }),
+                this.repository.getOwnerCheckoutSettings(data.ownerUserId),
             ]);
         const latestAssistantMessage =
             this.getLatestAssistantMessageContent(history);
@@ -654,6 +737,8 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
 
         const structuredReply = await this.generateWhatsappGroceryReply({
             personaName: data.personaName,
+            businessProfile:
+                data.businessProfile ?? BusinessProfile.GROCERY,
             history,
             catalogProducts: products,
             matchedProducts,
@@ -661,6 +746,7 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
             relatedProducts,
             originalMessageType: resolvedInput.originalMessageType,
             latestAssistantMessage,
+            checkoutSettings,
         });
         const effectiveStructuredReply =
             this.resolveWhatsappStructuredReplyIntent({
@@ -682,6 +768,7 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
                 data.ownerUserId,
                 effectiveStructuredReply.cartOperations ?? [],
                 messageText,
+                effectiveStructuredReply,
             );
         } catch (error) {
             this.logger.warn(
@@ -706,13 +793,46 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
                 };
             }
 
-            if (!cartUpdateResult.cart.deliveryAddress?.trim()) {
+            if (
+                cartUpdateResult.cart.deliveryType !== DeliveryType.PICKUP &&
+                !cartUpdateResult.cart.deliveryAddress?.trim()
+            ) {
                 return {
                     text: this.buildAddressRequestReplyText(cartUpdateResult.cart),
                     previewTemplateIds: [],
                     usage: effectiveStructuredReply.usage ?? null,
                 };
             }
+        }
+
+        const checkoutDecision = await this.resolveWhatsappCheckoutDecision({
+            instanceId: data.instanceId,
+            chatId: data.chatId,
+            ownerUserId: data.ownerUserId,
+            cart: cartUpdateResult.cart,
+            intent: effectiveStructuredReply.intent,
+            checkoutSettings,
+        });
+
+        if (checkoutDecision) {
+            if (checkoutDecision.finalizeNow) {
+                const finalizedOrder = await this.maybeFinalizeWhatsappOrder({
+                    instanceId: data.instanceId,
+                    chatId: data.chatId,
+                    cart: cartUpdateResult.cart,
+                    intent: "FINALIZE_ORDER",
+                });
+
+                if (finalizedOrder) {
+                    await this.temporaryCartService.clearCart(data.chatId);
+                }
+            }
+
+            return {
+                text: checkoutDecision.text,
+                previewTemplateIds: [],
+                usage: effectiveStructuredReply.usage ?? null,
+            };
         }
 
         const finalizedOrder = await this.maybeFinalizeWhatsappOrder({
@@ -931,6 +1051,8 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
 
     private async generateWhatsappGroceryReply(input: {
         personaName: string;
+        businessProfile: BusinessProfile;
+        checkoutSettings: OwnerCheckoutSettings;
         history: Array<{
             role: ChatMessageRole;
             content: string;
@@ -946,7 +1068,10 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
             scope: "whatsapp",
             primaryModelName: this.getWhatsappModelName(),
             fallbackModelName: this.getWhatsappFallbackModelName(),
-            systemInstruction: this.buildWhatsappSystemPrompt(input.personaName),
+            systemInstruction: this.buildWhatsappSystemPrompt(
+                input.personaName,
+                input.businessProfile,
+            ),
             generationConfig: GROCERY_JSON_GENERATION_CONFIG,
             request: (model) =>
                 model.generateContent({
@@ -986,6 +1111,8 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
 
     private buildWhatsappGroceryRuntimeContext(input: {
         personaName: string;
+        businessProfile: BusinessProfile;
+        checkoutSettings: OwnerCheckoutSettings;
         catalogProducts: DeliveryCatalogProduct[];
         matchedProducts: ProductSearchResult[];
         currentCart: TemporaryCart;
@@ -993,6 +1120,9 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
         originalMessageType: ChatMessageType;
         latestAssistantMessage: string | null;
     }): string {
+        const profileConfig = this.getBusinessProfilePromptConfig(
+            input.businessProfile,
+        );
         const catalogLines = input.catalogProducts.length
             ? input.catalogProducts
                   .slice(0, 80)
@@ -1013,10 +1143,23 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
         return [
             "CONTEXTO_MERCEARIA",
             `Nome da loja ou atendente: ${input.personaName}`,
+            `Perfil de negocio: ${profileConfig.profileLabel}`,
             `Tipo da ultima mensagem do cliente: ${input.originalMessageType}`,
             "",
             "Carrinho temporario atual do cliente:",
             this.buildCartContext(input.currentCart),
+            "",
+            "Configuracao de checkout do lojista:",
+            `- Tipos de entrega disponiveis: ${this.joinHumanList(
+                this.resolveAvailableDeliveryTypes(
+                    input.checkoutSettings,
+                ).map((type) => this.describeDeliveryType(type)),
+            )}`,
+            `- Formas de pagamento aceitas: ${this.joinHumanList(
+                this.resolveAcceptedPaymentMethods(
+                    input.checkoutSettings,
+                ).map((method) => this.describePaymentMethod(method)),
+            )}`,
             "",
             "Ultima resposta enviada pelo atendente:",
             input.latestAssistantMessage?.trim() || "- Nenhuma resposta anterior.",
@@ -1031,11 +1174,11 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
             relatedProductLines,
             "",
             "FORMATO_DE_SAIDA_OBRIGATORIO",
-            '{"intent":"ADD_TO_CART", "replyText":"...", "cartOperations":[{"productId":"...", "quantity":2, "mode":"set"}], "suggestedProductIds":["..."]}',
+            '{"intent":"ADD_TO_CART", "replyText":"...", "deliveryType":"DELIVERY", "paymentMethod":"PIX_ONLINE", "changeFor":null, "cartOperations":[{"productId":"...", "quantity":2, "mode":"set"}], "suggestedProductIds":["..."]}',
             "",
             "REGRAS",
             "- Responda somente com JSON valido.",
-            "- intent deve ser um destes valores: ADD_TO_CART, REMOVE_FROM_CART, FINALIZE_ORDER ou GENERAL_INQUIRY.",
+            "- intent deve ser um destes valores: ADD_TO_CART, REMOVE_FROM_CART, SELECT_PAYMENT_METHOD, FINALIZE_ORDER ou GENERAL_INQUIRY.",
             "- replyText deve ser cordial, curto e objetivo.",
             "- Sempre confirme quantidades quando o cliente pedir itens.",
             "- Se a quantidade estiver clara, preencha cartOperations com IDs reais do catalogo.",
@@ -1044,6 +1187,15 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
             "- Se o cliente pedir mais de um item, voce pode enviar varias operacoes.",
             "- Se o cliente disser 'mais', prefira mode='add'. Caso contrario, use mode='set'.",
             "- Se o cliente responder apenas com confirmacoes curtas como 'sim', 'correto' ou 'isso mesmo', nao repita a mesma pergunta de quantidade.",
+            "- Se o cliente escolher entrega ou retirada, preencha deliveryType com DELIVERY ou PICKUP.",
+            "- Se o cliente escolher a forma de pagamento, preencha paymentMethod com PIX_ONLINE, PIX_DELIVERY, CARD_DELIVERY ou CASH.",
+            "- Se o cliente informar valor para troco, preencha changeFor com o valor numerico.",
+            "- Explique com clareza que pagamento na entrega significa que o entregador leva a maquininha de cartao ou o QR Code do Pix no momento da entrega.",
+            "- Explique com clareza que pagamento online significa gerar agora o codigo Pix para confirmacao imediata.",
+            "- Se o cliente escolher PICKUP, pergunte se ele prefere pagar agora por PIX_ONLINE ou pagar no balcao ao retirar, sempre que as duas opcoes estiverem disponiveis no checkout do lojista.",
+            "- Entenda que expressoes como receber no local, pagar no local, na entrega, com o entregador, no balcao ou pagar ao retirar significam recebimento fisico no momento da entrega ou retirada.",
+            "- Se deliveryType for DELIVERY, sempre confirme o endereco de entrega antes de considerar o pedido pronto para finalizar.",
+            "- Se deliveryType, paymentMethod ou changeFor ja estiverem preenchidos no contexto atual do carrinho, nao pergunte novamente a menos que o cliente queira mudar essa informacao.",
             "- Se o cliente quiser claramente encerrar a compra, concluir o pedido ou receber a entrega, use intent='FINALIZE_ORDER'.",
             "- Se intent='FINALIZE_ORDER' e o carrinho ja tiver itens e endereco, nao pergunte 'Posso finalizar?'; confirme que o pedido foi enviado para preparo.",
             "- Se o cliente disser algo como 'ja falei para finalizar', trate isso como prioridade maxima para fechar o pedido imediatamente.",
@@ -1068,7 +1220,8 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
 
         if (
             !input.cart.items.length ||
-            !input.cart.deliveryAddress?.trim()
+            (input.cart.deliveryType !== DeliveryType.PICKUP &&
+                !input.cart.deliveryAddress?.trim())
         ) {
             return input.structuredReply;
         }
@@ -1097,6 +1250,10 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
         ownerUserId: string,
         operations: GroceryCartOperation[],
         sourceMessageText: string,
+        structuredReply?: Pick<
+            GroceryAiStructuredResponse,
+            "deliveryType" | "paymentMethod" | "changeFor" | "wantsChange"
+        >,
     ): Promise<{
         cart: TemporaryCart;
         appliedOperations: AppliedCartOperation[];
@@ -1146,7 +1303,17 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
             }
         }
 
-        if (cart.deliveryAddress?.trim()) {
+        cart = await this.applyStructuredCheckoutContext(
+            whatsappId,
+            cart,
+            structuredReply,
+        );
+
+        if (
+            cart.items.length > 0 &&
+            (cart.deliveryAddress?.trim() ||
+                cart.deliveryType === DeliveryType.PICKUP)
+        ) {
             await this.deliveryOrderService.syncPendingOrderFromCart({
                 ownerUserId,
                 instanceId,
@@ -1156,6 +1323,45 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
         }
 
         return { cart, appliedOperations };
+    }
+
+    private async applyStructuredCheckoutContext(
+        whatsappId: string,
+        cart: TemporaryCart,
+        structuredReply?: Pick<
+            GroceryAiStructuredResponse,
+            "deliveryType" | "paymentMethod" | "changeFor" | "wantsChange"
+        >,
+    ): Promise<TemporaryCart> {
+        if (!structuredReply) {
+            return cart;
+        }
+
+        const shouldClearChangeAmount =
+            structuredReply.wantsChange === false ||
+            structuredReply.paymentMethod === PaymentMethod.CARD_DELIVERY ||
+            structuredReply.paymentMethod === PaymentMethod.PIX_DELIVERY ||
+            structuredReply.paymentMethod === PaymentMethod.PIX_ONLINE;
+        const nextChangeAmount = shouldClearChangeAmount
+            ? structuredReply.wantsChange === false
+                ? 0
+                : null
+            : structuredReply.changeFor;
+        const hasCheckoutUpdates =
+            structuredReply.deliveryType !== undefined ||
+            structuredReply.paymentMethod !== undefined ||
+            structuredReply.changeFor !== undefined ||
+            structuredReply.wantsChange !== undefined;
+
+        if (!hasCheckoutUpdates) {
+            return cart;
+        }
+
+        return this.temporaryCartService.setCheckoutContext(whatsappId, {
+            deliveryType: structuredReply.deliveryType,
+            paymentMethod: structuredReply.paymentMethod,
+            changeAmount: nextChangeAmount,
+        });
     }
 
     private buildWhatsappReplyText(input: {
@@ -1221,6 +1427,10 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
         const cartSummary = this.buildCartItemsSummary(cart);
         const totalsText = this.buildCartTotalsText(cart);
 
+        if (cart.deliveryType === DeliveryType.PICKUP) {
+            return `Perfeito! Seu carrinho está com ${cartSummary}. ${totalsText} Retirada no local selecionada. Se estiver tudo certo, posso finalizar o pedido.`;
+        }
+
         if (cart.deliveryAddress?.trim()) {
             return `Perfeito! Seu carrinho está com ${cartSummary}. ${totalsText} Entrega em ${cart.deliveryAddress}. Se estiver tudo certo, posso finalizar o pedido.`;
         }
@@ -1238,6 +1448,10 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
         const cartSummary = this.buildCartItemsSummary(cart);
         const totalsText = this.buildCartTotalsText(cart);
 
+        if (cart.deliveryType === DeliveryType.PICKUP) {
+            return `Retirada no local anotada. O pedido ficou em ${cartSummary}. ${totalsText} Posso finalizar o pedido?`;
+        }
+
         return `Endereco anotado: ${cart.deliveryAddress}. O pedido ficou em ${cartSummary}. ${totalsText} Posso finalizar o pedido?`;
     }
 
@@ -1245,12 +1459,20 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
         const cartSummary = this.buildCartItemsSummary(cart);
         const totalText = this.formatPrice(cart.totalCents);
 
+        if (cart.deliveryType === DeliveryType.PICKUP) {
+            return `Certo! Entao o pedido e ${cartSummary} para retirada no local. O total e ${totalText}. Posso finalizar o pedido?`;
+        }
+
         return `Certo! Entao o pedido e ${cartSummary} para entrega em ${cart.deliveryAddress}. O total e ${totalText}. Posso finalizar o pedido?`;
     }
 
     private buildAddressRequestReplyText(cart: TemporaryCart): string {
         const cartSummary = this.buildCartItemsSummary(cart);
         const totalsText = this.buildCartTotalsText(cart);
+
+        if (cart.deliveryType === DeliveryType.PICKUP) {
+            return `Perfeito! Fico com ${cartSummary}. ${totalsText} Retirada no local selecionada. Se estiver tudo certo, posso finalizar o pedido.`;
+        }
 
         return `Perfeito! Fico com ${cartSummary}. ${totalsText} Agora me manda o endereco para entrega, por favor.`;
     }
@@ -1275,7 +1497,8 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
         if (
             input.intent !== "FINALIZE_ORDER" ||
             !input.cart.items.length ||
-            !input.cart.deliveryAddress?.trim()
+            (input.cart.deliveryType !== DeliveryType.PICKUP &&
+                !input.cart.deliveryAddress?.trim())
         ) {
             return null;
         }
@@ -1292,7 +1515,287 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
         );
         const totalText = this.formatPrice(cart.totalCents);
 
+        if (cart.deliveryType === DeliveryType.PICKUP) {
+            return `Pedido confirmado! Enviei ${summary} para preparo. Total do pedido: ${totalText}. Assim que estiver pronto para retirada eu te aviso por aqui.`;
+        }
+
         return `Pedido confirmado! Enviei ${summary} para preparo e entrega em ${cart.deliveryAddress}. Total do pedido: ${totalText}. Assim que sair com o motoboy eu te aviso por aqui.`;
+    }
+
+    private async resolveWhatsappCheckoutDecision(input: {
+        instanceId: string;
+        chatId: string;
+        ownerUserId: string;
+        cart: TemporaryCart;
+        intent?: GroceryIntent;
+        checkoutSettings: OwnerCheckoutSettings;
+    }): Promise<CheckoutDecision | null> {
+        if (input.intent !== "FINALIZE_ORDER") {
+            return null;
+        }
+
+        if (!input.cart.items.length) {
+            return null;
+        }
+
+        const availableDeliveryTypes =
+            this.resolveAvailableDeliveryTypes(input.checkoutSettings);
+        const acceptedPaymentMethods =
+            this.resolveAcceptedPaymentMethods(input.checkoutSettings);
+
+        if (
+            !input.cart.deliveryType ||
+            !availableDeliveryTypes.includes(input.cart.deliveryType)
+        ) {
+            return {
+                finalizeNow: false,
+                text: this.buildDeliveryTypeSelectionReply(
+                    input.checkoutSettings,
+                ),
+            };
+        }
+
+        if (input.cart.deliveryType === DeliveryType.DELIVERY) {
+            if (!input.cart.paymentMethod) {
+                return {
+                    finalizeNow: false,
+                    text: this.buildPaymentMethodSelectionReply(
+                        input.checkoutSettings,
+                    ),
+                };
+            }
+
+            if (!acceptedPaymentMethods.includes(input.cart.paymentMethod)) {
+                return {
+                    finalizeNow: false,
+                    text: this.buildPaymentMethodSelectionReply(
+                        input.checkoutSettings,
+                    ),
+                };
+            }
+
+            if (!input.cart.deliveryAddress?.trim()) {
+                return {
+                    finalizeNow: false,
+                    text: this.buildAddressRequestReplyText(input.cart),
+                };
+            }
+
+            if (
+                input.cart.paymentMethod === PaymentMethod.CASH &&
+                input.cart.changeAmount === null
+            ) {
+                return {
+                    finalizeNow: false,
+                    text: "Perfeito! O pagamento vai ser em dinheiro. Voce precisa de troco? Se sim, me diga para quanto.",
+                };
+            }
+
+            if (input.cart.paymentMethod === PaymentMethod.PIX_ONLINE) {
+                return {
+                    finalizeNow: false,
+                    text: await this.buildPixOnlineCheckoutReply(input),
+                };
+            }
+
+            if (input.cart.paymentMethod === PaymentMethod.PIX_DELIVERY) {
+                return {
+                    finalizeNow: true,
+                    text: `Pedido confirmado! Vou seguir com ${this.buildCartItemsSummary(
+                        input.cart,
+                    )} para entrega em ${input.cart.deliveryAddress}. O total ficou em ${this.formatPrice(
+                        input.cart.totalCents,
+                    )}. O entregador vai levar o QR Code do Pix para voce pagar no ato da entrega.`,
+                };
+            }
+
+            if (input.cart.paymentMethod === PaymentMethod.CARD_DELIVERY) {
+                return {
+                    finalizeNow: true,
+                    text: `Pedido confirmado! Vou seguir com ${this.buildCartItemsSummary(
+                        input.cart,
+                    )} para entrega em ${input.cart.deliveryAddress}. O total ficou em ${this.formatPrice(
+                        input.cart.totalCents,
+                    )}. O entregador vai levar a maquininha para o pagamento na entrega.`,
+                };
+            }
+
+            if (input.cart.paymentMethod === PaymentMethod.CASH) {
+                const changeText =
+                    input.cart.changeAmount && input.cart.changeAmount > 0
+                        ? ` Vou separar o troco para ${this.formatFloatAsPrice(
+                              input.cart.changeAmount,
+                          )}.`
+                        : " Sem necessidade de troco.";
+
+                return {
+                    finalizeNow: true,
+                    text: `Pedido confirmado! Vou seguir com ${this.buildCartItemsSummary(
+                        input.cart,
+                    )} para entrega em ${input.cart.deliveryAddress}. O total ficou em ${this.formatPrice(
+                        input.cart.totalCents,
+                    )}.${changeText}`,
+                };
+            }
+        }
+
+        if (input.cart.deliveryType === DeliveryType.PICKUP) {
+            if (
+                input.cart.paymentMethod &&
+                !acceptedPaymentMethods.includes(input.cart.paymentMethod)
+            ) {
+                return {
+                    finalizeNow: false,
+                    text: this.buildPaymentMethodSelectionReply(
+                        input.checkoutSettings,
+                    ),
+                };
+            }
+
+            if (input.cart.paymentMethod === PaymentMethod.PIX_ONLINE) {
+                return {
+                    finalizeNow: false,
+                    text: await this.buildPixOnlineCheckoutReply(input),
+                };
+            }
+
+            return {
+                finalizeNow: true,
+                text: this.buildPickupCheckoutReply(
+                    input.cart,
+                    input.checkoutSettings,
+                ),
+            };
+        }
+
+        return null;
+    }
+
+    private resolveAvailableDeliveryTypes(
+        settings: OwnerCheckoutSettings,
+    ): DeliveryType[] {
+        return settings.availableDeliveryTypes.length
+            ? settings.availableDeliveryTypes
+            : [DeliveryType.DELIVERY];
+    }
+
+    private resolveAcceptedPaymentMethods(
+        settings: OwnerCheckoutSettings,
+    ): PaymentMethod[] {
+        return settings.acceptedPaymentMethods.length
+            ? settings.acceptedPaymentMethods
+            : [PaymentMethod.PIX_ONLINE];
+    }
+
+    private buildDeliveryTypeSelectionReply(
+        settings: OwnerCheckoutSettings,
+    ): string {
+        const availableTypes = this.resolveAvailableDeliveryTypes(settings);
+
+        if (availableTypes.length === 1) {
+            return `Antes de fechar, me confirma se vamos seguir com ${this.describeDeliveryType(
+                availableTypes[0],
+            )}.`;
+        }
+
+        return `Antes de fechar, me diz como voce prefere receber: ${this.joinHumanList(
+            availableTypes.map((type) => this.describeDeliveryType(type)),
+        )}.`;
+    }
+
+    private buildPaymentMethodSelectionReply(
+        settings: OwnerCheckoutSettings,
+    ): string {
+        const acceptedMethods = this.resolveAcceptedPaymentMethods(settings);
+
+        return `Perfeito! Agora me confirma a forma de pagamento. Hoje aceitamos ${this.joinHumanList(
+            acceptedMethods.map((method) => this.describePaymentMethod(method)),
+        )}.`;
+    }
+
+    private async buildPixOnlineCheckoutReply(input: {
+        instanceId: string;
+        chatId: string;
+        ownerUserId: string;
+        cart: TemporaryCart;
+        checkoutSettings: OwnerCheckoutSettings;
+    }): Promise<string> {
+        await this.deliveryOrderService.syncPendingOrderFromCart({
+            ownerUserId: input.ownerUserId,
+            instanceId: input.instanceId,
+            whatsappId: input.chatId,
+            deliveryAddress: input.cart.deliveryAddress,
+        });
+
+        const pixCharge = await this.syncPayService.createCharge({
+            amountCents: input.cart.totalCents,
+            productTitle: this.buildPixOrderTitle(input.cart),
+            referenceId: `${input.instanceId}-${input.chatId}-${Date.now()}`,
+        });
+
+        await this.deliveryOrderService.setPendingOrderPixPayload({
+            instanceId: input.instanceId,
+            whatsappId: input.chatId,
+            pixPayload: pixCharge.pix_code,
+        });
+
+        const fulfillmentText =
+            input.cart.deliveryType === DeliveryType.PICKUP
+                ? this.buildPickupLocationText(input.checkoutSettings)
+                : `Entrega em ${input.cart.deliveryAddress}.`;
+
+        return `Perfeito! Gerei o Pix online do seu pedido. ${fulfillmentText} Total: ${this.formatPrice(
+            input.cart.totalCents,
+        )}. Copia e cola do Pix:\n${pixCharge.pix_code}\nAssim que o pagamento for confirmado, eu sigo com o preparo.`;
+    }
+
+    private buildPickupCheckoutReply(
+        cart: TemporaryCart,
+        settings: OwnerCheckoutSettings,
+    ): string {
+        const acceptedMethods = this.resolveAcceptedPaymentMethods(settings);
+        const hasPixOnline = acceptedMethods.includes(PaymentMethod.PIX_ONLINE);
+        const hasPhysicalPayment = acceptedMethods.some(
+            (method) =>
+                method === PaymentMethod.CASH ||
+                method === PaymentMethod.CARD_DELIVERY ||
+                method === PaymentMethod.PIX_DELIVERY,
+        );
+        const paymentText =
+            hasPixOnline && hasPhysicalPayment
+                ? "O pagamento pode ser feito na retirada ou via Pix online, se voce preferir."
+                : hasPixOnline
+                  ? "O pagamento deve ser feito via Pix online."
+                  : "O pagamento deve ser feito na retirada.";
+
+        return `Pedido confirmado! Vou preparar ${this.buildCartItemsSummary(
+            cart,
+        )} para retirada no local. ${paymentText} ${this.buildPickupLocationText(
+            settings,
+        )}`;
+    }
+
+    private buildPickupLocationText(settings: OwnerCheckoutSettings): string {
+        const establishmentName = settings.establishmentName.trim();
+        const fallbackAddress =
+            this.configService.get<string>("DEFAULT_PICKUP_ADDRESS")?.trim() ||
+            null;
+        const establishmentAddress =
+            settings.establishmentAddress?.trim() || fallbackAddress;
+
+        if (establishmentAddress) {
+            return `Retirada em ${establishmentName}. Endereco: ${establishmentAddress}.`;
+        }
+
+        return `Retirada em ${establishmentName}. O endereco do estabelecimento ainda nao esta configurado no sistema.`;
+    }
+
+    private buildPixOrderTitle(cart: TemporaryCart): string {
+        const summary = this.buildCartItemsSummary(cart);
+        const compactSummary =
+            summary.length > 80 ? `${summary.slice(0, 77)}...` : summary;
+
+        return `Pedido WhatsApp - ${compactSummary}`;
     }
 
     private normalizeCartOperations(
@@ -1455,6 +1958,17 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
             return {
                 intent,
                 replyText,
+                paymentMethod: this.normalizeGroceryPaymentMethod(
+                    parsed.paymentMethod,
+                ),
+                wantsChange:
+                    typeof parsed.wantsChange === "boolean"
+                        ? parsed.wantsChange
+                        : undefined,
+                changeFor: this.normalizeStructuredNumber(parsed.changeFor),
+                deliveryType: this.normalizeGroceryDeliveryType(
+                    parsed.deliveryType,
+                ),
                 cartOperations: Array.isArray(parsed.cartOperations)
                     ? parsed.cartOperations
                           .map((operation) => operation as GroceryCartOperation)
@@ -1483,6 +1997,10 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
             return {
                 intent: "GENERAL_INQUIRY",
                 replyText: rawText.trim(),
+                paymentMethod: undefined,
+                wantsChange: undefined,
+                changeFor: undefined,
+                deliveryType: undefined,
                 cartOperations: [],
                 suggestedProductIds: [],
             };
@@ -1556,6 +2074,8 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
         if (
             normalized === "ADD_TO_CART" ||
             normalized === "REMOVE_FROM_CART" ||
+            normalized === "ASK_DELIVERY_TYPE" ||
+            normalized === "SELECT_PAYMENT_METHOD" ||
             normalized === "FINALIZE_ORDER" ||
             normalized === "GENERAL_INQUIRY"
         ) {
@@ -1563,6 +2083,59 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
         }
 
         return "GENERAL_INQUIRY";
+    }
+
+    private normalizeGroceryPaymentMethod(
+        value: unknown,
+    ): PaymentMethod | undefined {
+        if (typeof value !== "string") {
+            return undefined;
+        }
+
+        const normalized = value.trim().toUpperCase();
+
+        if (
+            normalized === "PIX_ONLINE" ||
+            normalized === "PIX_DELIVERY" ||
+            normalized === "CARD_DELIVERY" ||
+            normalized === "CASH"
+        ) {
+            return normalized;
+        }
+
+        return undefined;
+    }
+
+    private normalizeGroceryDeliveryType(
+        value: unknown,
+    ): DeliveryType | undefined {
+        if (typeof value !== "string") {
+            return undefined;
+        }
+
+        const normalized = value.trim().toUpperCase();
+
+        if (normalized === "DELIVERY" || normalized === "PICKUP") {
+            return normalized;
+        }
+
+        return undefined;
+    }
+
+    private normalizeStructuredNumber(value: unknown): number | undefined {
+        if (typeof value === "number" && Number.isFinite(value)) {
+            return value;
+        }
+
+        if (typeof value === "string") {
+            const normalized = Number(value.trim().replace(",", "."));
+
+            if (Number.isFinite(normalized)) {
+                return normalized;
+            }
+        }
+
+        return undefined;
     }
 
     private buildCatalogLine(product: DeliveryCatalogProduct): string {
@@ -1622,16 +2195,27 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
     }
 
     private buildCartContext(cart: TemporaryCart): string {
-        if (!cart.items.length) {
-            return "- Carrinho vazio.";
-        }
+        const lines = cart.items.length
+            ? [
+                  ...cart.items.map((item) => this.buildCartItemLine(item)),
+                  ...this.buildCartTotalsContextLines(cart),
+              ]
+            : ["- Carrinho vazio."];
 
         return [
-            ...cart.items.map((item) => this.buildCartItemLine(item)),
-            ...this.buildCartTotalsContextLines(cart),
-            cart.deliveryAddress
-                ? `- Endereco de entrega: ${cart.deliveryAddress}`
-                : "- Endereco de entrega: nao informado",
+            ...lines,
+            `- Tipo de entrega: ${this.describeCartDeliveryTypeForContext(cart)}`,
+            `- Forma de pagamento: ${this.describeCartPaymentMethodForContext(cart)}`,
+            cart.changeAmount === 0
+                ? "- Troco para: nao precisa"
+                : typeof cart.changeAmount === "number"
+                ? `- Troco para: ${this.formatFloatAsPrice(cart.changeAmount)}`
+                : "- Troco para: nao informado",
+            cart.deliveryType === DeliveryType.PICKUP
+                ? "- Endereco de entrega: retirada no local"
+                : cart.deliveryAddress
+                  ? `- Endereco de entrega: ${cart.deliveryAddress}`
+                  : "- Endereco de entrega: nao informado",
         ].join("\n");
     }
 
@@ -1693,6 +2277,60 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
         return `R$ ${(valueCents / 100).toFixed(2).replace(".", ",")}`;
     }
 
+    private formatFloatAsPrice(value: number): string {
+        return `R$ ${value.toFixed(2).replace(".", ",")}`;
+    }
+
+    private describeCartDeliveryTypeForContext(cart: TemporaryCart): string {
+        if (cart.deliveryType === DeliveryType.PICKUP) {
+            return "retirada no local";
+        }
+
+        if (cart.deliveryType === DeliveryType.DELIVERY) {
+            return "entrega";
+        }
+
+        return "nao informado";
+    }
+
+    private describeDeliveryType(type: DeliveryType): string {
+        if (type === DeliveryType.PICKUP) {
+            return "retirada no local";
+        }
+
+        return "entrega";
+    }
+
+    private describeCartPaymentMethodForContext(cart: TemporaryCart): string {
+        switch (cart.paymentMethod) {
+            case PaymentMethod.PIX_ONLINE:
+                return "pix online";
+            case PaymentMethod.PIX_DELIVERY:
+                return "pix na entrega";
+            case PaymentMethod.CARD_DELIVERY:
+                return "cartao na entrega";
+            case PaymentMethod.CASH:
+                return "dinheiro na entrega";
+            default:
+                return "nao informado";
+        }
+    }
+
+    private describePaymentMethod(method: PaymentMethod): string {
+        switch (method) {
+            case PaymentMethod.PIX_ONLINE:
+                return "pix online";
+            case PaymentMethod.PIX_DELIVERY:
+                return "pix na entrega";
+            case PaymentMethod.CARD_DELIVERY:
+                return "cartao na entrega";
+            case PaymentMethod.CASH:
+                return "dinheiro na entrega";
+            default:
+                return method;
+        }
+    }
+
     private maybeBuildDeterministicWhatsappReply(input: {
         messageText: string;
         cart: TemporaryCart;
@@ -1703,8 +2341,11 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
             return null;
         }
 
+        const hasFulfillmentInfo =
+            input.cart.deliveryType === DeliveryType.PICKUP ||
+            Boolean(input.cart.deliveryAddress?.trim());
         const readyToFinalize =
-            Boolean(input.cart.deliveryAddress?.trim()) &&
+            hasFulfillmentInfo &&
             (this.hasStrongFinalizeCue(input.messageText) ||
                 ((this.isSimpleCartConfirmationIntent(input.messageText) ||
                     this.isNoMoreItemsIntent(input.messageText)) &&
@@ -1731,7 +2372,7 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
             this.isNoMoreItemsIntent(input.messageText) &&
             this.didAssistantAskCartConfirmation(input.latestAssistantMessage)
         ) {
-            if (input.cart.deliveryAddress?.trim()) {
+            if (hasFulfillmentInfo) {
                 return this.buildReadyToFinalizeReplyText(input.cart);
             }
 
@@ -1746,7 +2387,7 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
             this.isNoMoreItemsIntent(input.messageText) &&
             this.didAssistantAskAboutMoreItems(input.latestAssistantMessage)
         ) {
-            if (input.cart.deliveryAddress?.trim()) {
+            if (hasFulfillmentInfo) {
                 return this.buildReadyToFinalizeReplyText(input.cart);
             }
 
@@ -2352,12 +2993,133 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
         return value?.replace(/^models\//, "").trim() || "";
     }
 
-    private buildSystemPrompt(personaName: string): string {
-        return AI_SYSTEM_PROMPT.replace("Your name is Clara.", `Your name is ${personaName}.`);
+    private getBusinessProfile(
+        botAccount: BotAccountWithOwnerSettings | null,
+    ): BusinessProfile {
+        return (
+            botAccount?.ownerUser?.businessProfile ??
+            botAccount?.businessProfile ??
+            BusinessProfile.GROCERY
+        );
     }
 
-    private buildWhatsappSystemPrompt(personaName: string): string {
-        return `Your name is ${personaName}. ${GROCERY_SYSTEM_PROMPT}`;
+    private getBusinessProfilePromptConfig(
+        businessProfile: BusinessProfile,
+    ): BusinessProfilePromptConfig {
+        switch (businessProfile) {
+            case BusinessProfile.RESTAURANT:
+                return {
+                    profileLabel: "restaurant",
+                    toneInstruction:
+                        "Use a warm, appetizing, polished tone focused on practical conversion.",
+                    systemInstructions: [
+                        "Focus on selling lunch boxes, prato do dia, dishes, beverages, and sides from the runtime catalog.",
+                        "Present meals in an appetizing way, but never invent ingredients or combinations that are not in the catalog.",
+                        "When it helps conversion, suggest drink pairings, side dishes, or dessert add-ons from the real catalog.",
+                    ],
+                    runtimeCatalogTitle: "Cardapio ativo:",
+                    emptyCatalogText: "- Nenhum item de restaurante ativo no momento",
+                    runtimeMediaTitle:
+                        "Midias ou exemplos ativos que podem apoiar a venda:",
+                    emptyMediaText: "- Nenhuma midia ativa no momento",
+                    runtimeInstructions: [
+                        "- Se o cliente pedir sugestao, destaque marmitas, prato do dia e acompanhamentos reais do catalogo.",
+                        "- Mantenha respostas objetivas e com apelo de sabor, sem exagerar.",
+                    ],
+                };
+            case BusinessProfile.SNACK_BAR:
+                return {
+                    profileLabel: "snack bar",
+                    toneInstruction:
+                        "Use a quick, upbeat, casual tone with agile upsell suggestions.",
+                    systemInstructions: [
+                        "Focus on sandwiches, burgers, portions, additional toppings, and combos from the runtime catalog.",
+                        "Help the customer montar o lanche with practical choices when those options exist in the catalog.",
+                        "Suggest combos, add-ons, sauces, or drinks only when they exist in the runtime catalog.",
+                    ],
+                    runtimeCatalogTitle: "Cardapio de lanches ativo:",
+                    emptyCatalogText: "- Nenhum item de lanchonete ativo no momento",
+                    runtimeMediaTitle:
+                        "Midias ou exemplos ativos que podem apoiar a venda:",
+                    emptyMediaText: "- Nenhuma midia ativa no momento",
+                    runtimeInstructions: [
+                        "- Priorize agilidade, adicionais e combos reais do catalogo.",
+                        "- Se o cliente estiver indeciso, puxe para uma escolha simples e facil de fechar.",
+                    ],
+                };
+            case BusinessProfile.EVENT:
+                return {
+                    profileLabel: "event business",
+                    toneInstruction:
+                        "Use a professional, organized, more formal tone oriented to briefing and quotation.",
+                    systemInstructions: [
+                        "Focus on collecting data needed to prepare an event quote or proposal.",
+                        "Prioritize event date, location, guest count, event type, and budget when those details are missing.",
+                        "If the customer is still exploring, guide the conversation toward a complete briefing before promising a quote.",
+                    ],
+                    runtimeCatalogTitle: "Servicos e pacotes ativos:",
+                    emptyCatalogText: "- Nenhum servico ou pacote ativo no momento",
+                    runtimeMediaTitle:
+                        "Midias ou exemplos ativos que podem apoiar a venda:",
+                    emptyMediaText: "- Nenhuma midia ativa no momento",
+                    runtimeInstructions: [
+                        "- Se faltarem data, local, numero de convidados ou tipo de evento, peca essas informacoes antes de avancar.",
+                        "- Seja mais formal e consultivo do que nos outros nichos.",
+                    ],
+                };
+            case BusinessProfile.GROCERY:
+            default:
+                return {
+                    profileLabel: "grocery store",
+                    toneInstruction:
+                        "Use a practical, friendly, neighborhood-store tone.",
+                    systemInstructions: [
+                        "Focus on grocery sales, stock awareness, and quantities such as kg, g, litro, pacote, caixa, or unidade when relevant.",
+                        "Help the customer choose brand, size, or quantity only from the real runtime catalog.",
+                        "When it helps conversion, suggest practical complementary products from the real catalog.",
+                    ],
+                    runtimeCatalogTitle: "Catalogo de produtos ativo:",
+                    emptyCatalogText: "- Nenhum produto ativo no momento",
+                    runtimeMediaTitle:
+                        "Midias ou exemplos ativos que podem apoiar a venda:",
+                    emptyMediaText: "- Nenhuma midia ativa no momento",
+                    runtimeInstructions: [
+                        "- Se o cliente perguntar sobre quantidade, unidade, ou disponibilidade, responda apenas com base no catalogo real.",
+                        "- Use referencias a kg/un somente quando fizer sentido para o item real do catalogo.",
+                    ],
+                };
+        }
+    }
+
+    private buildSystemPrompt(
+        personaName: string,
+        businessProfile: BusinessProfile,
+    ): string {
+        const profileConfig =
+            this.getBusinessProfilePromptConfig(businessProfile);
+
+        return [
+            `Your name is ${personaName}.`,
+            BUSINESS_SYSTEM_PROMPT,
+            `Business profile: ${profileConfig.profileLabel}.`,
+            profileConfig.toneInstruction,
+            ...profileConfig.systemInstructions,
+        ].join(" ");
+    }
+
+    private buildWhatsappSystemPrompt(
+        personaName: string,
+        businessProfile: BusinessProfile = BusinessProfile.GROCERY,
+    ): string {
+        const profileConfig =
+            this.getBusinessProfilePromptConfig(businessProfile);
+
+        return [
+            `Your name is ${personaName}.`,
+            GROCERY_SYSTEM_PROMPT,
+            profileConfig.toneInstruction,
+            ...profileConfig.systemInstructions,
+        ].join(" ");
     }
 
     private getPrimaryModelName(): string {
@@ -2667,7 +3429,10 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
         personaName: string,
         products: Product[],
         previewTemplates: PreviewTemplate[],
+        businessProfile: BusinessProfile,
     ): string {
+        const profileConfig =
+            this.getBusinessProfilePromptConfig(businessProfile);
         const productLines = products.length
             ? products
                   .map((product) => {
@@ -2686,7 +3451,7 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
                       return `- ${product.title} | preco: R$ ${price}${promotionalHint}${description}`;
                   })
                   .join("\n")
-            : "- Nenhum plano ativo no momento";
+            : profileConfig.emptyCatalogText;
 
         const previewLines = previewTemplates.length
             ? previewTemplates
@@ -2700,23 +3465,25 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
                       return `- id: ${template.id} | titulo: ${template.title} | tipo: ${template.type} | midias: ${mediaKinds || "text"} | itens: ${itemCount} | tags: ${tags || "sem tags"}`;
                   })
                   .join("\n")
-            : "- Nenhum preview ativo no momento";
+            : profileConfig.emptyMediaText;
 
         return [
             "CATALOGO_ATUAL",
             `Nome da persona: ${personaName}`,
-            "Planos ativos:",
+            `Perfil de negocio: ${profileConfig.profileLabel}`,
+            profileConfig.runtimeCatalogTitle,
             productLines,
             "",
-            "Previews ativos que podem ser enviados automaticamente se o cliente pedir amostra:",
+            profileConfig.runtimeMediaTitle,
             previewLines,
             "",
             "INSTRUCOES",
-            "- Liste planos somente a partir da secao de planos ativos.",
-            "- Se nao houver preview relevante, nao diga que vai enviar.",
-            "- Se o cliente pedir preco, plano, pack, acesso ou opcoes, apresente os planos reais.",
-            "- Se o cliente escolher claramente um plano real ou pedir o PIX de um plano especifico, confirme de forma convidativa e diga que esta enviando o PIX copia e cola.",
-            "- Se o cliente pedir previa, foto, video, audio, amostra ou algo para ver/ouvir, responda de forma convidativa e considere que um preview compativel pode ser enviado em seguida.",
+            "- Liste produtos, servicos, pratos, combos, ou pacotes somente a partir da secao de catalogo ativo.",
+            "- Se nao houver midia ou exemplo relevante, nao diga que vai enviar.",
+            "- Se o cliente pedir preco, opcoes, cardapio, pacote, ou servico, apresente somente os itens reais do catalogo.",
+            "- Se o cliente escolher claramente um item real, confirme de forma natural e conduza para o proximo passo comercial sem inventar dados.",
+            "- Se o cliente pedir previa, foto, video, audio, amostra, cardapio, ou exemplo, responda de forma natural e considere uma midia compativel quando houver.",
+            ...profileConfig.runtimeInstructions,
         ].join("\n");
     }
 
@@ -3260,8 +4027,11 @@ export class AiAgentService implements OnModuleDestroy, OnModuleInit {
         return `${trimmed.slice(0, maxLength - 3)}...`;
     }
 
-    private getPersonaName(botAccount: BotAccount | null): string {
-        const rawName = botAccount?.name?.trim();
+    private getPersonaName(botAccount: BotAccountWithOwnerSettings | null): string {
+        const rawName =
+            botAccount?.ownerUser?.assistantName?.trim() ||
+            botAccount?.name?.trim() ||
+            botAccount?.ownerUser?.name?.trim();
         return rawName || "Clara";
     }
 
